@@ -401,6 +401,27 @@ fi
 
 chmod +x /usr/local/bin/akpanel 2>/dev/null || true
 
+# Ensure .env exists with valid APP_KEY in application root
+if [ ! -f "$PROJECT_ROOT/.env" ]; then
+    if [ -f "$PROJECT_ROOT/.env.example" ]; then
+        cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
+    else
+        cat << 'EOF' > "$PROJECT_ROOT/.env"
+APP_NAME=AKpanel
+APP_ENV=production
+APP_KEY=akpanel_enterprise_super_key_32_chr
+APP_DEBUG=false
+LOG_CHANNEL=stack
+LOG_LEVEL=info
+APP_URL=http://localhost:2087
+APP_HOST=0.0.0.0
+APP_PORT=2087
+EOF
+    fi
+    RAND_APP_KEY=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 32 || echo "akpanel_super_secret_key_32_chr_")
+    sed -i "s/^APP_KEY=.*/APP_KEY=${RAND_APP_KEY}/" "$PROJECT_ROOT/.env" 2>/dev/null || true
+fi
+
 # Start System Daemons
 service apache2 start >> "$LOG_FILE" 2>&1 || systemctl start apache2 >> "$LOG_FILE" 2>&1 || true
 service nginx start >> "$LOG_FILE" 2>&1 || systemctl start nginx >> "$LOG_FILE" 2>&1 || true
@@ -428,6 +449,7 @@ RestartSec=5
 Environment=APP_ENV=production
 Environment=APP_PORT=2087
 Environment=APP_HOST=0.0.0.0
+Environment=APP_KEY=akpanel_enterprise_super_key_32_chr
 
 [Install]
 WantedBy=multi-user.target
