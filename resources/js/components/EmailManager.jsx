@@ -394,6 +394,18 @@ export default function EmailManager({ showToast }) {
             <RotateCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             <span>Reload</span>
           </Button>
+
+          <a
+            href="/webmail"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-900/30 transition border border-emerald-400/30"
+          >
+            <Inbox className="w-4 h-4" />
+            <span>Roundcube Webmail</span>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
+
           <Button
             onClick={() => setIsCreateOpen(true)}
             className="bg-gradient-to-r from-sky-500 to-indigo-600 hover:from-sky-400 hover:to-indigo-500 text-white font-bold gap-2 h-10 px-5 rounded-xl shadow-lg shadow-sky-600/25 transition border border-sky-400/30"

@@ -25,6 +25,9 @@ import ZoneTemplatePage from './components/dns/ZoneTemplatePage';
 import DNSClusterPage from './components/dns/DNSClusterPage';
 import DNSSECPage from './components/dns/DNSSECPage';
 import EmailManager from './components/EmailManager';
+import IPManager from './components/IPManager';
+import ServerSettingsManager from './components/ServerSettingsManager';
+import SSLManager from './components/SSLManager';
 import NotFoundPage from './components/NotFoundPage';
 import LoginView from './components/LoginView';
 import Toast from './components/Toast';
@@ -375,6 +378,33 @@ export default function App() {
             <Route path="/emails" element={
               <div className="max-w-[1400px] mx-auto">
                 <EmailManager showToast={showToast} />
+              </div>
+            } />
+            <Route path="/emails/*" element={
+              <div className="max-w-[1400px] mx-auto">
+                <EmailManager showToast={showToast} />
+              </div>
+            } />
+
+            {/* IP Address & Network Pool Manager */}
+            <Route path="/ips" element={
+              <div className="max-w-[1400px] mx-auto">
+                <IPManager showToast={showToast} />
+              </div>
+            } />
+
+            {/* CWP / Server Settings & Hostname SSL */}
+            <Route path="/settings" element={<Navigate to="/settings/server" replace />} />
+            <Route path="/settings/server" element={
+              <div className="max-w-[1400px] mx-auto">
+                <ServerSettingsManager showToast={showToast} />
+              </div>
+            } />
+
+            {/* SSL Certificates & Auto-Renewal Center */}
+            <Route path="/ssl" element={
+              <div className="max-w-[1400px] mx-auto">
+                <SSLManager showToast={showToast} />
               </div>
             } />
 

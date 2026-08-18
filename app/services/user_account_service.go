@@ -559,7 +559,22 @@ func (s *UserAccountService) UnsuspendUser(username string) error {
 	return s.writeUsers(list)
 }
 
-// ResetPassword changes client user Linux password
+type UserUpdateRequest struct {
+	Email            string `json:"email"`
+	IPAddress        string `json:"ip_address"`
+	PackageID        string `json:"package_id"`
+	IsReseller       bool   `json:"is_reseller"`
+	ShellAccess      bool   `json:"shell_access"`
+	AutoSSL          bool   `json:"autossl"`
+	BackupEnabled    bool   `json:"backup_enabled"`
+	DiskQuotaMB      int    `json:"disk_quota_mb"`
+	BandwidthLimitMB int    `json:"bandwidth_limit_mb"`
+	InodesLimit      int    `json:"inodes_limit"`
+	MaxProcesses     int    `json:"max_processes"`
+	OpenFilesLimit   int    `json:"open_files_limit"`
+}
+
+// ResetPassword changes client user Linux password, MySQL password, FTP password, and AKpanel auth hash
 func (s *UserAccountService) ResetPassword(username, newPassword string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -568,9 +583,115 @@ func (s *UserAccountService) ResetPassword(username, newPassword string) error {
 		return fmt.Errorf("password must be at least 6 characters")
 	}
 
+	// 1. Update Linux OS PAM / Shadow password (SSH / SFTP)
 	cmd := exec.Command("chpasswd")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", username, newPassword))
-	return cmd.Run()
+	_ = cmd.Run()
+
+	// 2. Update MySQL / MariaDB User password
+	mysqlPassQuery := fmt.Sprintf("ALTER USER '%s'@'localhost' IDENTIFIED BY '%s'; FLUSH PRIVILEGES;", username, newPassword)
+	_ = exec.Command("mysql", "-e", mysqlPassQuery).Run()
+	_ = exec.Command("mariadb", "-e", mysqlPassQuery).Run()
+
+	// 3. Update Pure-FTPd virtual user password if exists
+	_ = exec.Command("bash", "-c", fmt.Sprintf("(echo '%s'; echo '%s') | pure-pw passwd %s -m 2>/dev/null || true", newPassword, newPassword, username)).Run()
+
+	// 4. Update AKpanel Client Portal auth hash in users.json
+	list, _ := s.readUsers()
+	hash := sha256.Sum256([]byte(newPassword))
+	passHash := hex.EncodeToString(hash[:])
+
+	for i := range list {
+		if list[i].Username == username {
+			list[i].Password = newPassword
+			list[i].PasswordHash = passHash
+			break
+		}
+	}
+
+	return s.writeUsers(list)
+}
+
+// UpdateUser modifies user account settings, packages, quotas, IP, and shell access
+func (s *UserAccountService) UpdateUser(username string, req UserUpdateRequest) (*UserAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	list, _ := s.readUsers()
+	var updatedUser *UserAccount
+
+	for i := range list {
+		if list[i].Username == username {
+			if req.Email != "" {
+				list[i].Email = req.Email
+			}
+			if req.IPAddress != "" {
+				list[i].IPAddress = req.IPAddress
+			}
+			if req.PackageID != "" {
+				list[i].PackageID = req.PackageID
+				if pkg, err := s.packagesService.GetPackage(req.PackageID); err == nil && pkg != nil {
+					list[i].PackageName = pkg.Name
+					if req.DiskQuotaMB <= 0 {
+						list[i].DiskQuotaMB = pkg.DiskQuotaMB
+					}
+					if req.BandwidthLimitMB <= 0 {
+						list[i].BandwidthLimitMB = pkg.BandwidthMB
+					}
+					if req.InodesLimit <= 0 {
+						list[i].InodesLimit = pkg.MaxInodes
+					}
+					if req.MaxProcesses <= 0 {
+						list[i].MaxProcesses = pkg.Nproc
+					}
+					if req.OpenFilesLimit <= 0 {
+						list[i].OpenFilesLimit = pkg.Nofile
+					}
+				}
+			}
+			if req.DiskQuotaMB > 0 {
+				list[i].DiskQuotaMB = req.DiskQuotaMB
+			}
+			if req.BandwidthLimitMB > 0 {
+				list[i].BandwidthLimitMB = req.BandwidthLimitMB
+			}
+			if req.InodesLimit > 0 {
+				list[i].InodesLimit = req.InodesLimit
+			}
+			if req.MaxProcesses > 0 {
+				list[i].MaxProcesses = req.MaxProcesses
+			}
+			if req.OpenFilesLimit > 0 {
+				list[i].OpenFilesLimit = req.OpenFilesLimit
+			}
+
+			list[i].IsReseller = req.IsReseller
+			list[i].AutoSSL = req.AutoSSL
+			list[i].BackupEnabled = req.BackupEnabled
+
+			if list[i].ShellAccess != req.ShellAccess {
+				list[i].ShellAccess = req.ShellAccess
+				shellPath := "/usr/sbin/nologin"
+				if req.ShellAccess {
+					shellPath = "/bin/bash"
+				}
+				_ = exec.Command("usermod", "-s", shellPath, username).Run()
+			}
+
+			updatedUser = &list[i]
+			break
+		}
+	}
+
+	if updatedUser == nil {
+		return nil, fmt.Errorf("user '%s' not found", username)
+	}
+
+	if err := s.writeUsers(list); err != nil {
+		return nil, err
+	}
+
+	return updatedUser, nil
 }
 
 // DeleteUser deletes account and system user

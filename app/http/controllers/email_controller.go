@@ -295,3 +295,11 @@ func (c *EmailController) SecurityReport(ctx goravelhttp.Context) goravelhttp.Re
 		"data":   report,
 	})
 }
+
+// WebmailURL returns the direct webmail access URL
+func (c *EmailController) WebmailURL(ctx goravelhttp.Context) goravelhttp.Response {
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":      "success",
+		"webmail_url": "/webmail",
+	})
+}

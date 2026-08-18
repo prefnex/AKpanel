@@ -210,6 +210,39 @@ func (c *UsersController) ResetPassword(ctx goravelhttp.Context) goravelhttp.Res
 	})
 }
 
+// Update modifies user account settings, packages, quotas, IP, and shell access
+func (c *UsersController) Update(ctx goravelhttp.Context) goravelhttp.Response {
+	username := ctx.Request().Input("username")
+	if username == "" {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Username is required",
+		})
+	}
+
+	var req services.UserUpdateRequest
+	if err := ctx.Request().Bind(&req); err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Invalid update payload: " + err.Error(),
+		})
+	}
+
+	updatedUser, err := c.userAccountService.UpdateUser(username, req)
+	if err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "User account updated successfully!",
+		"data":    updatedUser,
+	})
+}
+
 // Destroy removes a user account
 func (c *UsersController) Destroy(ctx goravelhttp.Context) goravelhttp.Response {
 	username := ctx.Request().Input("username")
@@ -232,3 +265,4 @@ func (c *UsersController) Destroy(ctx goravelhttp.Context) goravelhttp.Response 
 		"message": "User account and home directory deleted successfully!",
 	})
 }
+

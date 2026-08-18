@@ -789,30 +789,171 @@ export default function UsersManager({ showToast }) {
         </DialogContent>
       </Dialog>
 
-      {/* Change Package Modal */}
+      {/* Edit User Modal */}
       <Dialog open={isPkgModalOpen} onOpenChange={setIsPkgModalOpen}>
-        <DialogContent className="bg-[#121215] border-zinc-800 text-white rounded-3xl max-w-sm p-6">
+        <DialogContent className="bg-[#121215] border-zinc-800 text-white rounded-3xl max-w-xl p-6">
           <DialogHeader>
             <DialogTitle className="text-base font-bold flex items-center gap-2">
               <Settings className="w-4 h-4 text-purple-400" />
-              <span>Change Package ({selectedUser?.username})</span>
+              <span>Edit Account Settings ({selectedUser?.username})</span>
             </DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleChangePackage} className="space-y-4 py-2">
-            <div className="space-y-1.5">
-              <label className="text-xs font-bold text-zinc-300">Select New Hosting Package</label>
-              <select
-                value={targetPackage}
-                onChange={(e) => setTargetPackage(e.target.value)}
-                className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white px-3 focus:outline-none"
-              >
-                {packages.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.disk_quota_mb === 0 ? '∞' : `${p.disk_quota_mb / 1024}GB`})
-                  </option>
-                ))}
-              </select>
+          <form onSubmit={async (e) => {
+            e.preventDefault();
+            if (!selectedUser) return;
+            try {
+              const res = await fetch('/api/users/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  username: selectedUser.username,
+                  email: selectedUser.email,
+                  ip_address: selectedUser.ip_address,
+                  package_id: selectedUser.package_id,
+                  disk_quota_mb: selectedUser.disk_quota_mb,
+                  bandwidth_limit_mb: selectedUser.bandwidth_limit_mb,
+                  inodes_limit: selectedUser.inodes_limit,
+                  max_processes: selectedUser.max_processes,
+                  open_files_limit: selectedUser.open_files_limit,
+                  shell_access: selectedUser.shell_access,
+                  autossl: selectedUser.autossl,
+                  is_reseller: selectedUser.is_reseller,
+                  backup_enabled: selectedUser.backup_enabled,
+                }),
+              });
+              const json = await res.json();
+              if (!res.ok) throw new Error(json.message);
+              showToast(json.message || 'User account updated successfully');
+              setIsPkgModalOpen(false);
+              fetchUsers();
+            } catch (err) {
+              showToast(err.message, 'error');
+            }
+          }} className="space-y-4 py-2 text-xs">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="font-bold text-zinc-300 block mb-1">Hosting Package</label>
+                <select
+                  value={selectedUser?.package_id || ''}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, package_id: e.target.value }))}
+                  className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white px-3 focus:outline-none"
+                >
+                  {packages.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({p.disk_quota_mb === 0 ? '∞' : `${p.disk_quota_mb / 1024}GB`})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-300 block mb-1">Account Email</label>
+                <Input
+                  type="email"
+                  value={selectedUser?.email || ''}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, email: e.target.value }))}
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs text-white h-9"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="font-bold text-zinc-300 block mb-1">Assigned IP Address</label>
+                <Input
+                  type="text"
+                  value={selectedUser?.ip_address || ''}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, ip_address: e.target.value }))}
+                  placeholder="e.g. 167.233.222.45 (Shared)"
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white h-9"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-300 block mb-1">Disk Quota (MB, 0=∞)</label>
+                <Input
+                  type="number"
+                  value={selectedUser?.disk_quota_mb || 0}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, disk_quota_mb: parseInt(e.target.value) || 0 }))}
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white h-9"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="font-bold text-zinc-300 block mb-1">Inodes Limit</label>
+                <Input
+                  type="number"
+                  value={selectedUser?.inodes_limit || 0}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, inodes_limit: parseInt(e.target.value) || 0 }))}
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white h-9"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-300 block mb-1">Max Processes</label>
+                <Input
+                  type="number"
+                  value={selectedUser?.max_processes || 40}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, max_processes: parseInt(e.target.value) || 40 }))}
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white h-9"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-300 block mb-1">Open Files (nofile)</label>
+                <Input
+                  type="number"
+                  value={selectedUser?.open_files_limit || 200}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, open_files_limit: parseInt(e.target.value) || 200 }))}
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white h-9"
+                />
+              </div>
+            </div>
+
+            {/* Toggles */}
+            <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-800">
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedUser?.shell_access || false}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, shell_access: e.target.checked }))}
+                  className="w-4 h-4 rounded text-purple-600"
+                />
+                <span className="text-zinc-300 font-semibold">Shell Access (SSH)</span>
+              </label>
+
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedUser?.autossl || false}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, autossl: e.target.checked }))}
+                  className="w-4 h-4 rounded text-purple-600"
+                />
+                <span className="text-zinc-300 font-semibold">AutoSSL Enabled</span>
+              </label>
+
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedUser?.is_reseller || false}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, is_reseller: e.target.checked }))}
+                  className="w-4 h-4 rounded text-purple-600"
+                />
+                <span className="text-zinc-300 font-semibold">Reseller Privileges</span>
+              </label>
+
+              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedUser?.backup_enabled || false}
+                  onChange={(e) => setSelectedUser(prev => ({ ...prev, backup_enabled: e.target.checked }))}
+                  className="w-4 h-4 rounded text-purple-600"
+                />
+                <span className="text-zinc-300 font-semibold">Backup User</span>
+              </label>
             </div>
 
             <DialogFooter className="pt-2">
@@ -828,34 +969,92 @@ export default function UsersManager({ showToast }) {
                 type="submit"
                 className="rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs shadow-md shadow-purple-600/20"
               >
-                Upgrade Package
+                Save Account Settings
               </Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* Reset Password Modal */}
+      {/* Professional Universal Password Reset Modal */}
       <Dialog open={isPassModalOpen} onOpenChange={setIsPassModalOpen}>
-        <DialogContent className="bg-[#121215] border-zinc-800 text-white rounded-3xl max-w-sm p-6">
+        <DialogContent className="bg-[#121215] border-zinc-800 text-white rounded-3xl max-w-md p-6">
           <DialogHeader>
             <DialogTitle className="text-base font-bold flex items-center gap-2">
               <Key className="w-4 h-4 text-amber-400" />
-              <span>Reset Password ({selectedUser?.username})</span>
+              <span>Universal Password Reset ({selectedUser?.username})</span>
             </DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleResetPassword} className="space-y-4 py-2">
+          <form onSubmit={handleResetPassword} className="space-y-4 py-2 text-xs">
+            <div className="p-3 rounded-xl bg-amber-950/20 border border-amber-800/30 text-amber-300 space-y-1">
+              <div className="font-bold flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5" />
+                <span>Multi-Service Universal Sync</span>
+              </div>
+              <p className="text-[11px] text-amber-300/80 leading-relaxed">
+                Changes password simultaneously for <strong>SSH / SFTP</strong>, <strong>MySQL database</strong>, <strong>Pure-FTPd</strong>, and the <strong>Client Web Panel</strong>.
+              </p>
+            </div>
+
             <div className="space-y-1.5">
-              <label className="text-xs font-bold text-zinc-300">New Password</label>
-              <Input
-                type="password"
-                required
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="••••••••••••"
-                className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white"
-              />
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-zinc-300">New Password</label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*';
+                    let pass = '';
+                    for (let i = 0; i < 16; i++) {
+                      pass += chars.charAt(Math.floor(Math.random() * chars.length));
+                    }
+                    setNewPassword(pass);
+                  }}
+                  className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold flex items-center gap-1"
+                >
+                  <Sparkles className="w-3 h-3" />
+                  <span>Generate Strong</span>
+                </button>
+              </div>
+
+              <div className="relative">
+                <Input
+                  type="text"
+                  required
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Enter or generate strong password"
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white pr-20"
+                />
+                {newPassword && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(newPassword);
+                      showToast('Password copied to clipboard!');
+                    }}
+                    className="absolute right-2.5 top-2 px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-[10px] text-zinc-300"
+                  >
+                    Copy
+                  </button>
+                )}
+              </div>
+
+              {newPassword && (
+                <div className="mt-2 space-y-1">
+                  <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                    <span>Password Strength:</span>
+                    <span className={newPassword.length >= 12 ? 'text-emerald-400 font-bold' : 'text-amber-400'}>
+                      {newPassword.length >= 12 ? 'Strong (12+ chars)' : 'Moderate'}
+                    </span>
+                  </div>
+                  <div className="w-full h-1 bg-zinc-900 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all ${newPassword.length >= 12 ? 'w-full bg-emerald-400' : 'w-1/2 bg-amber-400'}`} 
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <DialogFooter className="pt-2">
@@ -869,9 +1068,9 @@ export default function UsersManager({ showToast }) {
               </Button>
               <Button
                 type="submit"
-                className="rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shadow-md shadow-amber-600/20"
+                className="rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shadow-md shadow-amber-600/20 px-5"
               >
-                Update Password
+                Reset All Passwords
               </Button>
             </DialogFooter>
           </form>

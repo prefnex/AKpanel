@@ -304,32 +304,141 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
             </div>
           )}
 
-          {/* 1.7. Email Accounts & Mail Routing */}
+          {/* 1.65. IP Address & Network Pool Manager */}
           {collapsed ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  onClick={() => navigate('/emails')}
-                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/emails') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
-                    }`}
+                  onClick={() => navigate('/ips')}
+                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/ips') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
                 >
-                  <Mail className="w-4 h-4 text-amber-400" />
+                  <Network className="w-4 h-4 text-cyan-400" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
-                Email Accounts
+                IP Manager (IPv4/IPv6)
               </TooltipContent>
             </Tooltip>
           ) : (
             <div className="space-y-0.5">
               <button
-                onClick={() => navigate('/emails')}
-                className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/emails') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
-                  }`}
+                onClick={() => navigate('/ips')}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/ips') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
               >
-                <Mail className="w-4 h-4 text-amber-400" />
-                <span>Email Accounts</span>
+                <Network className="w-4 h-4 text-cyan-400" />
+                <span>IP Address Manager</span>
               </button>
+            </div>
+          )}
+
+          {/* 1.7. Rich Email Services & Roundcube Webmail Dropdown */}
+          {collapsed ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => navigate('/emails')}
+                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${path.startsWith('/emails') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
+                >
+                  <Mail className="w-4 h-4 text-amber-400" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
+                Email Services & Webmail
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <div className="space-y-0.5">
+              <button
+                onClick={() => toggleSection('email')}
+                className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60 font-semibold transition"
+              >
+                <div className="flex items-center gap-2.5">
+                  <Mail className="w-4 h-4 text-amber-400" />
+                  <span className="text-xs">Email Services</span>
+                </div>
+                <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform duration-200 ${openSections.email ? 'rotate-180' : ''}`} />
+              </button>
+
+              {openSections.email && (
+                <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200 max-h-64 overflow-y-auto custom-scrollbar">
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails') || isNavActive('/emails/accounts') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
+                  >
+                    <Mail className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Email Accounts</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <Send className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Aliases & Forwarders</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>AutoResponders</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Mail Routing / MX</span>
+                  </button>
+
+                  <a
+                    href="/webmail"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-emerald-400 hover:text-emerald-300 hover:bg-zinc-900/40 transition"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Inbox className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Roundcube Webmail</span>
+                    </div>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <ListTree className="w-3.5 h-3.5 text-orange-400" />
+                    <span>Mail Queue Manager</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <Server className="w-3.5 h-3.5 text-purple-400" />
+                    <span>MailServer Manager</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>DKIM & SPF Manager</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/emails')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <Radio className="w-3.5 h-3.5 text-rose-400" />
+                    <span>AntiSpam Shield</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -675,33 +784,86 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
             </button>
           )}
 
-          {/* 8. Security & Firewall */}
+          {/* 8. SSL Certificates */}
+          {collapsed ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => navigate('/ssl')}
+                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/ssl') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
+                >
+                  <Lock className="w-4 h-4 text-emerald-400" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
+                SSL Certificates
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <button
+              onClick={() => navigate('/ssl')}
+              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/ssl') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Lock className="w-4 h-4 text-emerald-400" />
+                <span>SSL Certificates</span>
+              </div>
+              <Badge variant="outline" className="text-[9px] px-1 py-0 text-emerald-400 border-emerald-500/20">acme.sh</Badge>
+            </button>
+          )}
+
+          {/* 9. Security & Firewall */}
           {collapsed ? (
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   onClick={() => navigate('/security')}
-                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
-                    }`}
+                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
                 >
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <ShieldCheck className="w-4 h-4 text-cyan-400" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
-                Firewall & SSL
+                Firewall & Security
               </TooltipContent>
             </Tooltip>
           ) : (
             <button
               onClick={() => navigate('/security')}
-              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'
-                }`}
+              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
             >
               <div className="flex items-center gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span>Firewall & SSL</span>
+                <ShieldCheck className="w-4 h-4 text-cyan-400" />
+                <span>Firewall & Security</span>
               </div>
-              <Badge variant="outline" className="text-[9px] px-1 py-0 text-emerald-400 border-emerald-500/20">Active</Badge>
+              <Badge variant="outline" className="text-[9px] px-1 py-0 text-cyan-400 border-cyan-500/20">UFW</Badge>
+            </button>
+          )}
+
+          {/* 10. Server / CWP Settings */}
+          {collapsed ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => navigate('/settings/server')}
+                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/settings/server') || isNavActive('/settings') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
+                >
+                  <Sliders className="w-4 h-4 text-indigo-400" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
+                Server Settings & Host SSL
+              </TooltipContent>
+            </Tooltip>
+          ) : (
+            <button
+              onClick={() => navigate('/settings/server')}
+              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/settings/server') || isNavActive('/settings') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Sliders className="w-4 h-4 text-indigo-400" />
+                <span>Server Settings & Host SSL</span>
+              </div>
             </button>
           )}
 

@@ -8,7 +8,7 @@ set +e
 # Default Settings
 DEFAULT_REPO="prefnex/AKpanel"
 GITHUB_REPO="${AKPANEL_REPO:-$DEFAULT_REPO}"
-DEFAULT_VERSION="v0.1.5"
+DEFAULT_VERSION="v0.1.0"
 INSTALL_DIR="/opt/akpanel"
 LOG_FILE="/var/log/akpanel-install.log"
 
@@ -252,7 +252,7 @@ task_step3() {
             php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
             php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
             php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
-            phpmyadmin || apt-get install $APT_OPTS php-cli php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd phpmyadmin
+            roundcube roundcube-core roundcube-mysql phpmyadmin || apt-get install $APT_OPTS php-cli php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin
     else
         apt-get update -y >> "$LOG_FILE" 2>&1 || true
         apt-get install $APT_OPTS \
@@ -263,15 +263,18 @@ task_step3() {
             php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
             php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
             php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
-            phpmyadmin >> "$LOG_FILE" 2>&1 || \
+            roundcube roundcube-core roundcube-mysql phpmyadmin >> "$LOG_FILE" 2>&1 || \
         apt-get install $APT_OPTS \
-            php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd phpmyadmin >> "$LOG_FILE" 2>&1 || true
+            php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin >> "$LOG_FILE" 2>&1 || true
     fi
 
-    # Install acme.sh for SSL management
+    # Install acme.sh for SSL management & setup daily auto-renewal cron
     if [ ! -f /root/.acme.sh/acme.sh ]; then
         curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site >> "$LOG_FILE" 2>&1 || true
     fi
+    mkdir -p /etc/cron.d
+    echo "0 2 * * * root /root/.acme.sh/acme.sh --cron --home /root/.acme.sh > /var/log/akpanel-ssl-renew.log 2>&1" > /etc/cron.d/akpanel-ssl-renew
+    chmod 644 /etc/cron.d/akpanel-ssl-renew 2>/dev/null || true
 
     # Setup BIND 9 Authoritative Nameserver configuration
     mkdir -p /etc/bind /var/cache/bind /etc/bind/zones
@@ -325,6 +328,31 @@ task_step4() {
         run_mysql phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql >> "$LOG_FILE" 2>&1 || true
     fi
 
+    # Roundcube Webmail Database & Config Setup
+    run_mysql -e "CREATE DATABASE IF NOT EXISTS roundcubemail DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY 'roundcube_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
+    if [ -f /usr/share/roundcube/SQL/mysql.initial.sql ]; then
+        run_mysql roundcubemail < /usr/share/roundcube/SQL/mysql.initial.sql >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    mkdir -p /etc/roundcube
+    cat << 'EOF' > /etc/roundcube/config.inc.php
+<?php
+$config = [];
+$config['db_dsnw'] = 'mysql://roundcube:roundcube_akpanel_secret_pass@localhost/roundcubemail';
+$config['default_host'] = '127.0.0.1';
+$config['default_port'] = 143;
+$config['smtp_server'] = '127.0.0.1';
+$config['smtp_port'] = 25;
+$config['smtp_user'] = '%u';
+$config['smtp_pass'] = '%p';
+$config['support_url'] = '';
+$config['product_name'] = 'AKpanel Webmail';
+$config['des_key'] = 'rcmail_akpanel_super_secret_des_key_24';
+$config['plugins'] = ['archive', 'zipdownload'];
+$config['skin'] = 'elastic';
+EOF
+    chmod 644 /etc/roundcube/config.inc.php 2>/dev/null || true
+
     cat << 'EOF' > /etc/phpmyadmin/config-db.php
 <?php
 $dbuser='pma';
@@ -335,6 +363,7 @@ $dbserver='localhost';
 $dbport='3306';
 $dbtype='mysql';
 EOF
+    chmod 644 /etc/phpmyadmin/config-db.php 2>/dev/null || true
     chmod 644 /etc/phpmyadmin/config-db.php 2>/dev/null || true
 
     mkdir -p /etc/phpmyadmin/conf.d /var/lib/phpmyadmin/sessions

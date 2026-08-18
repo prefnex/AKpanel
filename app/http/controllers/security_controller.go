@@ -42,6 +42,59 @@ func (r *SecurityController) IssueSSL(ctx http.Context) http.Response {
 	})
 }
 
+// Certificates lists all installed SSL certificates
+func (r *SecurityController) Certificates(ctx http.Context) http.Response {
+	certs := r.securityService.GetAllCertificates()
+	return ctx.Response().Success().Json(http.Json{
+		"status": "success",
+		"data":   certs,
+	})
+}
+
+// RenewAll triggers batch renewal via acme.sh
+func (r *SecurityController) RenewAll(ctx http.Context) http.Response {
+	out, err := r.securityService.RenewAll()
+	if err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": "Renewal failed: " + err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": "SSL renewal executed successfully",
+		"output":  out,
+	})
+}
+
+// InstallCustom installs custom user-provided SSL certificate
+func (r *SecurityController) InstallCustom(ctx http.Context) http.Response {
+	domain := ctx.Request().Input("domain")
+	cert := ctx.Request().Input("certificate")
+	key := ctx.Request().Input("private_key")
+	ca := ctx.Request().Input("ca_bundle")
+
+	if domain == "" || cert == "" || key == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "Domain, certificate, and private key are required",
+		})
+	}
+
+	if err := r.securityService.InstallCustomCertificate(domain, cert, key, ca); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": "Failed to install certificate: " + err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": "Custom SSL certificate installed successfully for " + domain,
+	})
+}
+
 // Firewall returns UFW firewall rules
 func (r *SecurityController) Firewall(ctx http.Context) http.Response {
 	active, rules, err := r.securityService.GetFirewallStatus()

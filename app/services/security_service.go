@@ -41,6 +41,18 @@ func (s *SecurityService) IssueLetsEncrypt(domain, email string) error {
 	return err
 }
 
+func (s *SecurityService) GetAllCertificates() []CertificateDetail {
+	return s.acmeService.GetAllCertificates()
+}
+
+func (s *SecurityService) InstallCustomCertificate(domain, certContent, keyContent, caBundle string) error {
+	return s.acmeService.InstallCustomCertificate(domain, certContent, keyContent, caBundle)
+}
+
+func (s *SecurityService) RenewAll() (string, error) {
+	return s.acmeService.RenewAll()
+}
+
 // GetFirewallStatus gets UFW status and active port rules
 func (s *SecurityService) GetFirewallStatus() (bool, []FirewallRule, error) {
 	out, err := exec.Command("ufw", "status").Output()
