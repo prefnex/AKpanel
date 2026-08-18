@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "check": "node scripts/check_ast.js",
+    "build": "node scripts/check_ast.js && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
