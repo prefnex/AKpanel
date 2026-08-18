@@ -15,7 +15,7 @@ func NewSecurityController() *SecurityController {
 	}
 }
 
-// IssueSSL requests a Let's Encrypt certificate
+// IssueSSL requests Let's Encrypt / ZeroSSL with automatic local self-signed fallback
 func (r *SecurityController) IssueSSL(ctx http.Context) http.Response {
 	domain := ctx.Request().Input("domain")
 	email := ctx.Request().Input("email")
@@ -23,20 +23,22 @@ func (r *SecurityController) IssueSSL(ctx http.Context) http.Response {
 	if domain == "" {
 		return ctx.Response().Status(422).Json(http.Json{
 			"status":  "error",
-			"message": "domain is required",
+			"message": "Domain is required",
 		})
 	}
 
-	if err := r.securityService.IssueLetsEncrypt(domain, email); err != nil {
+	result, err := r.securityService.IssueSSL(domain, email)
+	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
-			"message": err.Error(),
+			"message": "SSL configuration error: " + err.Error(),
 		})
 	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": "Let's Encrypt SSL certificate issued successfully for " + domain,
+		"message": result.Message,
+		"data":    result,
 	})
 }
 

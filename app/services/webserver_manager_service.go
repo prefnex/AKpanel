@@ -167,7 +167,7 @@ func (w *WebServerManagerService) GetTemplateFiles() (map[string][]string, error
 	for _, eng := range engines {
 		dir := filepath.Join(w.templatesDir, eng)
 		files, _ := os.ReadDir(dir)
-		var fileNames []string
+		fileNames := []string{}
 		for _, f := range files {
 			if !f.IsDir() {
 				fileNames = append(fileNames, f.Name())

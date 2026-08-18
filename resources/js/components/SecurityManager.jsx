@@ -109,12 +109,12 @@ export default function SecurityManager({ showToast }) {
 
         <Card className="bg-[#121215] border-zinc-800/80 rounded-2xl p-5 shadow-sm">
           <div className="flex items-center justify-between text-xs text-zinc-400">
-            <span className="font-semibold">Let's Encrypt Engine</span>
-            <Badge className="bg-cyan-500/10 text-cyan-400 border-cyan-500/20">Auto-Renew</Badge>
+            <span className="font-semibold">SSL / TLS Engine</span>
+            <Badge className="bg-cyan-500/10 text-cyan-400 border-cyan-500/20">acme.sh</Badge>
           </div>
           <div className="mt-3">
-            <div className="text-2xl font-bold text-white font-mono">Certbot Active</div>
-            <p className="text-[11px] text-zinc-500 mt-1">Automated 90-day SSL renewal daemon</p>
+            <div className="text-2xl font-bold text-white font-mono">acme.sh Active</div>
+            <p className="text-[11px] text-zinc-500 mt-1">Let's Encrypt / ZeroSSL with auto fallback & cron renewal</p>
           </div>
         </Card>
 

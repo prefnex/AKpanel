@@ -8,7 +8,7 @@ set +e
 # Default Settings
 DEFAULT_REPO="prefnex/AKpanel"
 GITHUB_REPO="${AKPANEL_REPO:-$DEFAULT_REPO}"
-DEFAULT_VERSION="v0.1.4"
+DEFAULT_VERSION="v0.1.5"
 INSTALL_DIR="/opt/akpanel"
 LOG_FILE="/var/log/akpanel-install.log"
 
@@ -267,6 +267,40 @@ task_step3() {
         apt-get install $APT_OPTS \
             php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd phpmyadmin >> "$LOG_FILE" 2>&1 || true
     fi
+
+    # Install acme.sh for SSL management
+    if [ ! -f /root/.acme.sh/acme.sh ]; then
+        curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    # Setup BIND 9 Authoritative Nameserver configuration
+    mkdir -p /etc/bind /var/cache/bind /etc/bind/zones
+    cat << 'EOF' > /etc/bind/named.conf.options
+options {
+    directory "/var/cache/bind";
+
+    listen-on port 53 { any; };
+    listen-on-v6 { any; };
+
+    allow-query { any; };
+    allow-query-cache { localhost; 127.0.0.1/32; };
+
+    recursion no;
+    allow-recursion { localhost; 127.0.0.1/32; };
+    allow-transfer { none; };
+
+    forwarders {
+        1.1.1.1;
+        8.8.8.8;
+    };
+
+    dnssec-validation auto;
+    auth-nxdomain no;
+    max-cache-size 128M;
+};
+EOF
+    systemctl enable bind9 >> "$LOG_FILE" 2>&1 || systemctl enable named >> "$LOG_FILE" 2>&1 || true
+    systemctl restart bind9 >> "$LOG_FILE" 2>&1 || systemctl restart named >> "$LOG_FILE" 2>&1 || true
 }
 run_task "Installing Nginx, Multi-PHP & MariaDB" 35 60 task_step3
 
@@ -617,6 +651,8 @@ task_step6() {
         ufw allow 443/tcp comment "HTTPS SSL" >> "$LOG_FILE" 2>&1 || true
         ufw allow 21/tcp comment "FTP Service" >> "$LOG_FILE" 2>&1 || true
         ufw allow 53 comment "DNS Service" >> "$LOG_FILE" 2>&1 || true
+        ufw allow 53/tcp comment "DNS TCP" >> "$LOG_FILE" 2>&1 || true
+        ufw allow 53/udp comment "DNS UDP" >> "$LOG_FILE" 2>&1 || true
         ufw allow 25/tcp comment "SMTP Mail" >> "$LOG_FILE" 2>&1 || true
         ufw allow 587/tcp comment "SMTP Submission" >> "$LOG_FILE" 2>&1 || true
         ufw allow 993/tcp comment "IMAP SSL" >> "$LOG_FILE" 2>&1 || true

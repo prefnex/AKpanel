@@ -156,7 +156,7 @@ export default function WebServerManager({ showToast }) {
       <div className="space-y-4">
         <h3 className="text-sm font-semibold text-zinc-300 uppercase tracking-wider">Global WebServer Profile (Main Mode)</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {profiles.map(p => (
+          {(profiles || []).map(p => (
             <div 
               key={p.id} 
               className={`shadcn-card rounded-xl p-5 border transition flex flex-col justify-between ${
@@ -221,7 +221,7 @@ export default function WebServerManager({ showToast }) {
         </div>
 
         <div className="divide-y divide-zinc-800/60">
-          {services.map(s => (
+          {(services || []).map(s => (
             <div key={s.name} className="p-4 px-6 flex items-center justify-between hover:bg-zinc-900/30 transition">
               <div className="flex items-center gap-3">
                 <div className={`w-2.5 h-2.5 rounded-full ${s.is_running ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
@@ -323,11 +323,11 @@ export default function WebServerManager({ showToast }) {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {Object.entries(templates).map(([engine, files]) => (
+          {Object.entries(templates || {}).map(([engine, files]) => (
             <div key={engine} className="p-3 rounded-lg bg-zinc-900 border border-zinc-800">
               <div className="font-bold text-xs uppercase text-violet-400 mb-2">{engine} Templates</div>
               <div className="space-y-1">
-                {files.map(f => (
+                {(Array.isArray(files) ? files : []).map(f => (
                   <button 
                     key={f}
                     onClick={() => openTemplateEditor(engine, f)}

@@ -621,7 +621,116 @@ func (s *DNSService) SaveSettings(settings DNSSettings) error {
 		return err
 	}
 
-	return os.WriteFile(s.settingsPath, bytes, 0644)
+	_ = os.WriteFile(s.settingsPath, bytes, 0644)
+
+	// Auto-provision master authoritative zone for the nameservers domain
+	s.autoProvisionMasterNameserverZoneUnsafe(settings)
+	return nil
+}
+
+func extractRootDomain(hostnameOrNS string) string {
+	cleaned := strings.Trim(strings.TrimSpace(strings.ToLower(hostnameOrNS)), ".")
+	parts := strings.Split(cleaned, ".")
+	if len(parts) >= 2 {
+		return strings.Join(parts[len(parts)-2:], ".")
+	}
+	return ""
+}
+
+func (s *DNSService) autoProvisionMasterNameserverZoneUnsafe(settings DNSSettings) {
+	rootDom := extractRootDomain(settings.PrimaryNS)
+	if rootDom == "" || strings.HasSuffix(rootDom, ".local") {
+		rootDom = extractRootDomain(settings.ServerHostname)
+	}
+	if rootDom == "" || strings.HasSuffix(rootDom, ".local") {
+		return
+	}
+
+	primaryIP := settings.PrimaryIP
+	if primaryIP == "" {
+		primaryIP = s.GetSystemIP()
+	}
+	secondaryIP := settings.SecondaryIP
+	if secondaryIP == "" {
+		secondaryIP = primaryIP
+	}
+
+	zones, _ := s.readZones()
+	var zone *DNSZone
+	var zoneIndex = -1
+	for i := range zones {
+		if strings.EqualFold(zones[i].Domain, rootDom) {
+			zone = &zones[i]
+			zoneIndex = i
+			break
+		}
+	}
+
+	if zone == nil {
+		newZone := DNSZone{
+			Domain:     rootDom,
+			OwnerUser:  "root",
+			ServerIP:   primaryIP,
+			EmailAdmin: "hostmaster@" + rootDom,
+			Serial:     fmt.Sprintf("%s01", time.Now().Format("20060102")),
+			BindStatus: "synced",
+			CreatedAt:  time.Now().Format(time.RFC3339),
+			UpdatedAt:  time.Now().Format(time.RFC3339),
+			Records: []DNSRecord{
+				{Name: "@", Type: "NS", Value: fmt.Sprintf("ns1.%s.", rootDom), TTL: 14400},
+				{Name: "@", Type: "NS", Value: fmt.Sprintf("ns2.%s.", rootDom), TTL: 14400},
+				{Name: "@", Type: "A", Value: primaryIP, TTL: 14400},
+				{Name: "ns1", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Glue Record NS1"},
+				{Name: "ns2", Type: "A", Value: secondaryIP, TTL: 14400, Comment: "Glue Record NS2"},
+				{Name: "server", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Master Server Hostname"},
+				{Name: "*", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Wildcard A"},
+				{Name: "www", Type: "A", Value: primaryIP, TTL: 14400},
+				{Name: "mail", Type: "A", Value: primaryIP, TTL: 14400},
+				{Name: "@", Type: "MX", Value: fmt.Sprintf("mail.%s.", rootDom), TTL: 14400, Priority: 10},
+				{Name: "@", Type: "TXT", Value: fmt.Sprintf("v=spf1 a mx ip4:%s ~all", primaryIP), TTL: 14400},
+				{Name: "_dmarc", Type: "TXT", Value: "v=DMARC1; p=none; sp=none", TTL: 14400},
+			},
+		}
+		zones = append(zones, newZone)
+		_ = s.writeZones(zones)
+		_ = s.syncBindZone(&newZone)
+	} else {
+		// Ensure glue and master records are up to date
+		hasNS1 := false
+		hasNS2 := false
+		hasServer := false
+		for i := range zone.Records {
+			if zone.Records[i].Name == "ns1" && zone.Records[i].Type == "A" {
+				zone.Records[i].Value = primaryIP
+				hasNS1 = true
+			}
+			if zone.Records[i].Name == "ns2" && zone.Records[i].Type == "A" {
+				zone.Records[i].Value = secondaryIP
+				hasNS2 = true
+			}
+			if zone.Records[i].Name == "server" && zone.Records[i].Type == "A" {
+				zone.Records[i].Value = primaryIP
+				hasServer = true
+			}
+			if zone.Records[i].Name == "@" && zone.Records[i].Type == "A" {
+				zone.Records[i].Value = primaryIP
+			}
+		}
+		if !hasNS1 {
+			zone.Records = append(zone.Records, DNSRecord{Name: "ns1", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Glue Record NS1"})
+		}
+		if !hasNS2 {
+			zone.Records = append(zone.Records, DNSRecord{Name: "ns2", Type: "A", Value: secondaryIP, TTL: 14400, Comment: "Glue Record NS2"})
+		}
+		if !hasServer {
+			zone.Records = append(zone.Records, DNSRecord{Name: "server", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Master Server Hostname"})
+		}
+		if zoneIndex >= 0 {
+			zones[zoneIndex] = *zone
+			_ = s.writeZones(zones)
+			_ = s.syncBindZone(zone)
+		}
+	}
 }
 
 func (s *DNSService) SetHostname(hostname string) error {
@@ -745,8 +854,12 @@ func (s *DNSService) applyBindOptionsConfig(opts BindServerOptions) {
 	namedOptionsContent := fmt.Sprintf(`options {
     directory "/var/cache/bind";
 
-    listen-on port %d { %s; };
-    listen-on-v6 { %s; };
+    listen-on port %d { any; };
+    listen-on-v6 { any; };
+
+    // Allow authoritative queries from the public Internet
+    allow-query { any; };
+    allow-query-cache { localhost; 127.0.0.1/32; };
 
     // Security & Recursion Lockdown
     recursion %s;
@@ -756,22 +869,16 @@ func (s *DNSService) applyBindOptionsConfig(opts BindServerOptions) {
     forwarders {
 %s    };
 
-    // DNS Amplification Attack Shield (Rate Limiting)
-    rate-limit {
-        responses-per-second %d;
-        window %d;
-    };
-
     dnssec-validation auto;
     auth-nxdomain no;
     max-cache-size %dM;
 };
-`, opts.ListenPort, opts.ListenIPv4, opts.ListenIPv6, recursionStr, opts.AllowTransfer, forwardersStr, opts.ResponseRateLimit, opts.RateLimitWindow, opts.MaxCacheSizeMB)
+`, opts.ListenPort, recursionStr, opts.AllowTransfer, forwardersStr, opts.MaxCacheSizeMB)
 
 	_ = os.WriteFile(optionsFile, []byte(namedOptionsContent), 0644)
 	_ = exec.Command("rndc", "reconfig").Run()
-	_ = exec.Command("service", "bind9", "reload").Run()
-	_ = exec.Command("service", "named", "reload").Run()
+	_ = exec.Command("service", "bind9", "restart").Run()
+	_ = exec.Command("service", "named", "restart").Run()
 }
 
 // GetBindDaemonStatus returns live BIND 9 daemon performance & memory
@@ -1586,6 +1693,7 @@ func (s *DNSService) syncBindZone(zone *DNSZone) error {
     type master;
     file "%s";
     allow-transfer { none; };
+    allow-query { any; };
 };
 `, zone.Domain, zoneFilePath)
 

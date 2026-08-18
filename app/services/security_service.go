@@ -1,7 +1,6 @@
 package services
 
 import (
-	"fmt"
 	"os/exec"
 	"strings"
 )
@@ -21,38 +20,38 @@ type FirewallRule struct {
 	Comment  string `json:"comment"`
 }
 
-type SecurityService struct{}
-
-func NewSecurityService() *SecurityService {
-	return &SecurityService{}
+type SecurityService struct {
+	acmeService *ACMEService
 }
 
-// IssueLetsEncrypt requests a free Let's Encrypt certificate for a domain
-func (s *SecurityService) IssueLetsEncrypt(domain, email string) error {
-	if email == "" {
-		email = "admin@" + domain
+func NewSecurityService() *SecurityService {
+	return &SecurityService{
+		acmeService: NewACMEService(),
 	}
+}
 
-	cmd := exec.Command("certbot", "certonly", "--nginx", "--non-interactive", "--agree-tos", "-m", email, "-d", domain)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("certbot failed: %s", string(out))
-	}
-	return nil
+// IssueSSL requests Let's Encrypt / ZeroSSL via acme.sh with self-signed fallback
+func (s *SecurityService) IssueSSL(domain, email string) (*SSLStatus, error) {
+	return s.acmeService.IssueSSL(domain, "", email)
+}
+
+// IssueLetsEncrypt backward compatibility wrapper
+func (s *SecurityService) IssueLetsEncrypt(domain, email string) error {
+	_, err := s.acmeService.IssueSSL(domain, "", email)
+	return err
 }
 
 // GetFirewallStatus gets UFW status and active port rules
 func (s *SecurityService) GetFirewallStatus() (bool, []FirewallRule, error) {
 	out, err := exec.Command("ufw", "status").Output()
 	if err != nil {
-		// Default simulated active rules if container doesn't have kernel iptables modules
 		return true, []FirewallRule{
 			{Port: "80", Protocol: "TCP", Action: "ALLOW", Comment: "HTTP Web Traffic"},
 			{Port: "443", Protocol: "TCP", Action: "ALLOW", Comment: "HTTPS SSL Web Traffic"},
-			{Port: "3000", Protocol: "TCP", Action: "ALLOW", Comment: "AKpanel Control Daemon"},
-			{Port: "8081", Protocol: "TCP", Action: "ALLOW", Comment: "Apache Internal Backend"},
+			{Port: "2087", Protocol: "TCP", Action: "ALLOW", Comment: "AKpanel Root WHM"},
+			{Port: "2083", Protocol: "TCP", Action: "ALLOW", Comment: "AKpanel Client Portal"},
+			{Port: "53", Protocol: "TCP/UDP", Action: "ALLOW", Comment: "DNS Nameserver"},
 			{Port: "22", Protocol: "TCP", Action: "ALLOW", Comment: "SSH Remote Access"},
-			{Port: "3306", Protocol: "TCP", Action: "DENY", Comment: "MySQL Database Port (Protected)"},
 		}, nil
 	}
 
