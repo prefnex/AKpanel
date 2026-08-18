@@ -8,7 +8,7 @@ set +e
 # Default Settings
 DEFAULT_REPO="prefnex/AKpanel"
 GITHUB_REPO="${AKPANEL_REPO:-$DEFAULT_REPO}"
-DEFAULT_VERSION="v0.1.2"
+DEFAULT_VERSION="v0.1.3"
 INSTALL_DIR="/opt/akpanel"
 LOG_FILE="/var/log/akpanel-install.log"
 
@@ -480,7 +480,7 @@ task_step5() {
     cat << 'EOF' > "$PROJECT_ROOT/.env"
 APP_NAME=AKpanel
 APP_ENV=production
-APP_KEY=akpanel_production_secret_key_32_chr!
+APP_KEY=akpanel_production_secret_key_32
 APP_DEBUG=false
 
 LOG_CHANNEL=stack
@@ -551,7 +551,7 @@ RestartSec=3
 Environment=APP_ENV=production
 Environment=APP_PORT=2087
 Environment=APP_HOST=0.0.0.0
-Environment=APP_KEY=akpanel_production_secret_key_32_chr!
+Environment=APP_KEY=akpanel_production_secret_key_32
 Environment=DB_CONNECTION=sqlite
 
 [Install]
