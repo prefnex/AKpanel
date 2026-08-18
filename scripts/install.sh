@@ -292,7 +292,51 @@ cat << 'HTML' > /var/www/sites/default/public/index.html
 HTML
 chown -R www-data:www-data /var/www/sites 2>/dev/null || true
 
-print_success "Directory structure and phpMyAdmin SSO initialized."
+# Generate random secure root admin password
+if [ ! -f /etc/akpanel/root.auth ]; then
+    if [ -n "$AKPANEL_PASSWORD" ]; then
+        ROOT_ADMIN_PASS="$AKPANEL_PASSWORD"
+    else
+        ROOT_ADMIN_PASS=$(tr -dc 'A-Za-z0-9#$!&@%' < /dev/urandom 2>/dev/null | head -c 16 || true)
+        [ -z "$ROOT_ADMIN_PASS" ] && ROOT_ADMIN_PASS="AkPanel@$(date +%s | cut -c5-10)!"
+    fi
+
+    SALT=$(date +%s%N | sha256sum | head -c 16)
+    HASH=$(printf "%s:%s:akpanel_root_pepper" "$ROOT_ADMIN_PASS" "$SALT" | sha256sum | awk '{print $1}')
+    
+    cat << EOF > /etc/akpanel/root.auth
+{
+  "username": "root",
+  "salt": "${SALT}",
+  "hash": "${HASH}",
+  "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+    chmod 600 /etc/akpanel/root.auth 2>/dev/null || true
+
+    cat << EOF > /etc/akpanel/credentials.txt
+==============================================================================
+ 👑 AKpanel Initial Root Administrator Credentials
+==============================================================================
+ 🌐 Root WHM Panel  : http://${SERVER_IP}:2087
+ 👤 Username        : root
+ 🔑 Generated Pass  : ${ROOT_ADMIN_PASS}
+ 🌐 Client Portal   : http://${SERVER_IP}:2083
+ 📅 Installation    : $(date)
+==============================================================================
+ Important: Please save these credentials in a secure place.
+==============================================================================
+EOF
+    chmod 600 /etc/akpanel/credentials.txt 2>/dev/null || true
+else
+    if [ -f /etc/akpanel/credentials.txt ]; then
+        ROOT_ADMIN_PASS=$(grep "Generated Pass" /etc/akpanel/credentials.txt 2>/dev/null | awk '{print $NF}' || echo "[Preserved Existing Password]")
+    else
+        ROOT_ADMIN_PASS="[Preserved Existing Password]"
+    fi
+fi
+
+print_success "Directory structure, security keys & random root credentials initialized."
 
 # ------------------------------------------------------------------------------
 # STEP 5: Deploying AKpanel Application & Systemd Service (85%)
@@ -489,8 +533,9 @@ echo -e "${GREEN} 🎉 Congratulations! AKpanel has been installed successfully!
 echo -e "${GREEN}==============================================================================${NC}"
 echo -e "  🌐 Root WHM Panel  : ${YELLOW}http://${SERVER_IP}:2087${NC}"
 echo -e "  🌐 Client User URL : ${YELLOW}http://${SERVER_IP}:2083${NC}"
-echo -e "  👤 Default User    : ${YELLOW}root${NC}"
-echo -e "  🔑 Default Pass    : ${YELLOW}admin123456${NC}"
+echo -e "  👤 Admin Username  : ${YELLOW}root${NC}"
+echo -e "  🔑 Generated Pass  : ${BOLD}${RED}${ROOT_ADMIN_PASS}${NC} ${GREEN}(Randomly Generated)${NC}"
+echo -e "  💾 Credentials File: ${CYAN}/etc/akpanel/credentials.txt${NC}"
 echo -e "  📁 Websites Root   : ${CYAN}/var/www/sites${NC}"
 echo -e "  ⚙️ Config Dir      : ${CYAN}/etc/akpanel${NC}"
 echo -e "  📄 Full Log File   : ${CYAN}${LOG_FILE}${NC}"
