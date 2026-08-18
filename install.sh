@@ -3,7 +3,6 @@
 #  🚀 AKpanel - Official High-Performance Linux Hosting Panel Installer
 # ==============================================================================
 
-# Disable strict exit immediately so warnings or minor repository mismatches don't abort setup
 set +e
 
 # Default settings
@@ -11,6 +10,7 @@ DEFAULT_REPO="prefnex/AKpanel"
 GITHUB_REPO="${AKPANEL_REPO:-$DEFAULT_REPO}"
 DEFAULT_VERSION="v0.1.0"
 INSTALL_DIR="/opt/akpanel"
+LOG_FILE="/var/log/akpanel-install.log"
 
 # Color codes
 RED='\033[0;31m'
@@ -21,6 +21,28 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
+
+mkdir -p /var/log
+echo "=== AKpanel Installation Started: $(date) ===" > "$LOG_FILE"
+
+# Step Logger with percentage
+print_step() {
+    local step_num="$1"
+    local total_steps="$2"
+    local percent="$3"
+    local message="$4"
+    echo -e "  ${PURPLE}[${step_num}/${total_steps}]${NC} ${BOLD}${CYAN}[ ${percent} ]${NC} ${message}"
+}
+
+print_success() {
+    local message="$1"
+    echo -e "      ${GREEN}✓ ${message}${NC}"
+}
+
+print_warning() {
+    local message="$1"
+    echo -e "      ${YELLOW}⚠️ ${message}${NC}"
+}
 
 echo -e "${PURPLE}${BOLD}"
 cat << "EOF"
@@ -34,19 +56,23 @@ cat << "EOF"
 EOF
 echo -e "${NC}"
 
-# 1. Check Root Privileges
+# Check Root Privileges
 if [ "$(id -u)" -ne 0 ]; then
     echo -e "${RED}❌ Error: This script must be run as root!${NC}"
     echo "Please re-run using: sudo bash $0"
     exit 1
 fi
 
-echo -e "${CYAN}▶ [1/6] Pre-flight system checks...${NC}"
+echo -e "${BOLD}🚀 Starting Clean Automated Installation...${NC} (Logs: ${CYAN}${LOG_FILE}${NC})\n"
+
+# ------------------------------------------------------------------------------
+# STEP 1: Pre-Flight System Checks (15%)
+# ------------------------------------------------------------------------------
+print_step "1" "6" " 15% " "🔍 Performing system pre-flight checks & architecture detection..."
+
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
 [ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
-echo -e "  Detected Server IP: ${GREEN}${SERVER_IP}${NC}"
 
-# Detect Architecture
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64|amd64)
@@ -56,102 +82,96 @@ case "$ARCH" in
         PKG_ARCH="arm64"
         ;;
     *)
-        echo -e "${YELLOW}⚠️ Architecture $ARCH detected, defaulting to amd64 binary.${NC}"
         PKG_ARCH="amd64"
         ;;
 esac
-echo -e "  Architecture: ${GREEN}${PKG_ARCH}${NC}"
 
-# 2. Update System and Install Core Utilities
+UBUNTU_CODENAME=$(lsb_release -sc 2>/dev/null || grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2 || echo "jammy")
+print_success "Server IP: ${SERVER_IP} | Architecture: ${PKG_ARCH} | OS: ${UBUNTU_CODENAME}"
+
+# ------------------------------------------------------------------------------
+# STEP 2: Updating APT Repositories & Base Tools (35%)
+# ------------------------------------------------------------------------------
+print_step "2" "6" " 35% " "📦 Updating system repositories & base dependencies..."
+
 export DEBIAN_FRONTEND=noninteractive
+APT_OPTS="-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-if dpkg -s nginx mariadb-server phpmyadmin php8.1-cli bind9 &>/dev/null; then
-    echo -e "\n${GREEN}⚡ [2/6 & 3/6] Pre-installed / cached stack detected!${NC}"
-    echo -e "  ${GREEN}✓ Skipping APT packages download (instant bootstrap).${NC}"
-else
-    echo -e "\n${CYAN}▶ [2/6] Updating APT repositories & installing core tools...${NC}"
-    apt-get update -y || true
-    apt-get install -y \
-        curl \
-        wget \
-        git \
-        unzip \
-        zip \
-        tar \
-        software-properties-common \
-        sudo \
-        procps \
-        net-tools \
-        sqlite3 \
-        libsqlite3-dev \
-        build-essential \
-        ca-certificates \
-        gnupg \
-        lsb-release || true
+apt-get update -y >> "$LOG_FILE" 2>&1 || true
+apt-get install $APT_OPTS \
+    curl wget git unzip zip tar software-properties-common sudo procps net-tools \
+    sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw >> "$LOG_FILE" 2>&1 || true
 
-    # 3. Configure PHP PPA / Sury Repository and Install Stack
-    echo -e "\n${CYAN}▶ [3/6] Installing Nginx, Apache2, Varnish, BIND9, Mail, Multi-PHP & MariaDB...${NC}"
-    
-    # Configure PHP repositories with universal fallback (handles noble, jammy, focal, resolute, etc.)
-    mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d
-    UBUNTU_CODENAME=$(lsb_release -sc 2>/dev/null || echo "")
-    PPA_ADDED=false
+print_success "Base system utilities installed."
 
-    if [[ "$UBUNTU_CODENAME" =~ ^(focal|jammy|noble)$ ]]; then
-        if LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php 2>/dev/null; then
-            PPA_ADDED=true
-        fi
+# ------------------------------------------------------------------------------
+# STEP 3: Installing Web Engines, Multi-PHP & MariaDB (55%)
+# ------------------------------------------------------------------------------
+print_step "3" "6" " 55% " "⚙️ Configuring Web Servers (Nginx/Apache), Multi-PHP & MariaDB..."
+
+# Configure PHP Repository with universal fallback
+mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d
+PPA_ADDED=false
+
+if [[ "$UBUNTU_CODENAME" =~ ^(focal|jammy|noble)$ ]]; then
+    if LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php >> "$LOG_FILE" 2>&1; then
+        PPA_ADDED=true
     fi
-
-    if [ "$PPA_ADDED" = false ]; then
-        echo "  Configuring Ondrej Sury PHP Keyring for universal Ubuntu/Debian compatibility..."
-        curl -fsSL https://packages.sury.org/php/apt.gpg 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>/dev/null || \
-        curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14AA40EC0831756756D7F66C4F4EA0AAE5267A6C" 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>/dev/null || true
-
-        FALLBACK_SUITE="noble"
-        if [ "$UBUNTU_CODENAME" = "focal" ]; then
-            FALLBACK_SUITE="focal"
-        elif [ "$UBUNTU_CODENAME" = "jammy" ]; then
-            FALLBACK_SUITE="jammy"
-        fi
-
-        echo "deb [signed-by=/etc/apt/keyrings/ondrej-php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu ${FALLBACK_SUITE} main" > /etc/apt/sources.list.d/ondrej-ubuntu-php.list
-    fi
-
-    apt-get update -y || true
-
-    # Install Core Stack
-    apt-get install -y nginx apache2 varnish mariadb-server bind9 bind9utils bind9-doc dnsutils postfix postfix-pcre dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server || true
-    a2enmod rewrite proxy proxy_fcgi proxy_http headers 2>/dev/null || true
-
-    # Install Multi-PHP (8.1, 8.2, 8.3) with database extensions & phpMyAdmin
-    apt-get install -y \
-        php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
-        php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
-        php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
-        phpmyadmin 2>/dev/null || \
-    apt-get install -y \
-        php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd \
-        phpmyadmin 2>/dev/null || true
 fi
 
-# Configure default MariaDB ak_admin user
-service mariadb start 2>/dev/null || service mysql start 2>/dev/null || systemctl start mariadb 2>/dev/null || true
+if [ "$PPA_ADDED" = false ]; then
+    curl -fsSL https://packages.sury.org/php/apt.gpg 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>>"$LOG_FILE" || \
+    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14AA40EC0831756756D7F66C4F4EA0AAE5267A6C" 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>>"$LOG_FILE" || true
+
+    FALLBACK_SUITE="noble"
+    [ "$UBUNTU_CODENAME" = "focal" ] && FALLBACK_SUITE="focal"
+    [ "$UBUNTU_CODENAME" = "jammy" ] && FALLBACK_SUITE="jammy"
+
+    echo "deb [signed-by=/etc/apt/keyrings/ondrej-php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu ${FALLBACK_SUITE} main" > /etc/apt/sources.list.d/ondrej-ubuntu-php.list
+fi
+
+apt-get update -y >> "$LOG_FILE" 2>&1 || true
+
+# Install Core Stack Packages
+apt-get install $APT_OPTS \
+    nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
+    dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server >> "$LOG_FILE" 2>&1 || true
+
+a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
+
+# Install Focused Multi-PHP (8.2 & 8.3 & 8.1)
+apt-get install $APT_OPTS \
+    php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
+    php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
+    php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
+    phpmyadmin >> "$LOG_FILE" 2>&1 || \
+apt-get install $APT_OPTS \
+    php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd phpmyadmin >> "$LOG_FILE" 2>&1 || true
+
+print_success "Nginx, Multi-PHP (8.1, 8.2, 8.3), and MariaDB configured."
+
+# ------------------------------------------------------------------------------
+# STEP 4: Setting up Directories, DBs & phpMyAdmin SSO (70%)
+# ------------------------------------------------------------------------------
+print_step "4" "6" " 70% " "📁 Setting up system directories, Database auth & phpMyAdmin SSO..."
+
+# Start MariaDB & create internal users
+service mariadb start >> "$LOG_FILE" 2>&1 || service mysql start >> "$LOG_FILE" 2>&1 || systemctl start mariadb >> "$LOG_FILE" 2>&1 || true
 sleep 1
 
 run_mysql() {
     mysql -u root -pakpanel123 "$@" 2>/dev/null || mysql -u root "$@" 2>/dev/null || mysql "$@" 2>/dev/null || true
 }
 
-run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'%' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;"
-run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'localhost' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;"
-run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'127.0.0.1' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;"
-run_mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'akpanel123'; FLUSH PRIVILEGES;"
+run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'%' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
+run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'localhost' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
+run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'127.0.0.1' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
+run_mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'akpanel123'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
 
-# Configure phpMyAdmin Storage Database & Single Sign-On (SSO)
-run_mysql -e "CREATE DATABASE IF NOT EXISTS phpmyadmin DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'pma'@'localhost'; CREATE USER IF NOT EXISTS 'phpmyadmin'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'phpmyadmin'@'localhost'; FLUSH PRIVILEGES;"
+# phpMyAdmin SSO & DB setup
+run_mysql -e "CREATE DATABASE IF NOT EXISTS phpmyadmin DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'pma'@'localhost'; CREATE USER IF NOT EXISTS 'phpmyadmin'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'phpmyadmin'@'localhost'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
 if [ -f /usr/share/phpmyadmin/sql/create_tables.sql ]; then
-    run_mysql phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql 2>/dev/null || true
+    run_mysql phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql >> "$LOG_FILE" 2>&1 || true
 fi
 
 cat << 'EOF' > /etc/phpmyadmin/config-db.php
@@ -181,49 +201,17 @@ $cfg['Servers'][1]['AllowNoPassword'] = false;
 $cfg['Servers'][1]['controluser'] = 'pma';
 $cfg['Servers'][1]['controlpass'] = 'pma_akpanel_secret_pass';
 $cfg['Servers'][1]['pmadb'] = 'phpmyadmin';
-$cfg['Servers'][1]['bookmarktable'] = 'pma__bookmark';
-$cfg['Servers'][1]['relation'] = 'pma__relation';
-$cfg['Servers'][1]['table_info'] = 'pma__table_info';
-$cfg['Servers'][1]['table_coords'] = 'pma__table_coords';
-$cfg['Servers'][1]['pdf_pages'] = 'pma__pdf_pages';
-$cfg['Servers'][1]['column_info'] = 'pma__column_info';
-$cfg['Servers'][1]['history'] = 'pma__history';
-$cfg['Servers'][1]['table_uiprefs'] = 'pma__table_uiprefs';
-$cfg['Servers'][1]['tracking'] = 'pma__tracking';
-$cfg['Servers'][1]['userconfig'] = 'pma__userconfig';
-$cfg['Servers'][1]['recent'] = 'pma__recent';
-$cfg['Servers'][1]['favorite'] = 'pma__favorite';
-$cfg['Servers'][1]['users'] = 'pma__users';
-$cfg['Servers'][1]['usergroups'] = 'pma__usergroups';
-$cfg['Servers'][1]['navigationhiding'] = 'pma__navigationhiding';
-$cfg['Servers'][1]['savedsearches'] = 'pma__savedsearches';
-$cfg['Servers'][1]['central_columns'] = 'pma__central_columns';
-$cfg['Servers'][1]['designer_settings'] = 'pma__designer_settings';
-$cfg['Servers'][1]['export_templates'] = 'pma__export_templates';
 $cfg['Servers'][1]['SessionTimeToLive'] = 86400;
-
-$cfg['PmaNoRelation_DisableWarning'] = true;
-$cfg['ServerLibraryDifference_DisableWarning'] = true;
 $cfg['SessionSavePath'] = '/var/lib/phpmyadmin/sessions';
 $cfg['CookieSameSite'] = 'Lax';
 $cfg['CookieSecure'] = false;
 $cfg['CookiePath'] = '/';
-$cfg['VersionCheck'] = false;
-$cfg['SendErrorReports'] = 'never';
-$cfg['CheckConfigurationPermissions'] = false;
 $cfg['LoginCookieValidity'] = 86400;
 $cfg['LoginCookieValidityDisableWarning'] = true;
 $cfg['ExecTimeLimit'] = 300;
 EOF
 
-# Sync session.gc_maxlifetime in PHP INIs
-for ini in /etc/php/*/cli/php.ini /etc/php/*/fpm/php.ini; do
-    if [ -f "$ini" ]; then
-        sed -i 's/^session.gc_maxlifetime = .*/session.gc_maxlifetime = 86400/' "$ini" 2>/dev/null || true
-    fi
-done
-
-# phpMyAdmin Single Sign-On PHP Handler
+# phpMyAdmin SSO Handler
 cat << 'EOF' > /usr/share/phpmyadmin/signon.php
 <?php
 session_name('AKpanelPMA');
@@ -258,7 +246,6 @@ if (!empty($user) && !empty($pass)) {
     exit;
 }
 
-// Clear any failed/stale session to avoid loop
 unset($_SESSION['PMA_single_signon_user']);
 unset($_SESSION['PMA_single_signon_password']);
 session_write_close();
@@ -274,14 +261,11 @@ EOF
 chmod 644 /usr/share/phpmyadmin/signon.php 2>/dev/null || true
 ln -sfn /usr/share/phpmyadmin /usr/share/phpmyadmin/phpmyadmin 2>/dev/null || true
 
-# 4. Setup AKpanel Directories
-echo -e "\n${CYAN}▶ [4/6] Setting up AKpanel directory structures...${NC}"
-mkdir -p /etc/akpanel /var/www/sites /var/log/akpanel /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/bind/zones /etc/opendkim/keys /var/vmail "$INSTALL_DIR"
+# Setup default directories & placeholder website
+mkdir -p /etc/akpanel /var/www/sites/default/public /var/log/akpanel /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/bind/zones /etc/opendkim/keys /var/vmail "$INSTALL_DIR"
 chmod 700 /etc/opendkim/keys 2>/dev/null || true
 chmod 755 /var/vmail 2>/dev/null || true
 
-# Setup default placeholder site
-mkdir -p /var/www/sites/default/public
 cat << 'HTML' > /var/www/sites/default/public/index.html
 <!DOCTYPE html>
 <html lang="en">
@@ -306,21 +290,21 @@ cat << 'HTML' > /var/www/sites/default/public/index.html
 </body>
 </html>
 HTML
-
 chown -R www-data:www-data /var/www/sites 2>/dev/null || true
 
-# 5. Fetch & Install AKpanel Application
-echo -e "\n${CYAN}▶ [5/6] Deploying AKpanel application...${NC}"
+print_success "Directory structure and phpMyAdmin SSO initialized."
 
-# Case A: Local development repository detected
+# ------------------------------------------------------------------------------
+# STEP 5: Deploying AKpanel Application & Systemd Service (85%)
+# ------------------------------------------------------------------------------
+print_step "5" "6" " 85% " "🚀 Downloading & launching AKpanel Release binary..."
+
+# Check if pre-compiled or local
 if [ -f "$(pwd)/main.go" ] && [ -f "$(pwd)/go.mod" ]; then
-    echo -e "  ${GREEN}✓ Local repository detected at $(pwd). Using local source.${NC}"
     PROJECT_ROOT="$(pwd)"
 elif [ -d "/root/AKpanel" ] && [ -f "/root/AKpanel/main.go" ]; then
     PROJECT_ROOT="/root/AKpanel"
 else
-    # Case B: Download pre-built release package from GitHub
-    echo "  Resolving latest release package from GitHub..."
     TARGET_TAG="${AKPANEL_VERSION:-}"
     if [ -z "$TARGET_TAG" ] || [ "$TARGET_TAG" = "latest" ]; then
         LATEST_JSON=$(curl -sSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null || true)
@@ -335,87 +319,55 @@ else
     RELEASE_TAR="akpanel_${TARGET_TAG}_linux_${PKG_ARCH}.tar.gz"
     DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${TARGET_TAG}/${RELEASE_TAR}"
     
-    echo "  Downloading ${RELEASE_TAR} (${TARGET_TAG})..."
     TEMP_DIR=$(mktemp -d)
-    if curl -sSL -f "$DOWNLOAD_URL" -o "${TEMP_DIR}/${RELEASE_TAR}" 2>/dev/null; then
-        echo -e "  ${GREEN}✓ Downloaded official release bundle successfully.${NC}"
+    if curl -sSL -f "$DOWNLOAD_URL" -o "${TEMP_DIR}/${RELEASE_TAR}" >> "$LOG_FILE" 2>&1; then
         mkdir -p "$INSTALL_DIR"
-        tar -xzf "${TEMP_DIR}/${RELEASE_TAR}" -C "$INSTALL_DIR" 2>/dev/null || true
+        tar -xzf "${TEMP_DIR}/${RELEASE_TAR}" -C "$INSTALL_DIR" >> "$LOG_FILE" 2>&1 || true
         rm -rf "$TEMP_DIR"
         PROJECT_ROOT="$INSTALL_DIR"
     else
-        echo -e "  ${YELLOW}⚠️ Release bundle download unavailable. Falling back to Git clone...${NC}"
         mkdir -p "$INSTALL_DIR"
-        git clone "https://github.com/${GITHUB_REPO}.git" "$INSTALL_DIR" 2>/dev/null || true
+        git clone "https://github.com/${GITHUB_REPO}.git" "$INSTALL_DIR" >> "$LOG_FILE" 2>&1 || true
         PROJECT_ROOT="$INSTALL_DIR"
     fi
 fi
 
 cd "$PROJECT_ROOT"
 
-# Ensure binary is in place
+# Ensure executable binary
 if [ -f "$PROJECT_ROOT/akpanel" ]; then
     cp "$PROJECT_ROOT/akpanel" /usr/local/bin/akpanel
-    chmod +x /usr/local/bin/akpanel
 elif [ -f "$PROJECT_ROOT/akpanel-bin" ]; then
     cp "$PROJECT_ROOT/akpanel-bin" /usr/local/bin/akpanel
-    chmod +x /usr/local/bin/akpanel
 else
-    # Build from source if binary is not present
     if ! command -v go &> /dev/null; then
-        echo "  Installing Go runtime for compilation..."
         wget -q https://go.dev/dl/go1.23.6.linux-amd64.tar.gz
-        tar -C /usr/local -xzf go1.23.6.linux-amd64.tar.gz 2>/dev/null || true
+        tar -C /usr/local -xzf go1.23.6.linux-amd64.tar.gz >> "$LOG_FILE" 2>&1 || true
         rm -f go1.23.6.linux-amd64.tar.gz
         export PATH="/usr/local/go/bin:${PATH}"
     fi
 
     if command -v npm &> /dev/null && [ ! -f "public/build/app.js" ]; then
-        echo "  Building React frontend with Vite..."
-        npm install && npm run build || true
+        npm install >> "$LOG_FILE" 2>&1 && npm run build >> "$LOG_FILE" 2>&1 || true
     fi
 
-    echo "  Compiling AKpanel Go binary..."
-    go mod tidy 2>/dev/null || true
-    go build -ldflags="-s -w" -o /usr/local/bin/akpanel main.go
+    go mod tidy >> "$LOG_FILE" 2>&1 || true
+    go build -ldflags="-s -w" -o /usr/local/bin/akpanel main.go >> "$LOG_FILE" 2>&1 || true
 fi
 
 chmod +x /usr/local/bin/akpanel 2>/dev/null || true
 
-# 6. Setup Systemd Service & Start All Daemons
-echo -e "\n${CYAN}▶ [6/6] Starting system services (Nginx, Apache, PHP, Systemd)...${NC}"
+# Start System Daemons
+service apache2 start >> "$LOG_FILE" 2>&1 || systemctl start apache2 >> "$LOG_FILE" 2>&1 || true
+service nginx start >> "$LOG_FILE" 2>&1 || systemctl start nginx >> "$LOG_FILE" 2>&1 || true
+service varnish start >> "$LOG_FILE" 2>&1 || systemctl start varnish >> "$LOG_FILE" 2>&1 || true
+service redis-server start >> "$LOG_FILE" 2>&1 || systemctl start redis-server >> "$LOG_FILE" 2>&1 || true
 
-# Configure Apache port 8081
-echo "Listen 8081" > /etc/apache2/ports.conf 2>/dev/null || true
-echo "ServerName localhost" >> /etc/apache2/apache2.conf 2>/dev/null || true
-service apache2 start 2>/dev/null || systemctl start apache2 2>/dev/null || true
-
-# Start Web Server & Cache
-service nginx start 2>/dev/null || systemctl start nginx 2>/dev/null || nginx 2>/dev/null || true
-service varnish start 2>/dev/null || systemctl start varnish 2>/dev/null || true
-service redis-server start 2>/dev/null || systemctl start redis-server 2>/dev/null || true
-
-# Start PHP-FPM
 for v in 8.1 8.2 8.3; do
-    service "php${v}-fpm" start 2>/dev/null || systemctl start "php${v}-fpm" 2>/dev/null || true
+    service "php${v}-fpm" start >> "$LOG_FILE" 2>&1 || systemctl start "php${v}-fpm" >> "$LOG_FILE" 2>&1 || true
 done
-service php-fpm start 2>/dev/null || systemctl start php-fpm 2>/dev/null || true
 
-# Configure UFW Firewall on VPS if active
-if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    echo "  Opening firewall ports for AKpanel & services..."
-    ufw allow 2087/tcp comment "AKpanel Root WHM" 2>/dev/null || true
-    ufw allow 2083/tcp comment "AKpanel Client Portal" 2>/dev/null || true
-    ufw allow 80/tcp comment "HTTP Web" 2>/dev/null || true
-    ufw allow 443/tcp comment "HTTPS SSL" 2>/dev/null || true
-    ufw allow 21/tcp comment "FTP" 2>/dev/null || true
-    ufw allow 53 comment "DNS" 2>/dev/null || true
-    ufw allow 25/tcp comment "SMTP Mail" 2>/dev/null || true
-    ufw allow 587/tcp comment "SMTP Submission" 2>/dev/null || true
-    ufw allow 993/tcp comment "IMAP SSL" 2>/dev/null || true
-fi
-
-# Create Systemd service
+# Create and Start Systemd service
 if [ -d "/etc/systemd/system" ]; then
     cat << EOF > /etc/systemd/system/akpanel.service
 [Unit]
@@ -437,26 +389,48 @@ Environment=APP_HOST=0.0.0.0
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl enable akpanel 2>/dev/null || true
-    systemctl restart akpanel 2>/dev/null || true
+    systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
+    systemctl enable akpanel >> "$LOG_FILE" 2>&1 || true
+    systemctl restart akpanel >> "$LOG_FILE" 2>&1 || true
 fi
 
-# Ensure background daemon is active if systemctl not present (e.g. docker container)
+# Direct daemon fallback
 if ! pgrep -f "/usr/local/bin/akpanel" > /dev/null; then
-    echo "  Starting AKpanel daemon in background on port 2087 & 2083..."
     cd "$PROJECT_ROOT"
     nohup /usr/local/bin/akpanel > /var/log/akpanel/output.log 2>&1 &
     sleep 2
 fi
 
-# 7. Configure Dynamic SSH Login Banner (MOTD)
-echo -e "\n${CYAN}▶ Setting up AKpanel SSH Welcome Banner...${NC}"
+print_success "AKpanel core service launched and active on Port 2087 & 2083."
+
+# ------------------------------------------------------------------------------
+# STEP 6: Configuring Firewall & Opening Essential Ports (100%)
+# ------------------------------------------------------------------------------
+print_step "6" "6" "100% " "🛡️ Configuring Firewall (UFW) & opening all essential ports..."
+
+if command -v ufw &>/dev/null; then
+    # ALWAYS ensure SSH is open first to prevent lockouts
+    ufw allow 22/tcp comment "SSH Remote Access" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 2087/tcp comment "AKpanel Root WHM" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 2083/tcp comment "AKpanel Client Portal" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 80/tcp comment "HTTP Web" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 443/tcp comment "HTTPS SSL" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 21/tcp comment "FTP Service" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 53 comment "DNS Service" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 25/tcp comment "SMTP Mail" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 587/tcp comment "SMTP Submission" >> "$LOG_FILE" 2>&1 || true
+    ufw allow 993/tcp comment "IMAP SSL" >> "$LOG_FILE" 2>&1 || true
+    
+    if ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw reload >> "$LOG_FILE" 2>&1 || true
+    fi
+fi
+
+# Dynamic SSH Login Banner (MOTD)
 mkdir -p /etc/update-motd.d /etc/profile.d
 
 cat << 'MOTD_EOF' > /etc/profile.d/00-akpanel-motd.sh
 #!/bin/bash
-# Only run in interactive shell
 [ -z "$PS1" ] && return
 
 CYAN='\033[0;36m'
@@ -508,6 +482,8 @@ chmod +x /etc/profile.d/00-akpanel-motd.sh 2>/dev/null || true
 cp /etc/profile.d/00-akpanel-motd.sh /etc/update-motd.d/99-akpanel 2>/dev/null || true
 chmod +x /etc/update-motd.d/99-akpanel 2>/dev/null || true
 
+print_success "Firewall rules applied & SSH Welcome Banner activated."
+
 echo -e "\n${GREEN}==============================================================================${NC}"
 echo -e "${GREEN} 🎉 Congratulations! AKpanel has been installed successfully!${NC}"
 echo -e "${GREEN}==============================================================================${NC}"
@@ -517,5 +493,5 @@ echo -e "  👤 Default User    : ${YELLOW}root${NC}"
 echo -e "  🔑 Default Pass    : ${YELLOW}admin123456${NC}"
 echo -e "  📁 Websites Root   : ${CYAN}/var/www/sites${NC}"
 echo -e "  ⚙️ Config Dir      : ${CYAN}/etc/akpanel${NC}"
-echo -e "  📄 Output Logs     : ${CYAN}/var/log/akpanel/output.log${NC}"
+echo -e "  📄 Full Log File   : ${CYAN}${LOG_FILE}${NC}"
 echo -e "${GREEN}==============================================================================${NC}\n"
