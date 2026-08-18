@@ -3,7 +3,8 @@
 #  🚀 AKpanel - Official High-Performance Linux Hosting Panel Installer
 # ==============================================================================
 
-set -e
+# Disable strict exit immediately so warnings or minor repository mismatches don't abort setup
+set +e
 
 # Default settings
 DEFAULT_REPO="prefnex/AKpanel"
@@ -18,9 +19,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-echo -e "${PURPLE}"
+echo -e "${PURPLE}${BOLD}"
 cat << "EOF"
     _    _  ______                  _ 
    / \  | |/ /  _ \ __ _ _ __   ___| |
@@ -68,7 +70,7 @@ if dpkg -s nginx mariadb-server phpmyadmin php8.1-cli bind9 &>/dev/null; then
     echo -e "  ${GREEN}✓ Skipping APT packages download (instant bootstrap).${NC}"
 else
     echo -e "\n${CYAN}▶ [2/6] Updating APT repositories & installing core tools...${NC}"
-    apt-get update -y
+    apt-get update -y || true
     apt-get install -y \
         curl \
         wget \
@@ -83,27 +85,58 @@ else
         sqlite3 \
         libsqlite3-dev \
         build-essential \
-        ca-certificates
+        ca-certificates \
+        gnupg \
+        lsb-release || true
 
-    # 3. Install Web Server Engines, DNS, Mail, Multi-PHP & MariaDB
-    echo -e "\n${CYAN}▶ [3/6] Installing Nginx, Apache2, Varnish, BIND9, Postfix, Dovecot, Multi-PHP & MariaDB...${NC}"
+    # 3. Configure PHP PPA / Sury Repository and Install Stack
+    echo -e "\n${CYAN}▶ [3/6] Installing Nginx, Apache2, Varnish, BIND9, Mail, Multi-PHP & MariaDB...${NC}"
+    
+    # Configure PHP repositories with universal fallback (handles noble, jammy, focal, resolute, etc.)
+    mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d
+    UBUNTU_CODENAME=$(lsb_release -sc 2>/dev/null || echo "")
+    PPA_ADDED=false
+
+    if [[ "$UBUNTU_CODENAME" =~ ^(focal|jammy|noble)$ ]]; then
+        if LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php 2>/dev/null; then
+            PPA_ADDED=true
+        fi
+    fi
+
+    if [ "$PPA_ADDED" = false ]; then
+        echo "  Configuring Ondrej Sury PHP Keyring for universal Ubuntu/Debian compatibility..."
+        curl -fsSL https://packages.sury.org/php/apt.gpg 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>/dev/null || \
+        curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14AA40EC0831756756D7F66C4F4EA0AAE5267A6C" 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>/dev/null || true
+
+        FALLBACK_SUITE="noble"
+        if [ "$UBUNTU_CODENAME" = "focal" ]; then
+            FALLBACK_SUITE="focal"
+        elif [ "$UBUNTU_CODENAME" = "jammy" ]; then
+            FALLBACK_SUITE="jammy"
+        fi
+
+        echo "deb [signed-by=/etc/apt/keyrings/ondrej-php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu ${FALLBACK_SUITE} main" > /etc/apt/sources.list.d/ondrej-ubuntu-php.list
+    fi
+
+    apt-get update -y || true
+
+    # Install Core Stack
     apt-get install -y nginx apache2 varnish mariadb-server bind9 bind9utils bind9-doc dnsutils postfix postfix-pcre dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server || true
     a2enmod rewrite proxy proxy_fcgi proxy_http headers 2>/dev/null || true
-
-    # Add PHP PPA
-    LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php || true
-    apt-get update -y
 
     # Install Multi-PHP (8.1, 8.2, 8.3) with database extensions & phpMyAdmin
     apt-get install -y \
         php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
         php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
         php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
-        phpmyadmin || true
+        phpmyadmin 2>/dev/null || \
+    apt-get install -y \
+        php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd \
+        phpmyadmin 2>/dev/null || true
 fi
 
 # Configure default MariaDB ak_admin user
-service mariadb start 2>/dev/null || service mysql start 2>/dev/null || true
+service mariadb start 2>/dev/null || service mysql start 2>/dev/null || systemctl start mariadb 2>/dev/null || true
 sleep 1
 
 run_mysql() {
@@ -267,7 +300,7 @@ cat << 'HTML' > /var/www/sites/default/public/index.html
     <div class="card">
         <div class="badge">AKpanel Server</div>
         <h1>Server Ready 🚀</h1>
-        <p>Nginx and Multi-PHP are running smoothly on your Ubuntu 22.04 server.</p>
+        <p>Nginx and Multi-PHP are running smoothly on your server.</p>
         <p>You can manage websites and databases from your <strong>AKpanel Dashboard</strong>.</p>
     </div>
 </body>
@@ -278,8 +311,6 @@ chown -R www-data:www-data /var/www/sites 2>/dev/null || true
 
 # 5. Fetch & Install AKpanel Application
 echo -e "\n${CYAN}▶ [5/6] Deploying AKpanel application...${NC}"
-
-INSTALLED_FROM_RELEASE=false
 
 # Case A: Local development repository detected
 if [ -f "$(pwd)/main.go" ] && [ -f "$(pwd)/go.mod" ]; then
@@ -309,10 +340,9 @@ else
     if curl -sSL -f "$DOWNLOAD_URL" -o "${TEMP_DIR}/${RELEASE_TAR}" 2>/dev/null; then
         echo -e "  ${GREEN}✓ Downloaded official release bundle successfully.${NC}"
         mkdir -p "$INSTALL_DIR"
-        tar -xzf "${TEMP_DIR}/${RELEASE_TAR}" -C "$INSTALL_DIR"
+        tar -xzf "${TEMP_DIR}/${RELEASE_TAR}" -C "$INSTALL_DIR" 2>/dev/null || true
         rm -rf "$TEMP_DIR"
         PROJECT_ROOT="$INSTALL_DIR"
-        INSTALLED_FROM_RELEASE=true
     else
         echo -e "  ${YELLOW}⚠️ Release bundle download unavailable. Falling back to Git clone...${NC}"
         mkdir -p "$INSTALL_DIR"
@@ -335,7 +365,7 @@ else
     if ! command -v go &> /dev/null; then
         echo "  Installing Go runtime for compilation..."
         wget -q https://go.dev/dl/go1.23.6.linux-amd64.tar.gz
-        tar -C /usr/local -xzf go1.23.6.linux-amd64.tar.gz
+        tar -C /usr/local -xzf go1.23.6.linux-amd64.tar.gz 2>/dev/null || true
         rm -f go1.23.6.linux-amd64.tar.gz
         export PATH="/usr/local/go/bin:${PATH}"
     fi
@@ -350,7 +380,7 @@ else
     go build -ldflags="-s -w" -o /usr/local/bin/akpanel main.go
 fi
 
-chmod +x /usr/local/bin/akpanel
+chmod +x /usr/local/bin/akpanel 2>/dev/null || true
 
 # 6. Setup Systemd Service & Start All Daemons
 echo -e "\n${CYAN}▶ [6/6] Starting system services (Nginx, Apache, PHP, Systemd)...${NC}"
@@ -358,17 +388,18 @@ echo -e "\n${CYAN}▶ [6/6] Starting system services (Nginx, Apache, PHP, System
 # Configure Apache port 8081
 echo "Listen 8081" > /etc/apache2/ports.conf 2>/dev/null || true
 echo "ServerName localhost" >> /etc/apache2/apache2.conf 2>/dev/null || true
-service apache2 start 2>/dev/null || true
+service apache2 start 2>/dev/null || systemctl start apache2 2>/dev/null || true
 
 # Start Web Server & Cache
-service nginx start 2>/dev/null || nginx 2>/dev/null || true
-service varnish start 2>/dev/null || true
-service redis-server start 2>/dev/null || true
+service nginx start 2>/dev/null || systemctl start nginx 2>/dev/null || nginx 2>/dev/null || true
+service varnish start 2>/dev/null || systemctl start varnish 2>/dev/null || true
+service redis-server start 2>/dev/null || systemctl start redis-server 2>/dev/null || true
 
 # Start PHP-FPM
-service php8.1-fpm start 2>/dev/null || true
-service php8.2-fpm start 2>/dev/null || true
-service php8.3-fpm start 2>/dev/null || true
+for v in 8.1 8.2 8.3; do
+    service "php${v}-fpm" start 2>/dev/null || systemctl start "php${v}-fpm" 2>/dev/null || true
+done
+service php-fpm start 2>/dev/null || systemctl start php-fpm 2>/dev/null || true
 
 # Configure UFW Firewall on VPS if active
 if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -418,6 +449,64 @@ if ! pgrep -f "/usr/local/bin/akpanel" > /dev/null; then
     nohup /usr/local/bin/akpanel > /var/log/akpanel/output.log 2>&1 &
     sleep 2
 fi
+
+# 7. Configure Dynamic SSH Login Banner (MOTD)
+echo -e "\n${CYAN}▶ Setting up AKpanel SSH Welcome Banner...${NC}"
+mkdir -p /etc/update-motd.d /etc/profile.d
+
+cat << 'MOTD_EOF' > /etc/profile.d/00-akpanel-motd.sh
+#!/bin/bash
+# Only run in interactive shell
+[ -z "$PS1" ] && return
+
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+PURPLE='\033[0;35m'
+RED='\033[0;31m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+[ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
+MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+MEM_USED=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}')
+DISK_TOTAL=$(df -h / 2>/dev/null | awk 'NR==2{print $2}')
+DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2{print $3}')
+
+if systemctl is-active --quiet akpanel 2>/dev/null || pgrep -f "/usr/local/bin/akpanel" >/dev/null; then
+    PANEL_STATUS="${GREEN}ONLINE / ACTIVE ●${NC}"
+else
+    PANEL_STATUS="${RED}STOPPED ○${NC}"
+fi
+
+echo -e "${PURPLE}${BOLD}"
+cat << "BANNER"
+    _    _  ______                  _ 
+   / \  | |/ /  _ \ __ _ _ __   ___| |
+  / _ \ | ' /| |_) / _` | '_ \ / _ \ |
+ / ___ \| . \|  __/ (_| | | | |  __/ |
+/_/   \_\_|\_\_|   \__,_|_| |_|\___|_|
+BANNER
+echo -e "${CYAN}  Next-Gen Cloud Server & Web Hosting Control Panel${NC}\n"
+
+echo -e "${BOLD}🌐 Access Points & Control Panels:${NC}"
+echo -e "  👑 ${BOLD}Root / WHM Admin :${NC} ${YELLOW}http://${SERVER_IP}:2087${NC}"
+echo -e "  👤 ${BOLD}Client Hosting   :${NC} ${YELLOW}http://${SERVER_IP}:2083${NC}"
+echo -e "  🌐 ${BOLD}Web Sites (HTTP) :${NC} ${YELLOW}http://${SERVER_IP}:80${NC}"
+echo ""
+echo -e "${BOLD}📊 Server Health & Telemetry:${NC}"
+echo -e "  • ${BOLD}Panel Status:${NC} ${PANEL_STATUS}"
+echo -e "  • ${BOLD}Memory Usage:${NC} ${GREEN}${MEM_USED} MB${NC} / ${MEM_TOTAL} MB"
+echo -e "  • ${BOLD}Disk Space  :${NC} ${GREEN}${DISK_USED}${NC} / ${DISK_TOTAL}"
+echo -e "  • ${BOLD}Server IP   :${NC} ${CYAN}${SERVER_IP}${NC}"
+echo ""
+echo -e "${PURPLE}───────────────────────────────────────────────────────────────────────────────${NC}\n"
+MOTD_EOF
+
+chmod +x /etc/profile.d/00-akpanel-motd.sh 2>/dev/null || true
+cp /etc/profile.d/00-akpanel-motd.sh /etc/update-motd.d/99-akpanel 2>/dev/null || true
+chmod +x /etc/update-motd.d/99-akpanel 2>/dev/null || true
 
 echo -e "\n${GREEN}==============================================================================${NC}"
 echo -e "${GREEN} 🎉 Congratulations! AKpanel has been installed successfully!${NC}"
