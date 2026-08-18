@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { 
+import {
   Users, 
   UserPlus, 
   Trash2, 
@@ -24,7 +24,8 @@ import {
   FileCode,
   Sliders,
   Settings,
-  Edit2
+  Edit2,
+  Zap
 } from 'lucide-react';
 import { Card } from './ui/card';
 import { Button } from './ui/button';

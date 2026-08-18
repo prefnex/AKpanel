@@ -28,7 +28,8 @@ import {
   Package,
   HardDrive,
   Mail,
-  Network
+  Network,
+  Clock, ExternalLink, Inbox, Radio, Send
 } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Avatar, AvatarFallback } from './ui/avatar';

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { 
+import {
   Lock, 
   ShieldCheck, 
   RefreshCw, 
@@ -14,7 +14,8 @@ import {
   Zap, 
   Calendar,
   Search,
-  Upload
+  Upload,
+  RotateCw
 } from 'lucide-react';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
