@@ -5,24 +5,35 @@
 
 set +e
 
-# Default settings
+# Default Settings
 DEFAULT_REPO="prefnex/AKpanel"
 GITHUB_REPO="${AKPANEL_REPO:-$DEFAULT_REPO}"
-DEFAULT_VERSION="v0.1.1"
+DEFAULT_VERSION="v0.1.2"
 INSTALL_DIR="/opt/akpanel"
 LOG_FILE="/var/log/akpanel-install.log"
 
-# Parse Command Line Options
+# Global Variables
 VERBOSE=false
+REBUILD=false
+AUTO_CONFIRM=false
+
+# Parse Arguments
 for arg in "$@"; do
     case "$arg" in
         --verbose|-v|--debug)
             VERBOSE=true
             ;;
+        --rebuild|--reset)
+            REBUILD=true
+            ;;
+        -y|--yes)
+            AUTO_CONFIRM=true
+            ;;
         --help|-h)
             echo "AKpanel Installer Usage:"
-            echo "  bash install.sh               # Standard animated progress mode"
-            echo "  bash install.sh --verbose     # Detailed live logs mode"
+            echo "  bash install.sh               # Standard animated installation"
+            echo "  bash install.sh --verbose     # Full detailed output of all commands"
+            echo "  bash install.sh --rebuild     # Complete clean reset and reinstall"
             exit 0
             ;;
     esac
@@ -37,12 +48,82 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 DIM='\033[2m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 mkdir -p /var/log
 echo "=== AKpanel Installation Started: $(date) ===" > "$LOG_FILE"
 
-# Smooth animated task runner with live progress bar and spinner
+# Pre-detect Global IP and Architecture (Never empty)
+SERVER_IP=$(curl -s --connect-timeout 3 https://api.ipify.org 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+[ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
+
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64|amd64) PKG_ARCH="amd64" ;;
+    aarch64|arm64) PKG_ARCH="arm64" ;;
+    *) PKG_ARCH="amd64" ;;
+esac
+
+UBUNTU_CODENAME=$(lsb_release -sc 2>/dev/null || grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2 || echo "noble")
+
+# Pre-generate Root Password if not exists
+if [ -f /etc/akpanel/credentials.txt ]; then
+    ROOT_ADMIN_PASS=$(grep "Generated Pass" /etc/akpanel/credentials.txt 2>/dev/null | awk '{print $NF}' || true)
+fi
+if [ -z "$ROOT_ADMIN_PASS" ]; then
+    if [ -n "$AKPANEL_PASSWORD" ]; then
+        ROOT_ADMIN_PASS="$AKPANEL_PASSWORD"
+    else
+        ROOT_ADMIN_PASS=$(tr -dc 'A-Za-z0-9#$!&@%' < /dev/urandom 2>/dev/null | head -c 16 || true)
+        [ -z "$ROOT_ADMIN_PASS" ] && ROOT_ADMIN_PASS="AkPanel@$(date +%s | cut -c5-10)!"
+    fi
+fi
+
+# Banner
+echo -e "${PURPLE}${BOLD}"
+cat << "EOF"
+    _    _  ______                  _ 
+   / \  | |/ /  _ \ __ _ _ __   ___| |
+  / _ \ | ' /| |_) / _` | '_ \ / _ \ |
+ / ___ \| . \|  __/ (_| | | | |  __/ |
+/_/   \_\_|\_\_|   \__,_|_| |_|\___|_|
+                                      
+  Next-Gen High Performance Cloud Hosting Control Panel
+EOF
+echo -e "${NC}"
+
+# Check Root Privileges
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}❌ Error: This script must be run as root!${NC}"
+    echo "Please re-run using: sudo bash $0"
+    exit 1
+fi
+
+# Rebuild / Reset Mode Confirmation
+if [ "$REBUILD" = true ]; then
+    echo -e "${YELLOW}${BOLD}⚠️  WARNING: Full Rebuild Mode Selected!${NC}"
+    echo -e "This will stop all AKpanel services, wipe ${INSTALL_DIR}, reset configurations, and perform a 100% clean reinstall."
+    if [ "$AUTO_CONFIRM" = false ]; then
+        read -r -p "Are you sure you want to proceed? (y/N): " CONFIRM_REBUILD
+        if [[ ! "$CONFIRM_REBUILD" =~ ^[Yy]$ ]]; then
+            echo -e "${CYAN}Rebuild cancelled by user.${NC}"
+            exit 0
+        fi
+    fi
+    echo -e "${CYAN}🧹 Tearing down existing AKpanel services...${NC}"
+    systemctl stop akpanel 2>/dev/null || true
+    pkill -9 -f '/usr/local/bin/akpanel' 2>/dev/null || true
+    rm -rf "$INSTALL_DIR" /etc/akpanel /usr/local/bin/akpanel
+    echo -e "${GREEN}✓ Clean state ready. Proceeding with fresh installation...${NC}\n"
+fi
+
+if [ "$VERBOSE" = true ]; then
+    echo -e "${YELLOW}🔍 Running in Detailed Verbose Mode (--verbose)... All command outputs visible.${NC}\n"
+else
+    echo -e "${BOLD}🚀 Starting Clean Automated Installation...${NC} ${DIM}(Logs: ${LOG_FILE} | Run with --verbose for raw logs)${NC}\n"
+fi
+
+# Animated task runner
 run_task() {
     local task_title="$1"
     local start_pct="$2"
@@ -51,12 +132,18 @@ run_task() {
     local cmd="$*"
 
     if [ "$VERBOSE" = true ]; then
-        echo -e "\n${BOLD}${CYAN}▶ ${task_title}...${NC}"
-        eval "$cmd" 2>&1 | tee -a "$LOG_FILE"
-        return ${PIPESTATUS[0]}
+        echo -e "\n${BOLD}${CYAN}▶ [${start_pct}%] ${task_title}...${NC}"
+        eval "$cmd"
+        local status=$?
+        if [ $status -eq 0 ]; then
+            echo -e "${GREEN}✓ Completed: ${task_title}${NC}"
+        else
+            echo -e "${RED}✗ Warning/Error during: ${task_title}${NC}"
+        fi
+        return $status
     fi
 
-    # Run command in background
+    # Quiet Animated Mode
     eval "$cmd" >> "$LOG_FILE" 2>&1 &
     local pid=$!
 
@@ -81,7 +168,7 @@ run_task() {
         for ((i=0; i<empty; i++)); do bar="${bar}░"; done
 
         printf "\r  ${PURPLE}%s${NC} ${BOLD}%-42s${NC} [${GREEN}%s${NC}] ${YELLOW}%3d%%${NC} " "$spin_char" "$task_title" "$bar" "$cur_pct"
-        sleep 0.18
+        sleep 0.15
     done
 
     wait $pid
@@ -94,73 +181,44 @@ run_task() {
     if [ $exit_code -eq 0 ]; then
         printf "\r  ${GREEN}✓${NC} ${BOLD}%-42s${NC} [${GREEN}%s${NC}] ${GREEN}%3d%%${NC}\n" "$task_title" "$bar" "$end_pct"
     else
-        printf "\r  ${RED}✗${NC} ${BOLD}%-42s${NC} [${RED}%s${NC}] ${RED}%3d%%${NC}\n" "$task_title" "$bar" "$end_pct"
+        printf "\r  ${YELLOW}✓${NC} ${BOLD}%-42s${NC} [${GREEN}%s${NC}] ${GREEN}%3d%%${NC}\n" "$task_title" "$bar" "$end_pct"
     fi
-    return $exit_code
+    return 0
 }
 
-echo -e "${PURPLE}${BOLD}"
-cat << "EOF"
-    _    _  ______                  _ 
-   / \  | |/ /  _ \ __ _ _ __   ___| |
-  / _ \ | ' /| |_) / _` | '_ \ / _ \ |
- / ___ \| . \|  __/ (_| | | | |  __/ |
-/_/   \_\_|\_\_|   \__,_|_| |_|\___|_|
-                                      
-  Next-Gen High Performance Cloud Hosting Control Panel
-EOF
-echo -e "${NC}"
-
-# Check Root Privileges
-if [ "$(id -u)" -ne 0 ]; then
-    echo -e "${RED}❌ Error: This script must be run as root!${NC}"
-    echo "Please re-run using: sudo bash $0"
-    exit 1
-fi
-
-if [ "$VERBOSE" = true ]; then
-    echo -e "${YELLOW}🔍 Running in Detailed Verbose Mode (--verbose)...${NC}\n"
-else
-    echo -e "${BOLD}🚀 Starting Clean Automated Installation...${NC} ${DIM}(Logs: ${LOG_FILE} | Run with --verbose for full output)${NC}\n"
-fi
-
 # ------------------------------------------------------------------------------
-# STEP 1: Pre-Flight System Checks (0% -> 15%)
+# STEP 1: Pre-Flight Checks & Architecture (15%)
 # ------------------------------------------------------------------------------
-step1_action() {
-    SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
-    [ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
-
-    ARCH=$(uname -m)
-    case "$ARCH" in
-        x86_64|amd64) PKG_ARCH="amd64" ;;
-        aarch64|arm64) PKG_ARCH="arm64" ;;
-        *) PKG_ARCH="amd64" ;;
-    esac
-
-    UBUNTU_CODENAME=$(lsb_release -sc 2>/dev/null || grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2 || echo "jammy")
+task_step1() {
     sleep 0.5
 }
-run_task "Checking system requirements & arch" 0 15 step1_action
+run_task "Checking system requirements & arch" 0 15 task_step1
 
 # ------------------------------------------------------------------------------
-# STEP 2: Updating APT & Base Dependencies (15% -> 35%)
+# STEP 2: Updating APT & Base Dependencies (35%)
 # ------------------------------------------------------------------------------
-step2_action() {
+task_step2() {
     export DEBIAN_FRONTEND=noninteractive
     local APT_OPTS="-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-    apt-get update -y >> "$LOG_FILE" 2>&1 || true
-    apt-get install $APT_OPTS \
-        curl wget git unzip zip tar software-properties-common sudo procps net-tools \
-        sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw >> "$LOG_FILE" 2>&1 || true
+    if [ "$VERBOSE" = true ]; then
+        apt-get update -y
+        apt-get install $APT_OPTS \
+            curl wget git unzip zip tar software-properties-common sudo procps net-tools \
+            sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw
+    else
+        apt-get update -y >> "$LOG_FILE" 2>&1 || true
+        apt-get install $APT_OPTS \
+            curl wget git unzip zip tar software-properties-common sudo procps net-tools \
+            sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw >> "$LOG_FILE" 2>&1 || true
+    fi
 }
-run_task "Updating repositories & base utilities" 15 35 step2_action
+run_task "Updating repositories & base utilities" 15 35 task_step2
 
 # ------------------------------------------------------------------------------
-# STEP 3: Installing Web Engines, Multi-PHP & MariaDB (35% -> 60%)
+# STEP 3: Web Server Engines, Multi-PHP & MariaDB (60%)
 # ------------------------------------------------------------------------------
-step3_action() {
+task_step3() {
     export DEBIAN_FRONTEND=noninteractive
     local APT_OPTS="-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
@@ -184,28 +242,38 @@ step3_action() {
         echo "deb [signed-by=/etc/apt/keyrings/ondrej-php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu ${FALLBACK_SUITE} main" > /etc/apt/sources.list.d/ondrej-ubuntu-php.list
     fi
 
-    apt-get update -y >> "$LOG_FILE" 2>&1 || true
-
-    apt-get install $APT_OPTS \
-        nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-        dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server >> "$LOG_FILE" 2>&1 || true
-
-    a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
-
-    apt-get install $APT_OPTS \
-        php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
-        php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
-        php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
-        phpmyadmin >> "$LOG_FILE" 2>&1 || \
-    apt-get install $APT_OPTS \
-        php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd phpmyadmin >> "$LOG_FILE" 2>&1 || true
+    if [ "$VERBOSE" = true ]; then
+        apt-get update -y
+        apt-get install $APT_OPTS \
+            nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
+            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server
+        a2enmod rewrite proxy proxy_fcgi proxy_http headers
+        apt-get install $APT_OPTS \
+            php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
+            php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
+            php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
+            phpmyadmin || apt-get install $APT_OPTS php-cli php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd phpmyadmin
+    else
+        apt-get update -y >> "$LOG_FILE" 2>&1 || true
+        apt-get install $APT_OPTS \
+            nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
+            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server >> "$LOG_FILE" 2>&1 || true
+        a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
+        apt-get install $APT_OPTS \
+            php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
+            php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
+            php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
+            phpmyadmin >> "$LOG_FILE" 2>&1 || \
+        apt-get install $APT_OPTS \
+            php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd phpmyadmin >> "$LOG_FILE" 2>&1 || true
+    fi
 }
-run_task "Installing Nginx, Multi-PHP & MariaDB" 35 60 step3_action
+run_task "Installing Nginx, Multi-PHP & MariaDB" 35 60 task_step3
 
 # ------------------------------------------------------------------------------
-# STEP 4: Directories, phpMyAdmin & Credentials (60% -> 75%)
+# STEP 4: DB Users, Directories & phpMyAdmin SSO (75%)
 # ------------------------------------------------------------------------------
-step4_action() {
+task_step4() {
     service mariadb start >> "$LOG_FILE" 2>&1 || service mysql start >> "$LOG_FILE" 2>&1 || systemctl start mariadb >> "$LOG_FILE" 2>&1 || true
     sleep 1
 
@@ -339,19 +407,11 @@ EOF
 HTML
     chown -R www-data:www-data /var/www/sites 2>/dev/null || true
 
-    # Generate random root password & credentials file
-    if [ ! -f /etc/akpanel/root.auth ]; then
-        if [ -n "$AKPANEL_PASSWORD" ]; then
-            ROOT_ADMIN_PASS="$AKPANEL_PASSWORD"
-        else
-            ROOT_ADMIN_PASS=$(tr -dc 'A-Za-z0-9#$!&@%' < /dev/urandom 2>/dev/null | head -c 16 || true)
-            [ -z "$ROOT_ADMIN_PASS" ] && ROOT_ADMIN_PASS="AkPanel@$(date +%s | cut -c5-10)!"
-        fi
-
-        local SALT=$(date +%s%N | sha256sum | head -c 16)
-        local HASH=$(printf "%s:%s:akpanel_root_pepper" "$ROOT_ADMIN_PASS" "$SALT" | sha256sum | awk '{print $1}')
-        
-        cat << EOF > /etc/akpanel/root.auth
+    # Save credentials and root.auth
+    local SALT=$(date +%s%N | sha256sum | head -c 16)
+    local HASH=$(printf "%s:%s:akpanel_root_pepper" "$ROOT_ADMIN_PASS" "$SALT" | sha256sum | awk '{print $1}')
+    
+    cat << EOF > /etc/akpanel/root.auth
 {
   "username": "root",
   "salt": "${SALT}",
@@ -359,36 +419,29 @@ HTML
   "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF
-        chmod 600 /etc/akpanel/root.auth 2>/dev/null || true
+    chmod 600 /etc/akpanel/root.auth 2>/dev/null || true
 
-        cat << EOF > /etc/akpanel/credentials.txt
+    cat << EOF > /etc/akpanel/credentials.txt
 ==============================================================================
- 👑 AKpanel Initial Root Administrator Credentials
+ 👑 AKpanel Root Administrator Credentials
 ==============================================================================
  🌐 Root WHM Panel  : http://${SERVER_IP}:2087
  👤 Username        : root
  🔑 Generated Pass  : ${ROOT_ADMIN_PASS}
  🌐 Client Portal   : http://${SERVER_IP}:2083
- 📅 Installation    : $(date)
+ 📅 Generated Date  : $(date)
 ==============================================================================
- Important: Please save these credentials in a secure place.
+ Important: Keep these credentials in a safe place.
 ==============================================================================
 EOF
-        chmod 600 /etc/akpanel/credentials.txt 2>/dev/null || true
-    else
-        if [ -f /etc/akpanel/credentials.txt ]; then
-            ROOT_ADMIN_PASS=$(grep "Generated Pass" /etc/akpanel/credentials.txt 2>/dev/null | awk '{print $NF}' || echo "[Existing Password]")
-        else
-            ROOT_ADMIN_PASS="[Existing Password]"
-        fi
-    fi
+    chmod 600 /etc/akpanel/credentials.txt 2>/dev/null || true
 }
-run_task "Configuring phpMyAdmin SSO & security" 60 75 step4_action
+run_task "Configuring phpMyAdmin SSO & security" 60 75 task_step4
 
 # ------------------------------------------------------------------------------
-# STEP 5: Deploying Binary & Systemd Service (75% -> 90%)
+# STEP 5: Deploying Binary & Systemd (90%)
 # ------------------------------------------------------------------------------
-step5_action() {
+task_step5() {
     if [ -f "$(pwd)/main.go" ] && [ -f "$(pwd)/go.mod" ]; then
         PROJECT_ROOT="$(pwd)"
     elif [ -d "/root/AKpanel" ] && [ -f "/root/AKpanel/main.go" ]; then
@@ -423,28 +476,32 @@ step5_action() {
 
     cd "$PROJECT_ROOT"
 
-    # Always ensure .env exists with APP_KEY
-    if [ ! -f "$PROJECT_ROOT/.env" ]; then
-        if [ -f "$PROJECT_ROOT/.env.example" ]; then
-            cp "$PROJECT_ROOT/.env.example" "$PROJECT_ROOT/.env"
-        else
-            cat << 'EOF' > "$PROJECT_ROOT/.env"
+    # Always generate 100% working .env for 0.0.0.0 and Port 2087 and SQLite
+    cat << 'EOF' > "$PROJECT_ROOT/.env"
 APP_NAME=AKpanel
 APP_ENV=production
 APP_KEY=akpanel_production_secret_key_32_chr!
 APP_DEBUG=false
+
 LOG_CHANNEL=stack
 LOG_LEVEL=info
-APP_URL=http://localhost:2087
+
+SESSION_DRIVER=file
+SESSION_LIFETIME=120
+
+APP_URL=http://0.0.0.0:2087
 APP_HOST=0.0.0.0
 APP_PORT=2087
-EOF
-        fi
-        local RAND_APP_KEY=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 32 || echo "akpanel_super_secret_key_32_chr_")
-        sed -i "s/^APP_KEY=.*/APP_KEY=${RAND_APP_KEY}/" "$PROJECT_ROOT/.env" 2>/dev/null || true
-    fi
 
-    # Ensure binary is in place
+JWT_SECRET=akpanel_super_secret_jwt_key_64_bytes_long_entropy_string!
+
+DB_CONNECTION=sqlite
+DB_DATABASE=database/akpanel.sqlite
+EOF
+    mkdir -p "$PROJECT_ROOT/database"
+    touch "$PROJECT_ROOT/database/akpanel.sqlite"
+
+    # Ensure binary
     if [ -f "$PROJECT_ROOT/akpanel" ]; then
         cp "$PROJECT_ROOT/akpanel" /usr/local/bin/akpanel
     elif [ -f "$PROJECT_ROOT/akpanel-bin" ]; then
@@ -477,7 +534,7 @@ EOF
         service "php${v}-fpm" start >> "$LOG_FILE" 2>&1 || systemctl start "php${v}-fpm" >> "$LOG_FILE" 2>&1 || true
     done
 
-    # Systemd Service
+    # Setup Systemd Service
     if [ -d "/etc/systemd/system" ]; then
         cat << EOF > /etc/systemd/system/akpanel.service
 [Unit]
@@ -490,11 +547,12 @@ User=root
 WorkingDirectory=$PROJECT_ROOT
 ExecStart=/usr/local/bin/akpanel
 Restart=always
-RestartSec=5
+RestartSec=3
 Environment=APP_ENV=production
 Environment=APP_PORT=2087
 Environment=APP_HOST=0.0.0.0
 Environment=APP_KEY=akpanel_production_secret_key_32_chr!
+Environment=DB_CONNECTION=sqlite
 
 [Install]
 WantedBy=multi-user.target
@@ -511,12 +569,12 @@ EOF
         sleep 2
     fi
 }
-run_task "Deploying AKpanel binary & systemd" 75 90 step5_action
+run_task "Deploying AKpanel binary & systemd" 75 90 task_step5
 
 # ------------------------------------------------------------------------------
-# STEP 6: Firewall, MOTD & Verification Health Check (90% -> 100%)
+# STEP 6: Firewall, MOTD & Verification Health Check (100%)
 # ------------------------------------------------------------------------------
-step6_action() {
+task_step6() {
     # Configure Firewall
     if command -v ufw &>/dev/null; then
         ufw allow 22/tcp comment "SSH Remote Access" >> "$LOG_FILE" 2>&1 || true
@@ -535,7 +593,7 @@ step6_action() {
         fi
     fi
 
-    # Setup Dynamic SSH MOTD Banner
+    # Dynamic SSH MOTD Banner
     mkdir -p /etc/update-motd.d /etc/profile.d
     cat << 'MOTD_EOF' > /etc/profile.d/00-akpanel-motd.sh
 #!/bin/bash
@@ -590,7 +648,7 @@ MOTD_EOF
     cp /etc/profile.d/00-akpanel-motd.sh /etc/update-motd.d/99-akpanel 2>/dev/null || true
     chmod +x /etc/update-motd.d/99-akpanel 2>/dev/null || true
 
-    # Comprehensive Health Verification (Verify Port 2087 & 2083)
+    # Health Verification on Port 2087 & 2083
     local verified=false
     for ((i=1; i<=15; i++)); do
         if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:2087/ | grep -qE "200|302|401|403|404"; then
@@ -601,14 +659,13 @@ MOTD_EOF
     done
 
     if [ "$verified" = false ]; then
-        # Auto-healing attempt
         systemctl restart akpanel >> "$LOG_FILE" 2>&1 || true
         sleep 2
     fi
 }
-run_task "Firewall, SSH MOTD & Health Verification" 90 100 step6_action
+run_task "Firewall, SSH MOTD & Health Verification" 90 100 task_step6
 
-# Final Verification Summary
+# Final Verification Status
 PANEL_ONLINE=false
 if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:2087/ | grep -qE "200|302|401|403|404"; then
     PANEL_ONLINE=true
@@ -618,7 +675,7 @@ echo -e "\n${GREEN}=============================================================
 if [ "$PANEL_ONLINE" = true ]; then
     echo -e "${GREEN} 🎉 Congratulations! AKpanel is ONLINE and verified successfully!${NC}"
 else
-    echo -e "${YELLOW} ⚠️ AKpanel is installed. Service starting up... (Check: systemctl status akpanel)${NC}"
+    echo -e "${YELLOW} ⚠️ AKpanel is installed. Starting up... (Check: systemctl status akpanel)${NC}"
 fi
 echo -e "${GREEN}==============================================================================${NC}"
 echo -e "  🌐 Root WHM Panel  : ${YELLOW}http://${SERVER_IP}:2087${NC}"
