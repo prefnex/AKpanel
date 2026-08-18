@@ -1,4 +1,4 @@
-VERSION ?= 0.1.0
+VERSION ?= 0.1.1
 TAG ?= v$(VERSION)
 BUILD_DIR ?= dist
 RELEASE_DIR ?= release-assets
