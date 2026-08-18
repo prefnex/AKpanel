@@ -1,0 +1,73 @@
+vcl 4.1;
+
+backend default {
+    .host = "127.0.0.1";
+    .port = "80"; # Backend Web Server (Nginx/Apache)
+    .connect_timeout = 5s;
+    .first_byte_timeout = 60s;
+    .between_bytes_timeout = 2s;
+}
+
+acl purge {
+    "localhost";
+    "127.0.0.1";
+    "::1";
+}
+
+sub vcl_recv {
+    # Allow cache purging
+    if (req.method == "PURGE") {
+        if (!client.ip ~ purge) {
+            return (synth(405, "Not allowed."));
+        }
+        return (purge);
+    }
+
+    # Only cache GET and HEAD requests
+    if (req.method != "GET" && req.method != "HEAD") {
+        return (pass);
+    }
+
+    # Bypass cache for admin panels and auth
+    if (req.url ~ "/(wp-admin|wp-login|admin|login|cart|checkout|api)") {
+        return (pass);
+    }
+
+    # Normalize Accept-Encoding header for gzip
+    if (req.http.Accept-Encoding) {
+        if (req.http.Accept-Encoding ~ "gzip") {
+            set req.http.Accept-Encoding = "gzip";
+        } elsif (req.http.Accept-Encoding ~ "deflate") {
+            set req.http.Accept-Encoding = "deflate";
+        } else {
+            unset req.http.Accept-Encoding;
+        }
+    }
+
+    return (hash);
+}
+
+sub vcl_backend_response {
+    # Cache static assets for 24h
+    if (bereq.url ~ "\.(jpg|jpeg|gif|png|css|js|ico|svg|woff2|woff|ttf)$") {
+        unset beresp.http.set-cookie;
+        set beresp.ttl = 24h;
+    }
+
+    # Cache dynamic HTML for 5 minutes if no cookies
+    if (beresp.status == 200 && !beresp.http.set-cookie) {
+        set beresp.ttl = 300s;
+    }
+
+    return (deliver);
+}
+
+sub vcl_deliver {
+    # Add cache hit/miss indicator header
+    if (obj.hits > 0) {
+        set resp.http.X-Cache = "HIT - AKpanel Varnish (" + obj.hits + ")";
+    } else {
+        set resp.http.X-Cache = "MISS - AKpanel Varnish";
+    }
+    return (deliver);
+}

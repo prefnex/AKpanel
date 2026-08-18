@@ -1,0 +1,123 @@
+name: Release AKpanel
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g., v0.1.0)'
+        required: true
+        default: 'v0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set Release Version
+        id: vars
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Building AKpanel Release: ${TAG} (version: ${VERSION})"
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Go 1.23
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: Build React Frontend Assets
+        run: |
+          npm ci
+          npm run build
+
+      - name: Cross-Compile Go Binaries
+        run: |
+          mkdir -p dist/amd64 dist/arm64
+          
+          # Linux AMD64 (x86_64)
+          echo "🔨 Compiling for linux/amd64..."
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags="-s -w -X 'main.Version=${{ steps.vars.outputs.tag }}'" \
+            -o dist/amd64/akpanel main.go
+
+          # Linux ARM64 (aarch64)
+          echo "🔨 Compiling for linux/arm64..."
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -ldflags="-s -w -X 'main.Version=${{ steps.vars.outputs.tag }}'" \
+            -o dist/arm64/akpanel main.go
+
+      - name: Package Release Bundles
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          mkdir -p release-assets
+
+          for ARCH in amd64 arm64; do
+            BUNDLE_DIR="akpanel-${TAG}-linux-${ARCH}"
+            mkdir -p "${BUNDLE_DIR}"
+
+            # Copy binary
+            cp "dist/${ARCH}/akpanel" "${BUNDLE_DIR}/akpanel"
+            chmod +x "${BUNDLE_DIR}/akpanel"
+
+            # Copy frontend assets and views
+            cp -r public "${BUNDLE_DIR}/"
+            mkdir -p "${BUNDLE_DIR}/resources"
+            cp -r resources/views "${BUNDLE_DIR}/resources/"
+            
+            # Copy configs and documentation
+            cp -r config "${BUNDLE_DIR}/"
+            cp -r database "${BUNDLE_DIR}/"
+            cp .env.example "${BUNDLE_DIR}/.env.example"
+            cp LICENSE "${BUNDLE_DIR}/LICENSE"
+            cp README.md "${BUNDLE_DIR}/README.md"
+            [ -f install.sh ] && cp install.sh "${BUNDLE_DIR}/install.sh"
+
+            # Create tarball
+            TARBALL="akpanel_${TAG}_linux_${ARCH}.tar.gz"
+            tar -czf "release-assets/${TARBALL}" -C "${BUNDLE_DIR}" .
+            echo "✓ Created ${TARBALL}"
+          done
+
+          # Copy standalone install.sh
+          cp install.sh release-assets/install.sh
+
+          # Generate SHA256 Checksums
+          cd release-assets
+          sha256sum akpanel_*.tar.gz install.sh > checksums.txt
+          cd ..
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: "AKpanel ${{ steps.vars.outputs.tag }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-assets/akpanel_*.tar.gz
+            release-assets/install.sh
+            release-assets/checksums.txt

@@ -1,0 +1,18 @@
+<VirtualHost *:{{.Port}}>
+    ServerName {{.Domain}}
+    ServerAlias www.{{.Domain}}
+    DocumentRoot {{.RootPath}}
+
+    <Directory {{.RootPath}}>
+        Options -Indexes +FollowSymLinks +MultiViews
+        AllowOverride All
+        Require all granted
+    </Directory>
+
+    <FilesMatch \.php$>
+        SetHandler "proxy:unix:/run/php/php{{.PHPVersion}}-fpm.sock|fcgi://localhost"
+    </FilesMatch>
+
+    ErrorLog /var/log/apache2/{{.Domain}}_error.log
+    CustomLog /var/log/apache2/{{.Domain}}_access.log combined
+</VirtualHost>

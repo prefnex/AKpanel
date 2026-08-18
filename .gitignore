@@ -1,0 +1,45 @@
+# Compiled Binaries & Release Archives
+akpanel
+akpanel-bin
+*.bin
+*.exe
+dist/
+release-assets/
+*.tar.gz
+
+# Frontend Build & Node Modules
+node_modules/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment & Configs
+.env
+.env.*
+!.env.example
+
+# Runtime Storage & Logs
+storage/logs/*
+storage/app/*
+storage/framework/*
+!storage/logs/.gitkeep
+!storage/app/.gitkeep
+!storage/framework/.gitkeep
+tmp/
+*.log
+
+# IDE & OS Specific
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*~
+
+# Local Development & Simulation (Container environment)
+.cache/
+docker/
+docker-compose.yml
+docsGoravelForAi/
+scripts/rebuild-and-restart-container.sh
+scripts/reset-test-server.sh

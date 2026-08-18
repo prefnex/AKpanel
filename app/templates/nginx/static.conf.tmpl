@@ -1,0 +1,19 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{.Domain}} www.{{.Domain}};
+    root {{.RootPath}};
+
+    index index.html index.htm;
+
+    access_log /var/log/nginx/{{.Domain}}.access.log;
+    error_log /var/log/nginx/{{.Domain}}.error.log;
+
+    location / {
+        try_files $uri $uri/ /index.html =404;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}

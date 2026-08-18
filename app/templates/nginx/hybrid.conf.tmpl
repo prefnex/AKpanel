@@ -1,0 +1,32 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{.Domain}} www.{{.Domain}};
+    root {{.RootPath}};
+
+    access_log /var/log/nginx/{{.Domain}}.access.log;
+    error_log /var/log/nginx/{{.Domain}}.error.log;
+
+    # Static assets directly served by Nginx
+    location ~* \.(jpg|jpeg|gif|png|css|js|ico|svg|woff2|woff|ttf|mp4|webm)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+        try_files $uri @apache;
+    }
+
+    # Pass dynamic requests to Apache on internal port 8081 (.htaccess support)
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location @apache {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
