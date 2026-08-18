@@ -117,7 +117,7 @@ export default function ClientEmailsPage({ showToast }) {
 
         <div className="flex items-center gap-3">
           <a
-            href="http://localhost:2087/webmail"
+            href={`http://${window.location.hostname}:2087/webmail`}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs font-bold h-10 px-4 rounded-xl transition"
@@ -171,7 +171,7 @@ export default function ClientEmailsPage({ showToast }) {
               <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
                 <span className="text-[10px] font-mono text-zinc-500">IMAP/SMTP: mail.{m.domain}</span>
                 <a
-                  href="http://localhost:2087/webmail"
+                  href={`http://${window.location.hostname}:2087/webmail`}
                   target="_blank"
                   rel="noreferrer"
                   className="text-purple-400 hover:underline text-[11px] font-semibold flex items-center gap-1"

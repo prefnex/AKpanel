@@ -259,14 +259,7 @@ func (s *EmailService) ControlService(serviceName, action string) error {
 
 func (s *EmailService) initDefaultAliases() {
 	if _, err := os.Stat(s.aliasesPath); os.IsNotExist(err) {
-		defaults := []EmailAlias{
-			{
-				Source:      "info@default.local",
-				Destination: "admin@default.local",
-				Domain:      "default.local",
-				CreatedAt:   time.Now().Format("2006-01-02"),
-			},
-		}
+		defaults := []EmailAlias{}
 		bytes, _ := json.MarshalIndent(defaults, "", "  ")
 		_ = os.WriteFile(s.aliasesPath, bytes, 0644)
 	}
@@ -379,29 +372,7 @@ func (s *EmailService) initDefaultEmails() {
 	defer s.mu.Unlock()
 
 	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
-		defaults := []EmailAccount{
-			{
-				Email:      "admin@default.local",
-				Domain:     "default.local",
-				Username:   "admin",
-				QuotaMB:    1024,
-				UsedMB:     4,
-				Status:     "active",
-				WebmailURL: "/webmail",
-				CreatedAt:  time.Now().Format("2006-01-02"),
-			},
-			{
-				Email:      "support@default.local",
-				Domain:     "default.local",
-				Username:   "support",
-				QuotaMB:    2048,
-				UsedMB:     12,
-				Status:     "active",
-				WebmailURL: "/webmail",
-				CreatedAt:  time.Now().Format("2006-01-02"),
-			},
-		}
-
+		defaults := []EmailAccount{}
 		bytes, _ := json.MarshalIndent(defaults, "", "  ")
 		_ = os.WriteFile(s.filePath, bytes, 0644)
 	}

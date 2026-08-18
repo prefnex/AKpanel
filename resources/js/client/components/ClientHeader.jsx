@@ -54,7 +54,7 @@ export default function ClientHeader({ user, stats, onLogout }) {
         {/* Switch to Root WHM Panel (If Admin) */}
         {isRootAdmin && (
           <a
-            href="http://localhost:2087"
+            href={`http://${window.location.hostname}:2087`}
             className="hidden sm:flex items-center gap-1.5 text-xs font-bold text-purple-400 bg-purple-950/40 border border-purple-800/50 hover:bg-purple-900/50 px-3 py-1.5 rounded-xl transition"
             title="Switch to WHM Root Administration Console (Port 2087)"
           >

@@ -128,7 +128,7 @@ export default function Header({ hostname, onOpenModal, onToggleSidebar, onLogou
 
           {/* Client Portal Port 2083 Link */}
           <a
-            href="http://localhost:2083"
+            href={`http://${window.location.hostname}:2083`}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1.5 rounded-xl text-xs font-bold transition shadow-sm"

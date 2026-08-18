@@ -95,45 +95,7 @@ func (s *UserAccountService) initDefaultUsers() {
 	defer s.mu.Unlock()
 
 	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
-		serverIP := s.getSystemIP()
-		defaultUsers := []UserAccount{
-			{
-				Username:         "admin",
-				Email:            "admin@akpanel.local",
-				MainDomain:       "default.local",
-				IPAddress:        serverIP,
-				SetupTime:        time.Now().Format("2006-01-02 15:04:05"),
-				PackageID:        "default",
-				PackageName:      "default",
-				IsReseller:       false,
-				Language:         "en",
-				HomeDir:          "/var/www/vhosts/admin",
-				Status:           "active",
-				DiskUsedMB:       42,
-				DiskQuotaMB:      0,
-				BandwidthUsedMB:  128,
-				BandwidthLimitMB: 0,
-				InodesUsed:       1420,
-				InodesLimit:      0,
-				RAMLimitMB:       2048,
-				ActiveProcesses:  3,
-				MaxProcesses:     40,
-				OpenFilesLimit:   200,
-				AutoSSL:          false,
-				BackupEnabled:    true,
-				DomainsCount:     1,
-				MaxDomains:       0,
-				DatabasesCount:   1,
-				MaxDatabases:     0,
-				FTPCount:         1,
-				MaxFTP:           0,
-				ShellAccess:      true,
-				WebEngine:        "nginx",
-				PHPVersion:       "8.2",
-				CreatedAt:        time.Now().Format("2006-01-02"),
-			},
-		}
-
+		defaultUsers := []UserAccount{}
 		bytes, _ := json.MarshalIndent(defaultUsers, "", "  ")
 		_ = os.WriteFile(s.filePath, bytes, 0644)
 	}

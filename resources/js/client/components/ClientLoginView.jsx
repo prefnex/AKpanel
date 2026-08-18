@@ -124,38 +124,12 @@ export default function ClientLoginView({ onLoginSuccess }) {
               <ArrowRight className="w-4 h-4" />
             </Button>
           </form>
-
-          {/* Quick Demo Credentials */}
-          <div className="pt-3 border-t border-zinc-800/80 space-y-2">
-            <span className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider block text-center">
-              Quick Demo Logins
-            </span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => handleFillDemo('admin', 'admin123456')}
-                className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-left text-[11px] text-zinc-300 transition"
-              >
-                <div className="font-bold text-white">👤 admin</div>
-                <div className="text-zinc-500 text-[10px] font-mono">admin123456</div>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleFillDemo('root', 'admin123456')}
-                className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-left text-[11px] text-zinc-300 transition"
-              >
-                <div className="font-bold text-purple-400">👑 root</div>
-                <div className="text-zinc-500 text-[10px] font-mono">admin123456</div>
-              </button>
-            </div>
-          </div>
         </Card>
 
         {/* Link to Root WHM */}
         <div className="text-center">
           <a
-            href="http://localhost:2087"
+            href={`http://${window.location.hostname}:2087`}
             className="text-xs text-zinc-400 hover:text-purple-400 transition inline-flex items-center gap-1.5"
           >
             <ShieldCheck className="w-3.5 h-3.5" />
