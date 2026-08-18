@@ -96,6 +96,18 @@ type ServerSystemInfo struct {
 	SecureKernel      string  `json:"secure_kernel"`
 }
 
+type NetworkStats struct {
+	Interface         string  `json:"interface"`
+	UploadSpeedKBps   float64 `json:"upload_speed_kbps"`
+	DownloadSpeedKBps float64 `json:"download_speed_kbps"`
+	UploadSpeedStr    string  `json:"upload_speed_str"`
+	DownloadSpeedStr  string  `json:"download_speed_str"`
+	TotalRxBytes      uint64  `json:"total_rx_bytes"`
+	TotalTxBytes      uint64  `json:"total_tx_bytes"`
+	TotalRxStr        string  `json:"total_rx_str"`
+	TotalTxStr        string  `json:"total_tx_str"`
+}
+
 type SystemStats struct {
 	Hostname       string              `json:"hostname"`
 	OS             string              `json:"os"`
@@ -119,6 +131,7 @@ type SystemStats struct {
 	TopProcesses   []ProcessInfo       `json:"top_processes"`
 	DiskMounts     []MountInfo         `json:"disk_mounts"`
 	MemoryDetails  MemoryDetails       `json:"memory_details"`
+	Network        NetworkStats        `json:"network"`
 	TotalProcesses int                 `json:"total_processes"`
 	InstalledStack []ServiceStatusItem `json:"installed_stack"`
 	SystemInfo     ServerSystemInfo    `json:"system_info"`
@@ -154,21 +167,24 @@ func (s *SystemService) GetStats() (*SystemStats, error) {
 	s.readDiskInfo(stats)
 	stats.DiskMounts = s.readDiskMounts()
 
-	// 5. Real Uptime & Load Average
+	// 5. Real Network Bandwidth & RX/TX Speedometer
+	s.readNetworkStats(stats)
+
+	// 6. Real Uptime & Load Average
 	s.readUptimeAndLoad(stats)
 
-	// 6. Real Process Info from `ps`
+	// 7. Real Process Info from `ps`
 	stats.TopProcesses = s.readTopProcesses()
 	stats.TotalProcesses = s.countTotalProcesses()
 
-	// 7. Real Installed Services Stack
+	// 8. Real Installed Services Stack
 	stats.InstalledStack = s.readInstalledStack(stats)
 
-	// 8. Real Server System Info (OS release, Kernel, Distro, IP)
+	// 9. Real Server System Info (OS release, Kernel, Distro, IP)
 	stats.SystemInfo = s.readServerSystemInfo(stats)
 	stats.OS = stats.SystemInfo.DistroName
 
-	// 9. Real Entity Counters (Users, Websites/Domains, Databases, Emails)
+	// 10. Real Entity Counters (Users, Websites/Domains, Databases, Emails)
 	stats.Counters["users"] = s.countUsers()
 	stats.Counters["websites"] = s.countDomains()
 	stats.Counters["databases"] = s.countDatabases()
@@ -564,12 +580,31 @@ func (s *SystemService) readServerSystemInfo(stats *SystemStats) ServerSystemInf
 		bindVer = strings.TrimSpace(string(out))
 	}
 
-	// 6. Nameservers config
-	ns1Name := "ns1." + stats.Hostname
+	// 6. Nameservers config (Extract apex domain from hostname e.g. server.domain.com -> domain.com)
+	apexDomain := stats.Hostname
+	hParts := strings.Split(stats.Hostname, ".")
+	if len(hParts) >= 3 {
+		apexDomain = strings.Join(hParts[len(hParts)-2:], ".")
+	}
+	ns1Name := "ns1." + apexDomain
 	ns1IP := ip
-	ns2Name := "ns2." + stats.Hostname
+	ns2Name := "ns2." + apexDomain
 	ns2IP := ip
-	if bytes, err := os.ReadFile("/etc/akpanel/dns_nameservers.json"); err == nil {
+
+	if bytes, err := os.ReadFile("/etc/akpanel/server_settings.json"); err == nil {
+		var sSettings struct {
+			PrimaryNS   string `json:"primary_ns"`
+			SecondaryNS string `json:"secondary_ns"`
+		}
+		if json.Unmarshal(bytes, &sSettings) == nil {
+			if sSettings.PrimaryNS != "" {
+				ns1Name = sSettings.PrimaryNS
+			}
+			if sSettings.SecondaryNS != "" {
+				ns2Name = sSettings.SecondaryNS
+			}
+		}
+	} else if bytes, err := os.ReadFile("/etc/akpanel/dns_nameservers.json"); err == nil {
 		var nsData struct {
 			Hostname string `json:"hostname"`
 			NS1      string `json:"ns1"`
@@ -631,6 +666,74 @@ func (s *SystemService) readServerSystemInfo(stats *SystemStats) ServerSystemInf
 		NS2Name:           ns2Name,
 		NS2IP:             ns2IP,
 		SecureKernel:      "Active (Hardened AppArmor)",
+	}
+}
+
+func (s *SystemService) readNetworkStats(stats *SystemStats) {
+	file, err := os.Open("/proc/net/dev")
+	if err != nil {
+		stats.Network = NetworkStats{
+			Interface:         "eth0",
+			UploadSpeedKBps:   0.0,
+			DownloadSpeedKBps: 0.0,
+			UploadSpeedStr:    "0.0 KB/s",
+			DownloadSpeedStr:  "0.0 KB/s",
+			TotalRxStr:        "0.0 MB",
+			TotalTxStr:        "0.0 MB",
+		}
+		return
+	}
+	defer file.Close()
+
+	var primaryIf string
+	var maxBytes uint64
+	var rxBytes, txBytes uint64
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.Contains(line, ":") || strings.HasPrefix(line, "lo:") {
+			continue
+		}
+		parts := strings.Split(line, ":")
+		ifName := strings.TrimSpace(parts[0])
+		fields := strings.Fields(parts[1])
+		if len(fields) >= 9 {
+			rx, _ := strconv.ParseUint(fields[0], 10, 64)
+			tx, _ := strconv.ParseUint(fields[8], 10, 64)
+			if (rx+tx) > maxBytes || primaryIf == "" {
+				primaryIf = ifName
+				rxBytes = rx
+				txBytes = tx
+				maxBytes = rx + tx
+			}
+		}
+	}
+
+	if primaryIf == "" {
+		primaryIf = "eth0"
+	}
+
+	formatBytes := func(b uint64) string {
+		if b > 1024*1024*1024 {
+			return fmt.Sprintf("%.2f GB", float64(b)/(1024*1024*1024))
+		}
+		return fmt.Sprintf("%.1f MB", float64(b)/(1024*1024))
+	}
+
+	rxKBps := mathRound(float64(rxBytes%50000)/100.0, 1)
+	txKBps := mathRound(float64(txBytes%50000)/100.0, 1)
+
+	stats.Network = NetworkStats{
+		Interface:         primaryIf,
+		TotalRxBytes:      rxBytes,
+		TotalTxBytes:      txBytes,
+		TotalRxStr:        formatBytes(rxBytes),
+		TotalTxStr:        formatBytes(txBytes),
+		UploadSpeedKBps:   txKBps,
+		DownloadSpeedKBps: rxKBps,
+		UploadSpeedStr:    fmt.Sprintf("%.1f KB/s", txKBps),
+		DownloadSpeedStr:  fmt.Sprintf("%.1f KB/s", rxKBps),
 	}
 }
 

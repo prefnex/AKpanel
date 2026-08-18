@@ -442,7 +442,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
             </div>
           )}
 
-          {/* 2. WebServer Settings */}
+          {/* 2. WebServer Settings (Matching CWP Suite Screenshot 3) */}
           {collapsed ? (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -455,7 +455,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
-                WebServers (5 Modes)
+                WebServer Settings
               </TooltipContent>
             </Tooltip>
           ) : (
@@ -466,7 +466,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
               >
                 <div className="flex items-center gap-2.5">
                   <Server className="w-4 h-4 text-emerald-400" />
-                  <span className="text-xs">WebServers</span>
+                  <span className="text-xs">WebServer Settings</span>
                 </div>
                 <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform duration-200 ${openSections.webserver ? 'rotate-180' : ''}`} />
               </button>
@@ -474,27 +474,75 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
               {openSections.webserver && (
                 <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
                   <button
-                    onClick={() => navigate('/webservers')}
-                    className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
-                      }`}
+                    onClick={() => navigate('/webservers?tab=select')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
                   >
-                    <div className="flex items-center gap-2">
-                      <Zap className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Select Engine</span>
-                    </div>
-                    <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-400 font-mono text-[9px] px-1 py-0">5</Badge>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                    <span>Select WebServers</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/templates')}
-                    className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/templates') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
-                      }`}
+                    onClick={() => navigate('/webservers?tab=main_conf')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
                   >
-                    <div className="flex items-center gap-2">
-                      <Layers className="w-3.5 h-3.5 text-amber-400" />
-                      <span>10 Presets</span>
-                    </div>
-                    <Badge variant="secondary" className="bg-amber-500/10 text-amber-400 text-[9px] px-1 py-0">10</Badge>
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                    <span>WebServers Main Conf</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/webservers?tab=domain_conf')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+                    <span>WebServers Domain Conf</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/webservers?tab=templates')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span>WebServers Template Editor</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/webservers?tab=conf_editor')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
+                    <span>WebServers Conf Editor</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/webservers?tab=apache_status')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                    <span>Apache Status</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/webservers?tab=rebuild')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+                    <span>Apache Re-Build</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/webservers?tab=redirects')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />
+                    <span>Apache Redirects</span>
+                  </button>
+
+                  <button
+                    onClick={() => navigate('/ssl')}
+                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                    <span>SSL Certificates</span>
                   </button>
                 </div>
               )}

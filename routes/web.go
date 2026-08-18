@@ -208,6 +208,12 @@ func Web() {
 	facades.Route().Get("/api/webservers/templates", webServersController.TemplateFiles)
 	facades.Route().Get("/api/webservers/template", webServersController.GetTemplate)
 	facades.Route().Post("/api/webservers/template", webServersController.SaveTemplate)
+	facades.Route().Get("/api/webservers/main-configs", webServersController.MainConfigs)
+	facades.Route().Post("/api/webservers/main-configs", webServersController.SaveMainConfig)
+	facades.Route().Get("/api/webservers/domain-vhost", webServersController.DomainVhost)
+	facades.Route().Post("/api/webservers/domain-vhost", webServersController.SaveDomainVhost)
+	facades.Route().Post("/api/webservers/rebuild", webServersController.RebuildAll)
+	facades.Route().Get("/api/webservers/apache-status", webServersController.ApacheStatus)
 
 	// PHP Multi-Version & Extensions Management API
 	facades.Route().Get("/api/php/versions", phpController.Index)

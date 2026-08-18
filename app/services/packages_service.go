@@ -93,7 +93,7 @@ func (s *PackagesService) initDefaultPackages() {
 			},
 			{
 				ID:                "standard",
-				Name:              "20GB Quota / 1TB For Users",
+				Name:              "Standard Pro",
 				DiskQuotaMB:       20480, // 20 GB
 				BandwidthMB:       1048576, // 1 TB
 				RAMLimitMB:        1024,
@@ -119,7 +119,7 @@ func (s *PackagesService) initDefaultPackages() {
 			},
 			{
 				ID:                "enterprise",
-				Name:              "Enterprise Cluster Pro",
+				Name:              "Enterprise Cluster",
 				DiskQuotaMB:       102400, // 100 GB
 				BandwidthMB:       5242880, // 5 TB
 				RAMLimitMB:        4096,

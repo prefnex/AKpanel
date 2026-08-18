@@ -134,3 +134,112 @@ func (r *WebServersController) SaveTemplate(ctx http.Context) http.Response {
 		"message": fmt.Sprintf("Template %s/%s updated successfully", engine, filename),
 	})
 }
+
+// MainConfigs returns all global configuration files for Nginx, Apache, Varnish
+func (r *WebServersController) MainConfigs(ctx http.Context) http.Response {
+	configs := r.webServerService.GetMainConfigs()
+	return ctx.Response().Success().Json(http.Json{
+		"status": "success",
+		"data":   configs,
+	})
+}
+
+// SaveMainConfig updates a global web server configuration file
+func (r *WebServersController) SaveMainConfig(ctx http.Context) http.Response {
+	filePath := ctx.Request().Input("file_path")
+	content := ctx.Request().Input("content")
+
+	if filePath == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "file_path is required",
+		})
+	}
+
+	if err := r.webServerService.SaveMainConfig(filePath, content); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": fmt.Sprintf("Configuration file '%s' saved and reloaded successfully!", filePath),
+	})
+}
+
+// DomainVhost returns Nginx and Apache vhost configurations for a specific domain
+func (r *WebServersController) DomainVhost(ctx http.Context) http.Response {
+	domain := ctx.Request().Input("domain")
+	if domain == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "domain is required",
+		})
+	}
+
+	vhost := r.webServerService.GetDomainVhost(domain)
+	return ctx.Response().Success().Json(http.Json{
+		"status": "success",
+		"data":   vhost,
+	})
+}
+
+// SaveDomainVhost saves custom Nginx & Apache vhost configurations for a specific domain
+func (r *WebServersController) SaveDomainVhost(ctx http.Context) http.Response {
+	domain := ctx.Request().Input("domain")
+	nginxConf := ctx.Request().Input("nginx_conf")
+	apacheConf := ctx.Request().Input("apache_conf")
+
+	if domain == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "domain is required",
+		})
+	}
+
+	if err := r.webServerService.SaveDomainVhost(domain, nginxConf, apacheConf); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": fmt.Sprintf("VirtualHost configuration for '%s' saved and applied successfully!", domain),
+	})
+}
+
+// RebuildAll reloads and recompiles all web server virtual hosts
+func (r *WebServersController) RebuildAll(ctx http.Context) http.Response {
+	msg, err := r.webServerService.RebuildAllVhosts()
+	if err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": msg,
+	})
+}
+
+// ApacheStatus returns live Apache status scoreboard
+func (r *WebServersController) ApacheStatus(ctx http.Context) http.Response {
+	output, err := r.webServerService.GetApacheStatus()
+	if err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status": "success",
+		"output": output,
+	})
+}

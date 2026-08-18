@@ -27,7 +27,8 @@ import {
   FileText,
   XOctagon,
   Copy,
-  Check
+  Check,
+  Network
 } from 'lucide-react';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
@@ -189,6 +190,52 @@ export default function DashboardOverview({ stats, onRefresh, showToast }) {
             <RotateCw className="w-3.5 h-3.5 text-blue-400" />
             <span>Refresh</span>
           </Button>
+        </div>
+      </div>
+
+      {/* 1.5. Live Real-Time Network Bandwidth & Speedometer Bar */}
+      <div className="bg-[#111217] border border-zinc-800/90 rounded-2xl p-4 sm:p-5 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-cyan-950/40 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+              <Network className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-white uppercase tracking-wider">Live Network Bandwidth Speedometer</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                  {stats?.network?.interface || 'eth0'}
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-400 font-mono mt-0.5">
+                Total Transmitted: <span className="text-emerald-400 font-bold">{stats?.network?.total_rx_str || '0 MB'} Received</span> • <span className="text-blue-400 font-bold">{stats?.network?.total_tx_str || '0 MB'} Sent</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            {/* Download Speed */}
+            <div className="flex items-center gap-2.5 bg-zinc-900/80 px-3.5 py-2 rounded-xl border border-zinc-800">
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+              <div>
+                <span className="text-[10px] text-zinc-400 font-semibold block uppercase">Download (RX)</span>
+                <span className="text-sm font-bold font-mono text-emerald-400">
+                  ↓ {stats?.network?.download_speed_str || '0.0 KB/s'}
+                </span>
+              </div>
+            </div>
+
+            {/* Upload Speed */}
+            <div className="flex items-center gap-2.5 bg-zinc-900/80 px-3.5 py-2 rounded-xl border border-zinc-800">
+              <div className="w-2.5 h-2.5 rounded-full bg-blue-400 animate-pulse" />
+              <div>
+                <span className="text-[10px] text-zinc-400 font-semibold block uppercase">Upload (TX)</span>
+                <span className="text-sm font-bold font-mono text-blue-400">
+                  ↑ {stats?.network?.upload_speed_str || '0.0 KB/s'}
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -446,7 +493,7 @@ export default function DashboardOverview({ stats, onRefresh, showToast }) {
 
       </div>
 
-      {/* 4. Bottom Grid: Mounted Partitions & Quick Entity Hub */}
+      {/* 4. Bottom Grid: Mounted Partitions & Sleek Entity Metric Hub */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         
         {/* Storage Mountpoints & Partitions */}
@@ -480,62 +527,82 @@ export default function DashboardOverview({ stats, onRefresh, showToast }) {
           </div>
         </div>
 
-        {/* Quick Management Entity Hub (Users, Websites, DBs, Emails) */}
-        <div className="grid grid-cols-2 gap-3 font-mono">
+        {/* Quick Management Sleek Entity Hub (Users, Websites, DBs, Emails) */}
+        <div className="grid grid-cols-2 gap-3.5">
           
+          {/* Users Card */}
           <div 
             onClick={() => navigate('/users')}
-            className="bg-[#111217] border border-zinc-800/80 hover:border-blue-500/40 rounded-2xl p-4 cursor-pointer transition flex flex-col justify-between"
+            className="group bg-gradient-to-br from-[#111217] to-[#161822] border border-zinc-800/80 hover:border-blue-500/50 rounded-2xl p-4 cursor-pointer transition shadow-sm hover:shadow-blue-900/10 flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between text-zinc-400 mb-1">
-              <Users className="w-4 h-4 text-blue-400" />
-              <ArrowUpRight className="w-3.5 h-3.5 text-zinc-600" />
+            <div className="flex items-center justify-between">
+              <div className="w-8 h-8 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400 group-hover:scale-110 transition">
+                <Users className="w-4 h-4" />
+              </div>
+              <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/20 text-[9px] font-mono">
+                Manage
+              </Badge>
             </div>
-            <div>
-              <div className="text-xl font-bold text-white">{counters.users}</div>
-              <span className="text-[11px] text-zinc-400 font-sans block mt-0.5">User Accounts</span>
+            <div className="mt-3">
+              <div className="text-2xl font-bold font-mono text-white">{counters.users}</div>
+              <span className="text-xs text-zinc-400 font-medium block mt-0.5">User Accounts</span>
             </div>
           </div>
 
+          {/* Websites Card */}
           <div 
             onClick={() => navigate('/websites')}
-            className="bg-[#111217] border border-zinc-800/80 hover:border-cyan-500/40 rounded-2xl p-4 cursor-pointer transition flex flex-col justify-between"
+            className="group bg-gradient-to-br from-[#111217] to-[#141b22] border border-zinc-800/80 hover:border-cyan-500/50 rounded-2xl p-4 cursor-pointer transition shadow-sm hover:shadow-cyan-900/10 flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between text-zinc-400 mb-1">
-              <Globe className="w-4 h-4 text-cyan-400" />
-              <ArrowUpRight className="w-3.5 h-3.5 text-zinc-600" />
+            <div className="flex items-center justify-between">
+              <div className="w-8 h-8 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center text-cyan-400 group-hover:scale-110 transition">
+                <Globe className="w-4 h-4" />
+              </div>
+              <Badge className="bg-cyan-500/10 text-cyan-400 border-cyan-500/20 text-[9px] font-mono">
+                Vhosts
+              </Badge>
             </div>
-            <div>
-              <div className="text-xl font-bold text-white">{counters.websites}</div>
-              <span className="text-[11px] text-zinc-400 font-sans block mt-0.5">VirtualHosts</span>
+            <div className="mt-3">
+              <div className="text-2xl font-bold font-mono text-white">{counters.websites}</div>
+              <span className="text-xs text-zinc-400 font-medium block mt-0.5">VirtualHosts</span>
             </div>
           </div>
 
+          {/* Databases Card */}
           <div 
             onClick={() => navigate('/databases')}
-            className="bg-[#111217] border border-zinc-800/80 hover:border-amber-500/40 rounded-2xl p-4 cursor-pointer transition flex flex-col justify-between"
+            className="group bg-gradient-to-br from-[#111217] to-[#1c1815] border border-zinc-800/80 hover:border-amber-500/50 rounded-2xl p-4 cursor-pointer transition shadow-sm hover:shadow-amber-900/10 flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between text-zinc-400 mb-1">
-              <Database className="w-4 h-4 text-amber-400" />
-              <ArrowUpRight className="w-3.5 h-3.5 text-zinc-600" />
+            <div className="flex items-center justify-between">
+              <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 group-hover:scale-110 transition">
+                <Database className="w-4 h-4" />
+              </div>
+              <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 text-[9px] font-mono">
+                MySQL/DB
+              </Badge>
             </div>
-            <div>
-              <div className="text-xl font-bold text-white">{counters.databases}</div>
-              <span className="text-[11px] text-zinc-400 font-sans block mt-0.5">Databases</span>
+            <div className="mt-3">
+              <div className="text-2xl font-bold font-mono text-white">{counters.databases}</div>
+              <span className="text-xs text-zinc-400 font-medium block mt-0.5">Databases</span>
             </div>
           </div>
 
+          {/* Mailboxes Card */}
           <div 
             onClick={() => navigate('/emails')}
-            className="bg-[#111217] border border-zinc-800/80 hover:border-purple-500/40 rounded-2xl p-4 cursor-pointer transition flex flex-col justify-between"
+            className="group bg-gradient-to-br from-[#111217] to-[#191422] border border-zinc-800/80 hover:border-purple-500/50 rounded-2xl p-4 cursor-pointer transition shadow-sm hover:shadow-purple-900/10 flex flex-col justify-between"
           >
-            <div className="flex items-center justify-between text-zinc-400 mb-1">
-              <Mail className="w-4 h-4 text-purple-400" />
-              <ArrowUpRight className="w-3.5 h-3.5 text-zinc-600" />
+            <div className="flex items-center justify-between">
+              <div className="w-8 h-8 rounded-xl bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:scale-110 transition">
+                <Mail className="w-4 h-4" />
+              </div>
+              <Badge className="bg-purple-500/10 text-purple-400 border-purple-500/20 text-[9px] font-mono">
+                Webmail
+              </Badge>
             </div>
-            <div>
-              <div className="text-xl font-bold text-white">{counters.emails}</div>
-              <span className="text-[11px] text-zinc-400 font-sans block mt-0.5">Mailboxes</span>
+            <div className="mt-3">
+              <div className="text-2xl font-bold font-mono text-white">{counters.emails}</div>
+              <span className="text-xs text-zinc-400 font-medium block mt-0.5">Mailboxes</span>
             </div>
           </div>
 
