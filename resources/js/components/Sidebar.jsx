@@ -27,7 +27,8 @@ import {
   Users,
   Package,
   HardDrive,
-  Mail
+  Mail,
+  Network
 } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Avatar, AvatarFallback } from './ui/avatar';
