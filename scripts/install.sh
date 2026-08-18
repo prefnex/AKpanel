@@ -8,7 +8,7 @@ set +e
 # Default Settings
 DEFAULT_REPO="prefnex/AKpanel"
 GITHUB_REPO="${AKPANEL_REPO:-$DEFAULT_REPO}"
-DEFAULT_VERSION="v0.1.3"
+DEFAULT_VERSION="v0.1.4"
 INSTALL_DIR="/opt/akpanel"
 LOG_FILE="/var/log/akpanel-install.log"
 
@@ -407,7 +407,7 @@ EOF
 HTML
     chown -R www-data:www-data /var/www/sites 2>/dev/null || true
 
-    # Save credentials and root.auth
+    # Save hashed credentials in root.auth (NO plain text on disk)
     local SALT=$(date +%s%N | sha256sum | head -c 16)
     local HASH=$(printf "%s:%s:akpanel_root_pepper" "$ROOT_ADMIN_PASS" "$SALT" | sha256sum | awk '{print $1}')
     
@@ -423,18 +423,51 @@ EOF
 
     cat << EOF > /etc/akpanel/credentials.txt
 ==============================================================================
- 👑 AKpanel Root Administrator Credentials
+ 👑 AKpanel Root Administrator Information
 ==============================================================================
  🌐 Root WHM Panel  : http://${SERVER_IP}:2087
  👤 Username        : root
- 🔑 Generated Pass  : ${ROOT_ADMIN_PASS}
+ 🔒 Password Storage: Salted SHA-256 Encrypted (/etc/akpanel/root.auth)
  🌐 Client Portal   : http://${SERVER_IP}:2083
  📅 Generated Date  : $(date)
 ==============================================================================
- Important: Keep these credentials in a safe place.
+ 🛡️ Security Note: The plain password was shown once at installation time.
+ If forgotten, you can reset it anytime by running: akpanel-reset-password
 ==============================================================================
 EOF
     chmod 600 /etc/akpanel/credentials.txt 2>/dev/null || true
+
+    # CLI Root Password Reset Helper
+    cat << 'CLI_EOF' > /usr/local/bin/akpanel-reset-password
+#!/usr/bin/env bash
+if [ "$(id -u)" -ne 0 ]; then
+    echo "❌ Error: This command must be run as root."
+    exit 1
+fi
+if [ -n "$1" ]; then
+    NEW_PASS="$1"
+else
+    read -s -p "Enter new AKpanel root password: " NEW_PASS
+    echo ""
+fi
+if [ ${#NEW_PASS} -lt 6 ]; then
+    echo "❌ Error: Password must be at least 6 characters."
+    exit 1
+fi
+SALT=$(date +%s%N | sha256sum | head -c 16)
+HASH=$(printf "%s:%s:akpanel_root_pepper" "$NEW_PASS" "$SALT" | sha256sum | awk '{print $1}')
+cat << AUTH_EOF > /etc/akpanel/root.auth
+{
+  "username": "root",
+  "salt": "${SALT}",
+  "hash": "${HASH}",
+  "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+AUTH_EOF
+chmod 600 /etc/akpanel/root.auth
+echo "✓ AKpanel root password has been successfully updated!"
+CLI_EOF
+    chmod +x /usr/local/bin/akpanel-reset-password 2>/dev/null || true
 }
 run_task "Configuring phpMyAdmin SSO & security" 60 75 task_step4
 

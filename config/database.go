@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+
 	"github.com/goravel/framework/contracts/database/driver"
 	sqlitefacades "github.com/goravel/sqlite/facades"
 	"goravel/app/facades"
@@ -8,13 +11,20 @@ import (
 
 func init() {
 	config := facades.Config()
+
+	dbFile := config.Env("DB_DATABASE", "database/akpanel.sqlite").(string)
+	if _, err := os.Stat("/opt/akpanel/database"); err == nil && !filepath.IsAbs(dbFile) {
+		dbFile = "/opt/akpanel/database/akpanel.sqlite"
+	}
+	_ = os.MkdirAll(filepath.Dir(dbFile), 0755)
+
 	config.Add("database", map[string]any{
 		// Default database connection name
 		"default": config.Env("DB_CONNECTION", "sqlite"),
 		// Database connections
 		"connections": map[string]any{
 			"sqlite": map[string]any{
-				"database": config.Env("DB_DATABASE", "database/akpanel.sqlite"),
+				"database": dbFile,
 				"prefix":   "",
 				"singular": false,
 				"via": func() (driver.Driver, error) {
