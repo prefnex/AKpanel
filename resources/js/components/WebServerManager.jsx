@@ -37,11 +37,11 @@ export default function WebServerManager({ showToast }) {
 
   const getTabFromPath = () => {
     const p = location.pathname;
-    if (p.includes('/webservers/main-conf')) return 'main-conf';
-    if (p.includes('/webservers/domain-conf')) return 'domain-conf';
+    if (p.includes('/webservers/main-conf')) return 'main_conf';
+    if (p.includes('/webservers/domain-conf')) return 'domain_conf';
     if (p.includes('/webservers/templates')) return 'templates';
-    if (p.includes('/webservers/conf-editor')) return 'conf-editor';
-    if (p.includes('/webservers/apache-status')) return 'apache-status';
+    if (p.includes('/webservers/conf-editor')) return 'conf_editor';
+    if (p.includes('/webservers/apache-status')) return 'apache_status';
     if (p.includes('/webservers/rebuild')) return 'rebuild';
     if (p.includes('/webservers/redirects')) return 'redirects';
     return searchParams.get('tab') || 'select';

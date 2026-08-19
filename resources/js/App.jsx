@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
-import TelemetryCards from './components/TelemetryCards';
-import ChartsRow from './components/ChartsRow';
+
 import WebServerManager from './components/WebServerManager';
 import PHPManager from './components/PHPManager';
 import WebsitesTable from './components/WebsitesTable';
@@ -12,12 +11,12 @@ import DatabasesManager from './components/DatabasesManager';
 import FileManager from './components/FileManager';
 import FileManagerV2 from './components/FileManagerV2';
 import WebTerminal from './components/WebTerminal';
-import SecurityManager from './components/SecurityManager';
+
 import CreateSiteModal from './components/CreateSiteModal';
 import PackagesManager from './components/PackagesManager';
 import UsersManager from './components/UsersManager';
 import DashboardOverview from './components/DashboardOverview';
-import DNSManager from './components/DNSManager';
+
 import DNSZonesPage from './components/dns/DNSZonesPage';
 import BindServerPage from './components/dns/BindServerPage';
 import NameserversPage from './components/dns/NameserversPage';
@@ -336,6 +335,9 @@ export default function App() {
                 />
               </div>
             } />
+
+            {/* Dashboard Alias */}
+            <Route path="/dashboard" element={<Navigate to="/" replace />} />
 
             {/* DNS Functions - Root Server & BIND 9 Dedicated Pages */}
             <Route path="/dns" element={<Navigate to="/dns/zones" replace />} />

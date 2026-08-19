@@ -45,6 +45,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
     server: false,
     users: false,
     dns: false,
+    email: false,
     webserver: false,
     php: false,
     domains: false,
@@ -134,14 +135,13 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers')}
-                    className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/settings/server')}
+                    className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/settings/server') || isNavActive('/settings') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <div className="flex items-center gap-2">
-                      <ListTree className="w-3.5 h-3.5 text-zinc-500" />
-                      <span>Services</span>
+                      <Sliders className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Server Settings</span>
                     </div>
-                    <span className="text-[9px] px-1 rounded bg-emerald-500/10 text-emerald-400">5 OK</span>
                   </button>
                 </div>
               )}
@@ -571,17 +571,9 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                   >
                     <div className="flex items-center gap-2">
                       <PackageCheck className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>Versions</span>
+                      <span>Versions & php.ini</span>
                     </div>
                     <Badge variant="secondary" className="bg-indigo-500/10 text-indigo-400 text-[9px] px-1 py-0">7.4-8.4</Badge>
-                  </button>
-
-                  <button
-                    onClick={() => navigate('/php')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
-                  >
-                    <Sliders className="w-3.5 h-3.5 text-zinc-500" />
-                    <span>php.ini & Exts</span>
                   </button>
                 </div>
               )}
@@ -605,43 +597,16 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
               </TooltipContent>
             </Tooltip>
           ) : (
-            <div className="space-y-0.5">
-              <button
-                onClick={() => toggleSection('domains')}
-                className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60 font-semibold transition"
-              >
-                <div className="flex items-center gap-2.5">
-                  <Globe className="w-4 h-4 text-cyan-400" />
-                  <span className="text-xs">Domains</span>
-                </div>
-                <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform duration-200 ${openSections.domains ? 'rotate-180' : ''}`} />
-              </button>
-
-              {openSections.domains && (
-                <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
-                  <button
-                    onClick={() => navigate('/websites')}
-                    className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/websites') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
-                      }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <Globe className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Vhosts List</span>
-                    </div>
-                    <span className="text-[10px] font-mono font-bold text-zinc-400">{websitesCount}</span>
-                  </button>
-
-                  <button
-                    onClick={() => navigate('/security')}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
-                      }`}
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>SSL Certificates</span>
-                  </button>
-                </div>
-              )}
-            </div>
+            <button
+              onClick={() => navigate('/websites')}
+              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/websites') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <Globe className="w-4 h-4 text-cyan-400" />
+                <span>Virtual Hosts</span>
+              </div>
+              <span className="text-[10px] font-mono font-bold text-zinc-400">{websitesCount}</span>
+            </button>
           )}
 
           {/* 5. Databases Dropdown (MySQL, Postgres, MongoDB, Redis) */}
