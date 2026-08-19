@@ -73,8 +73,8 @@ export default function CreateSiteModal({
                     : 'border-zinc-800 bg-zinc-900/80 text-zinc-400 hover:border-zinc-700'
                 }`}
               >
-                <div className="font-bold text-xs">🔴 Pure Apache</div>
-                <div className="text-[10px] text-zinc-500 mt-0.5">Full .htaccess</div>
+                <div className="font-bold text-xs">🔴 Apache Backend</div>
+                <div className="text-[10px] text-zinc-500 mt-0.5">Nginx Front + Full .htaccess</div>
               </button>
 
               <button 

@@ -13,12 +13,14 @@ import (
 type WebsitesController struct {
 	nginxService    *services.NginxService
 	templateService *services.TemplateService
+	dnsService      *services.DNSService
 }
 
 func NewWebsitesController() *WebsitesController {
 	return &WebsitesController{
 		nginxService:    services.NewNginxService(),
 		templateService: services.NewTemplateService(),
+		dnsService:      services.NewDNSService(),
 	}
 }
 
@@ -88,6 +90,17 @@ func (r *WebsitesController) Store(ctx http.Context) http.Response {
 		})
 	}
 
+	// A root-created website must receive the same DNS provisioning as a
+	// tenant-created website. Without this, the vhost exists locally but the
+	// domain has no A/www records in AKpanel's authoritative BIND zone.
+	if _, err := r.dnsService.CreateZone(domain, r.dnsService.GetSystemIP(), "root", "default"); err != nil {
+		_ = r.nginxService.DeleteWebsite(domain)
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": "Website vhost was created but DNS provisioning failed: " + err.Error(),
+		})
+	}
+
 	// 2. Save record to DB
 	website := models.Website{
 		Domain:       domain,
@@ -101,6 +114,7 @@ func (r *WebsitesController) Store(ctx http.Context) http.Response {
 	}
 
 	if err := facades.Orm().Query().Create(&website); err != nil {
+		_ = r.nginxService.DeleteWebsite(domain)
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
 			"message": "Failed to save website to database: " + err.Error(),

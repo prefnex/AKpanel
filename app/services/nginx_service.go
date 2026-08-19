@@ -162,9 +162,13 @@ func (n *NginxService) CreateWebsite(cfg WebsiteConfig) error {
 	// 4. Handle Server Engines
 	switch cfg.ServerEngine {
 	case "apache":
-		// Remove Nginx site if any, then create Apache vhost
-		_ = n.DeleteNginxOnly(cfg.Domain)
-		return n.apacheService.CreateApacheVhost(cfg, false)
+		// Nginx remains the sole public listener. Apache is placed on the
+		// internal backend port so selecting Apache cannot collide with Nginx
+		// on port 80 and leave the hostname unreachable.
+		if err := n.apacheService.CreateApacheVhost(cfg, true); err != nil {
+			return err
+		}
+		return n.createNginxVhost(cfg, true)
 
 	case "hybrid":
 		// 1. Create Apache vhost listening on internal port 8081

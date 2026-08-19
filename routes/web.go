@@ -117,13 +117,13 @@ func Web() {
 		return ctx.Response().Redirect(302, fmt.Sprintf("http://%s/webmail/", hostname))
 	})
 
-	// Fallback route: Serves SPA shell for any unmapped URL so React Router renders NotFoundPage
-	facades.Route().Fallback(serveSPA)
-
 	// Auth APIs
 	facades.Route().Post("/api/auth/login", authController.Login)
+	facades.Route().Post("/api/auth/logout", authController.Logout)
 	facades.Route().Get("/api/auth/me", authController.Me)
 	facades.Route().Post("/api/auth/change-password", authController.ChangePassword)
+	// Kept as a compatibility alias for the existing dashboard header.
+	facades.Route().Post("/api/auth/password", authController.ChangePassword)
 
 	// Hosting Packages & Resource Quotas API
 	facades.Route().Get("/api/packages", packagesController.Index)
@@ -385,4 +385,8 @@ func Web() {
 	facades.Route().Post("/api/client/emails", clientController.StoreEmail)
 	facades.Route().Get("/api/client/backups", clientController.Backups)
 	facades.Route().Post("/api/client/backups/generate", clientController.GenerateBackup)
+
+	// Fallback must be registered last. Registering it before API routes can make
+	// the SPA shell swallow otherwise valid API requests in some route drivers.
+	facades.Route().Fallback(serveSPA)
 }

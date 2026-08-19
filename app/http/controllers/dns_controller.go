@@ -327,11 +327,20 @@ func (c *DNSController) SaveSettings(ctx goravelhttp.Context) goravelhttp.Respon
 			"message": err.Error(),
 		})
 	}
+	// Keep the server settings screen in sync without overwriting DNS-only
+	// fields. Both screens intentionally edit the same hostname/NS defaults.
+	persisted := c.dnsService.GetSettings()
+	if err := services.NewServerSettingsService().SyncDNSSettings(persisted); err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "DNS settings were saved, but server settings could not be synchronized: " + err.Error(),
+		})
+	}
 
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status":   "success",
 		"message":  "Nameserver and DNS settings saved successfully!",
-		"settings": settings,
+		"settings": persisted,
 	})
 }
 
@@ -349,6 +358,12 @@ func (c *DNSController) UpdateHostname(ctx goravelhttp.Context) goravelhttp.Resp
 		return ctx.Response().Status(500).Json(goravelhttp.Json{
 			"status":  "error",
 			"message": err.Error(),
+		})
+	}
+	if err := services.NewServerSettingsService().SyncDNSSettings(c.dnsService.GetSettings()); err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Hostname was updated, but server settings could not be synchronized: " + err.Error(),
 		})
 	}
 

@@ -104,20 +104,19 @@ export default function ServerSettingsManager({ showToast }) {
   const handleSyncNameserversToBind = async () => {
     setSyncNsLoading(true);
     try {
-      const res = await fetch('/api/dns/settings', {
+      // Save through the server settings endpoint. It merges the NS defaults
+      // into the existing BIND settings, rather than replacing DNS-only data
+      // (TTL, DNSSEC and Cloudflare configuration) with this partial form.
+      const res = await fetch('/api/settings/server', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          primary_ns: settings.primary_ns,
-          secondary_ns: settings.secondary_ns,
-          admin_email: settings.admin_email,
-          server_ip: settings.shared_ip || window.location.hostname
-        })
+        body: JSON.stringify(settings)
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
 
-      showToast('Nameservers synced to BIND 9 & DNS templates!');
+      showToast('Nameservers synced to BIND 9 without replacing DNS-only settings.');
+      fetchSettings();
     } catch (err) {
       showToast(err.message, 'error');
     } finally {

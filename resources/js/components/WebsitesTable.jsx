@@ -95,7 +95,7 @@ export default function WebsitesTable({ websites, onRefresh, onSwitchEngine, onD
                       </SelectTrigger>
                       <SelectContent className="bg-zinc-900 border-zinc-800 text-zinc-200 text-xs">
                         <SelectItem value="nginx">⚡ Pure Nginx</SelectItem>
-                        <SelectItem value="apache">🔴 Pure Apache</SelectItem>
+                        <SelectItem value="apache">🔴 Apache Backend</SelectItem>
                         <SelectItem value="hybrid">🚀 Hybrid (Nginx+Apache)</SelectItem>
                       </SelectContent>
                     </Select>
@@ -118,7 +118,7 @@ export default function WebsitesTable({ websites, onRefresh, onSwitchEngine, onD
                   <td className="py-4 px-5 text-right">
                     <div className="flex items-center justify-end gap-2">
                       <a 
-                        href={`http://${site.domain}:8080`} 
+                        href={`${site.ssl_active ? 'https' : 'http'}://${site.domain}`}
                         target="_blank" 
                         rel="noreferrer"
                         className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-cyan-400 flex items-center gap-1.5 transition"

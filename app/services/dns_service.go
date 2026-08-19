@@ -1418,10 +1418,13 @@ func (s *DNSService) CreateZone(domain, serverIP, ownerUser, templateID string) 
 	if templateID != "" {
 		zone.TemplateID = templateID
 	}
+	if err := s.syncBindZone(&zone); err != nil {
+		return nil, err
+	}
 	list = append(list, zone)
-
-	_ = s.writeZones(list)
-	_ = s.syncBindZone(&zone)
+	if err := s.writeZones(list); err != nil {
+		return nil, err
+	}
 	return &zone, nil
 }
 

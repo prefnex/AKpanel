@@ -17,6 +17,8 @@ type ServerSettings struct {
 	ClientPort         int    `json:"client_port"`
 	PrimaryNS          string `json:"primary_ns"`
 	SecondaryNS        string `json:"secondary_ns"`
+	SharedIP           string `json:"shared_ip"`
+	IPStackMode        string `json:"ip_stack_mode"`
 	Timezone           string `json:"timezone"`
 	Language           string `json:"language"`
 	AutoRenewSSL       bool   `json:"auto_renew_ssl"`
@@ -80,6 +82,8 @@ func (s *ServerSettingsService) initSettings() {
 			ClientPort:         2083,
 			PrimaryNS:          "ns1." + extractRootDomain(hostname),
 			SecondaryNS:        "ns2." + extractRootDomain(hostname),
+			SharedIP:           s.dnsService.GetSystemIP(),
+			IPStackMode:        "dual",
 			Timezone:           "UTC",
 			Language:           "en",
 			AutoRenewSSL:       true,
@@ -110,16 +114,44 @@ func (s *ServerSettingsService) SaveSettings(settings ServerSettings) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Update Hostname if changed
+	// The server settings page owns the defaults displayed to administrators, but
+	// BIND owns its extra settings (TTL, DNSSEC, Cloudflare, etc.). Merge into the
+	// existing DNS document instead of replacing it with a partial payload.
+	dnsSettings := s.dnsService.GetSettings()
 	if settings.Hostname != "" {
-		_ = exec.Command("hostnamectl", "set-hostname", settings.Hostname).Run()
-		_ = exec.Command("hostname", settings.Hostname).Run()
-		_ = s.dnsService.SetHostname(settings.Hostname)
+		dnsSettings.ServerHostname = settings.Hostname
+	}
+	if settings.PrimaryNS != "" {
+		dnsSettings.PrimaryNS = settings.PrimaryNS
+	}
+	if settings.SecondaryNS != "" {
+		dnsSettings.SecondaryNS = settings.SecondaryNS
+	}
+	if settings.SharedIP != "" {
+		dnsSettings.PrimaryIP = settings.SharedIP
+		dnsSettings.SecondaryIP = settings.SharedIP
+	}
+	if err := s.dnsService.SaveSettings(dnsSettings); err != nil {
+		return err
+	}
+
+	// Apply the hostname once, through the DNS service, which also updates
+	// /etc/hosts and the DNS hostname field consistently.
+	if settings.Hostname != "" {
+		if err := s.dnsService.SetHostname(settings.Hostname); err != nil {
+			return err
+		}
 	}
 
 	// Update Timezone if changed
 	if settings.Timezone != "" {
 		_ = exec.Command("timedatectl", "set-timezone", settings.Timezone).Run()
+	}
+	if settings.SharedIP == "" {
+		settings.SharedIP = dnsSettings.PrimaryIP
+	}
+	if settings.IPStackMode == "" {
+		settings.IPStackMode = "dual"
 	}
 
 	settings.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -128,6 +160,42 @@ func (s *ServerSettingsService) SaveSettings(settings ServerSettings) error {
 		return err
 	}
 	return os.WriteFile(s.filePath, bytes, 0644)
+}
+
+// SyncDNSSettings mirrors values edited from the dedicated DNS screen without
+// writing DNS again. This keeps both screens coherent while preserving DNS-only
+// settings such as DNSSEC and Cloudflare credentials.
+func (s *ServerSettingsService) SyncDNSSettings(dnsSettings DNSSettings) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	settings, err := s.getSettingsUnsafe()
+	if err != nil {
+		return err
+	}
+	if dnsSettings.ServerHostname != "" {
+		settings.Hostname = dnsSettings.ServerHostname
+	}
+	settings.PrimaryNS = dnsSettings.PrimaryNS
+	settings.SecondaryNS = dnsSettings.SecondaryNS
+	settings.SharedIP = dnsSettings.PrimaryIP
+	settings.UpdatedAt = time.Now().Format(time.RFC3339)
+
+	bytes, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.filePath, bytes, 0644)
+}
+
+func (s *ServerSettingsService) getSettingsUnsafe() (ServerSettings, error) {
+	var settings ServerSettings
+	content, err := os.ReadFile(s.filePath)
+	if err != nil {
+		return settings, err
+	}
+	err = json.Unmarshal(content, &settings)
+	return settings, err
 }
 
 // GetHostnameSSL returns status and details of the current Hostname SSL certificate

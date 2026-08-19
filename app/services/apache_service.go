@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 type ApacheService struct {
@@ -32,6 +33,9 @@ func (a *ApacheService) CreateApacheVhost(cfg WebsiteConfig, isHybrid bool) erro
 	port := 80
 	if isHybrid {
 		port = a.internalPort
+		if err := a.ensureInternalBackend(); err != nil {
+			return err
+		}
 	}
 
 	if cfg.RootPath == "" {
@@ -87,11 +91,43 @@ func (a *ApacheService) DeleteApacheVhost(domain string) error {
 
 // ReloadApache tests config and reloads Apache service
 func (a *ApacheService) ReloadApache() error {
-	cmd := exec.Command("apache2ctl", "graceful")
-	if err := cmd.Run(); err != nil {
-		cmdService := exec.Command("service", "apache2", "reload")
-		_ = cmdService.Run()
+	if output, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {
+		return fmt.Errorf("apache syntax test failed: %s", string(output))
 	}
+	if err := exec.Command("service", "apache2", "reload").Run(); err != nil {
+		return fmt.Errorf("failed to reload apache: %w", err)
+	}
+	return nil
+}
+
+// ensureInternalBackend makes Apache an internal backend for Nginx. Letting
+// Apache bind port 80 while Nginx is active causes a port collision and makes
+// sites selected as "Apache" appear created but unreachable.
+func (a *ApacheService) ensureInternalBackend() error {
+	portsPath := "/etc/apache2/ports.conf"
+	content, err := os.ReadFile(portsPath)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	lines := strings.Split(string(content), "\n")
+	filtered := make([]string, 0, len(lines)+1)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "Listen 80" || trimmed == "Listen 8081" || trimmed == "Listen 127.0.0.1:8081" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	filtered = append(filtered, "Listen 127.0.0.1:8081")
+	if err := os.WriteFile(portsPath, []byte(strings.Join(filtered, "\n")), 0644); err != nil {
+		return err
+	}
+
+	// Ubuntu's default port-80 vhost must not remain enabled after Apache moves
+	// behind Nginx. AKpanel creates explicit per-domain 8081 vhosts instead.
+	_ = os.Remove(filepath.Join(a.sitesEnabledPath, "000-default.conf"))
+	_ = os.Remove(filepath.Join(a.sitesEnabledPath, "default-ssl.conf"))
 	return nil
 }
 

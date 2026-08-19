@@ -268,6 +268,15 @@ task_step3() {
             php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin >> "$LOG_FILE" 2>&1 || true
     fi
 
+    # Nginx owns the public HTTP/HTTPS ports. Apache is an internal PHP/
+    # .htaccess backend on 127.0.0.1:8081; otherwise both daemons compete for
+    # port 80 and hosted domains cannot be served reliably.
+    if [ -f /etc/apache2/ports.conf ]; then
+        sed -i 's/^[[:space:]]*Listen[[:space:]]\+80[[:space:]]*$/Listen 127.0.0.1:8081/' /etc/apache2/ports.conf
+        sed -i 's/^[[:space:]]*Listen[[:space:]]\+443[[:space:]]*$/Listen 127.0.0.1:8444/' /etc/apache2/ports.conf
+        rm -f /etc/apache2/sites-enabled/000-default.conf /etc/apache2/sites-enabled/default-ssl.conf
+    fi
+
     # Install acme.sh for SSL management & setup daily auto-renewal cron
     if [ ! -f /root/.acme.sh/acme.sh ]; then
         curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site >> "$LOG_FILE" 2>&1 || true
