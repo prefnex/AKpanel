@@ -649,8 +649,9 @@ func (s *EmailService) EnsureRoundcubeWebmail() {
 	_ = os.MkdirAll(rcDir+"/temp", 0777)
 	_ = os.MkdirAll(rcDir+"/logs", 0777)
 
-	// If Roundcube index.php doesn't exist, check system paths or link
+	// If Roundcube index.php doesn't exist, install or copy from system package
 	if _, err := os.Stat(rcDir + "/index.php"); os.IsNotExist(err) {
+		_ = exec.Command("bash", "-c", "which apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq roundcube roundcube-sqlite3 roundcube-plugins 2>/dev/null").Run()
 		if _, errSys := os.Stat("/usr/share/roundcube/index.php"); errSys == nil {
 			_ = exec.Command("bash", "-c", "cp -rn /usr/share/roundcube/* /var/www/roundcube/ 2>/dev/null || ln -sfn /usr/share/roundcube/* /var/www/roundcube/").Run()
 		} else if _, errVar := os.Stat("/var/lib/roundcube/index.php"); errVar == nil {
@@ -695,17 +696,27 @@ Alias /roundcube /var/www/roundcube
 `
 	_ = os.MkdirAll("/etc/apache2/conf-available", 0755)
 	_ = os.WriteFile("/etc/apache2/conf-available/roundcube.conf", []byte(apacheConf), 0644)
-	_ = exec.Command("bash", "-c", "a2enconf roundcube 2>/dev/null; service apache2 reload 2>/dev/null").Run()
+	_ = exec.Command("bash", "-c", "a2enconf roundcube 2>/dev/null; systemctl reload apache2 2>/dev/null || service apache2 reload 2>/dev/null").Run()
+
+	// Detect PHP socket
+	phpSock := "unix:/run/php/php8.2-fpm.sock"
+	for _, ver := range []string{"8.3", "8.2", "8.1", "8.0", "7.4"} {
+		sock := fmt.Sprintf("/run/php/php%s-fpm.sock", ver)
+		if _, err := os.Stat(sock); err == nil {
+			phpSock = fmt.Sprintf("unix:%s", sock)
+			break
+		}
+	}
 
 	// Ensure Nginx snippet
 	_ = os.MkdirAll("/etc/nginx/snippets", 0755)
-	nginxSnippet := `location /webmail {
+	nginxSnippet := fmt.Sprintf(`location /webmail {
     alias /var/www/roundcube;
     index index.php index.html;
     try_files $uri $uri/ @rc_php;
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_pass %s;
         fastcgi_param SCRIPT_FILENAME $request_filename;
         include fastcgi_params;
     }
@@ -713,7 +724,7 @@ Alias /roundcube /var/www/roundcube
 location @rc_php {
     rewrite ^/webmail/(.*)$ /webmail/index.php?$1 last;
 }
-`
+`, phpSock)
 	_ = os.WriteFile("/etc/nginx/snippets/webmail.conf", []byte(nginxSnippet), 0644)
-	_ = exec.Command("service", "nginx", "reload").Run()
+	_ = exec.Command("bash", "-c", "nginx -t 2>/dev/null && (systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null)").Run()
 }

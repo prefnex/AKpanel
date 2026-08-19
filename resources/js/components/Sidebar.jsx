@@ -196,22 +196,6 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                     <Package className="w-3.5 h-3.5 text-purple-400" />
                     <span>Hosting Packages</span>
                   </button>
-
-                  <button
-                    onClick={() => navigate('/users')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
-                  >
-                    <Wrench className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Fix Permissions</span>
-                  </button>
-
-                  <button
-                    onClick={() => navigate('/users')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
-                  >
-                    <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>User Quotas</span>
-                  </button>
                 </div>
               )}
             </div>
@@ -364,32 +348,32 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
               {openSections.email && (
                 <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
                   <button
-                    onClick={() => navigate('/emails')}
-                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails') || isNavActive('/emails/accounts') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
+                    onClick={() => navigate('/emails/accounts')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/accounts') || (isNavActive('/emails') && !path.includes('/emails/')) ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <Mail className="w-3.5 h-3.5 text-amber-400" />
                     <span>Email Accounts</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/emails')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/emails/aliases')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/aliases') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <Send className="w-3.5 h-3.5 text-indigo-400" />
                     <span>Aliases & Forwarders</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/emails')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/emails/autoresponders')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/autoresponders') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <Clock className="w-3.5 h-3.5 text-cyan-400" />
                     <span>AutoResponders</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/emails')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/emails/routing')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/routing') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <Globe className="w-3.5 h-3.5 text-blue-400" />
                     <span>Mail Routing / MX</span>
@@ -407,32 +391,32 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                   </button>
 
                   <button
-                    onClick={() => navigate('/emails')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/emails/queue')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/queue') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <ListTree className="w-3.5 h-3.5 text-orange-400" />
                     <span>Mail Queue Manager</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/emails')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/emails/server')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/server') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <Server className="w-3.5 h-3.5 text-purple-400" />
                     <span>MailServer Manager</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/emails')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/emails/dkim')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/dkim') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                     <span>DKIM & SPF Manager</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/emails')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/emails/antispam')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails/antispam') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <Radio className="w-3.5 h-3.5 text-rose-400" />
                     <span>AntiSpam Shield</span>

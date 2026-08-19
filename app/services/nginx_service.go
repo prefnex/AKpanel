@@ -26,12 +26,105 @@ type NginxService struct {
 }
 
 func NewNginxService() *NginxService {
-	return &NginxService{
+	svc := &NginxService{
 		sitesAvailablePath: "/etc/nginx/sites-available",
 		sitesEnabledPath:   "/etc/nginx/sites-enabled",
 		sitesRootPath:      "/var/www/sites",
 		apacheService:      NewApacheService(),
 	}
+	svc.EnsureDefaultNginxConfig()
+	return svc
+}
+
+func (n *NginxService) getActivePHPSocket() string {
+	for _, ver := range []string{"8.3", "8.2", "8.1", "8.0", "7.4"} {
+		sock := fmt.Sprintf("/run/php/php%s-fpm.sock", ver)
+		if _, err := os.Stat(sock); err == nil {
+			return fmt.Sprintf("unix:%s", sock)
+		}
+	}
+	return "unix:/run/php/php8.2-fpm.sock"
+}
+
+func (n *NginxService) EnsureDefaultNginxConfig() {
+	_ = os.MkdirAll("/var/www/html", 0755)
+	_ = os.MkdirAll(n.sitesAvailablePath, 0755)
+	_ = os.MkdirAll(n.sitesEnabledPath, 0755)
+
+	sslCert, sslKey := n.ensureFallbackSSL()
+	phpSock := n.getActivePHPSocket()
+
+	defaultConf := fmt.Sprintf(`server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+
+    server_name _;
+    root /var/www/html;
+    index index.html index.htm index.php;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    # Roundcube Webmail Direct Alias
+    location /webmail {
+        alias /var/www/roundcube;
+        index index.php index.html;
+        try_files $uri $uri/ @webmail_php;
+        location ~ \.php$ {
+            include snippets/fastcgi-php.conf;
+            fastcgi_pass %s;
+            fastcgi_param SCRIPT_FILENAME $request_filename;
+            include fastcgi_params;
+        }
+    }
+
+    location /roundcube {
+        alias /var/www/roundcube;
+        index index.php index.html;
+        try_files $uri $uri/ @webmail_php;
+        location ~ \.php$ {
+            include snippets/fastcgi-php.conf;
+            fastcgi_pass %s;
+            fastcgi_param SCRIPT_FILENAME $request_filename;
+            include fastcgi_params;
+        }
+    }
+
+    location @webmail_php {
+        rewrite ^/webmail/(.*)$ /webmail/index.php?$1 last;
+        rewrite ^/roundcube/(.*)$ /roundcube/index.php?$1 last;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass %s;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+`, sslCert, sslKey, phpSock, phpSock, phpSock)
+
+	defaultPath := filepath.Join(n.sitesAvailablePath, "default")
+	_ = os.WriteFile(defaultPath, []byte(defaultConf), 0644)
+
+	enabledPath := filepath.Join(n.sitesEnabledPath, "default")
+	_ = os.Remove(enabledPath)
+	_ = os.Symlink(defaultPath, enabledPath)
+
+	_ = exec.Command("nginx", "-t").Run()
+	_ = exec.Command("systemctl", "reload", "nginx").Run()
 }
 
 // CreateWebsite configures the selected web server engine (Nginx, Apache, or Hybrid)

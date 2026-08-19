@@ -70,6 +70,7 @@ func Web() {
 	facades.Route().Get("/emails/roundcube", serveSPA)
 	facades.Route().Get("/emails/queue", serveSPA)
 	facades.Route().Get("/emails/logs", serveSPA)
+	facades.Route().Get("/emails/server", serveSPA)
 	facades.Route().Get("/emails/mailserver", serveSPA)
 	facades.Route().Get("/emails/custom-ip", serveSPA)
 	facades.Route().Get("/emails/rdns", serveSPA)
