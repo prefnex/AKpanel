@@ -88,7 +88,7 @@ func (s *SecurityService) GetFullFirewallInfo() FirewallData {
 	outStr := string(out)
 	isActive := strings.Contains(outStr, "Status: active")
 
-	var rules []FirewallRule
+	rules := []FirewallRule{}
 	if err == nil && isActive {
 		lines := strings.Split(outStr, "\n")
 		for _, line := range lines {
@@ -165,7 +165,7 @@ func (s *SecurityService) GetFullFirewallInfo() FirewallData {
 	}
 
 	// Parse Fail2Ban Jails & Banned IPs
-	var bannedList []BannedIPInfo
+	bannedList := []BannedIPInfo{}
 	f2bOut, f2bErr := exec.Command("fail2ban-client", "status", "sshd").CombinedOutput()
 	if f2bErr == nil {
 		lines := strings.Split(string(f2bOut), "\n")

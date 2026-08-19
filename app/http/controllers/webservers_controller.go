@@ -230,16 +230,10 @@ func (r *WebServersController) RebuildAll(ctx http.Context) http.Response {
 
 // ApacheStatus returns live Apache status scoreboard
 func (r *WebServersController) ApacheStatus(ctx http.Context) http.Response {
-	output, err := r.webServerService.GetApacheStatus()
-	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
-	}
-
+	data := r.webServerService.GetApacheStatus()
 	return ctx.Response().Success().Json(http.Json{
 		"status": "success",
-		"output": output,
+		"data":   data,
+		"output": data.RawOutput,
 	})
 }

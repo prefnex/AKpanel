@@ -399,16 +399,14 @@ export default function EmailManager({ showToast }) {
             <span>Reload</span>
           </Button>
 
-          <a
-            href="/webmail"
-            target="_blank"
-            rel="noreferrer"
+          <button
+            onClick={() => window.open(`http://${window.location.hostname}/webmail/`, '_blank')}
             className="inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-900/30 transition border border-emerald-400/30"
           >
             <Inbox className="w-4 h-4" />
             <span>Roundcube Webmail</span>
             <ExternalLink className="w-3.5 h-3.5" />
-          </a>
+          </button>
 
           <Button
             onClick={() => setIsCreateOpen(true)}

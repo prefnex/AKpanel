@@ -67,7 +67,15 @@ export default function FirewallManager({ showToast }) {
       if (res.ok) {
         const json = await res.json();
         if (json.data) {
-          setFirewallData(json.data);
+          setFirewallData({
+            is_active: json.data.is_active ?? true,
+            default_incoming: json.data.default_incoming || 'DENY',
+            default_outgoing: json.data.default_outgoing || 'ALLOW',
+            rules: Array.isArray(json.data.rules) ? json.data.rules : [],
+            banned_ips: Array.isArray(json.data.banned_ips) ? json.data.banned_ips : [],
+            waf_mode: json.data.waf_mode || 'on',
+            fail2ban_active: json.data.fail2ban_active ?? true,
+          });
         }
       }
     } catch (e) {
@@ -191,8 +199,11 @@ export default function FirewallManager({ showToast }) {
     }
   };
 
+  const rules = Array.isArray(firewallData?.rules) ? firewallData.rules : [];
+  const bannedIps = Array.isArray(firewallData?.banned_ips) ? firewallData.banned_ips : [];
+
   const isPortAllowed = (port) => {
-    return firewallData.rules.some(r => r.port === String(port) && r.action.toUpperCase() === 'ALLOW');
+    return rules.some(r => r && r.port === String(port) && r.action && r.action.toUpperCase() === 'ALLOW');
   };
 
   const presetPorts = [
@@ -282,7 +293,7 @@ export default function FirewallManager({ showToast }) {
             <ShieldCheck className="w-4 h-4 text-cyan-400" />
           </div>
           <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl font-bold font-mono text-white">{firewallData.rules.length}</span>
+            <span className="text-2xl font-bold font-mono text-white">{rules.length}</span>
             <span className="text-xs text-zinc-400">Open Ports</span>
           </div>
           <p className="text-[11px] text-zinc-500 mt-1">Full stateful packet inspection</p>
@@ -295,7 +306,7 @@ export default function FirewallManager({ showToast }) {
             <UserX className="w-4 h-4 text-amber-400" />
           </div>
           <div className="mt-3 flex items-baseline gap-2">
-            <span className="text-2xl font-bold font-mono text-amber-400">{firewallData.banned_ips.length}</span>
+            <span className="text-2xl font-bold font-mono text-amber-400">{bannedIps.length}</span>
             <span className="text-xs text-zinc-400">Banned IPs</span>
           </div>
           <p className="text-[11px] text-zinc-500 mt-1">Fail2Ban SSH & Auth Jails Active</p>
@@ -325,7 +336,7 @@ export default function FirewallManager({ showToast }) {
           }`}
         >
           <ShieldCheck className="w-3.5 h-3.5" />
-          <span>Active Port Rules ({firewallData.rules.length})</span>
+          <span>Active Port Rules ({rules.length})</span>
         </button>
 
         <button
@@ -349,7 +360,7 @@ export default function FirewallManager({ showToast }) {
           }`}
         >
           <Ban className="w-3.5 h-3.5" />
-          <span>IP Blacklist & Fail2Ban ({firewallData.banned_ips.length})</span>
+          <span>IP Blacklist & Fail2Ban ({bannedIps.length})</span>
         </button>
       </div>
 
@@ -370,14 +381,14 @@ export default function FirewallManager({ showToast }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/50 text-zinc-300">
-                {firewallData.rules.length === 0 ? (
+                {rules.length === 0 ? (
                   <tr>
                     <td colSpan="7" className="text-center py-10 text-zinc-500 font-mono">
                       No custom firewall rules configured yet.
                     </td>
                   </tr>
                 ) : (
-                  firewallData.rules.map((r, i) => (
+                  rules.map((r, i) => (
                     <tr key={i} className="hover:bg-zinc-900/40 transition font-mono">
                       <td className="py-3 px-4 text-zinc-500 text-[11px]">{r.number || i + 1}</td>
                       <td className="py-3 px-4 font-bold text-white">{r.port}</td>
@@ -474,14 +485,14 @@ export default function FirewallManager({ showToast }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/50 text-zinc-300 font-mono">
-                {firewallData.banned_ips.length === 0 ? (
+                {bannedIps.length === 0 ? (
                   <tr>
                     <td colSpan="4" className="text-center py-10 text-zinc-500 font-sans text-xs">
                       No banned IP addresses detected. The server is secure and free of brute-force attacks!
                     </td>
                   </tr>
                 ) : (
-                  firewallData.banned_ips.map((b, i) => (
+                  bannedIps.map((b, i) => (
                     <tr key={i} className="hover:bg-zinc-900/40 transition">
                       <td className="py-3 px-4 font-bold text-rose-400">{b.ip}</td>
                       <td className="py-3 px-4 text-zinc-400">{b.jail || 'sshd'}</td>

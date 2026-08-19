@@ -395,10 +395,8 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                     <span>Mail Routing / MX</span>
                   </button>
 
-                  <a
-                    href="/webmail"
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    onClick={() => window.open(`http://${window.location.hostname}/webmail/`, '_blank')}
                     className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-emerald-400 hover:text-emerald-300 hover:bg-zinc-900/40 transition"
                   >
                     <div className="flex items-center gap-2">
@@ -406,7 +404,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                       <span>Roundcube Webmail</span>
                     </div>
                     <ExternalLink className="w-3 h-3" />
-                  </a>
+                  </button>
 
                   <button
                     onClick={() => navigate('/emails')}
@@ -831,34 +829,6 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                 <Terminal className="w-4 h-4 text-purple-400" />
                 <span>Terminal (SSH)</span>
               </div>
-            </button>
-          )}
-
-          {/* 8. SSL Certificates */}
-          {collapsed ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  onClick={() => navigate('/ssl')}
-                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/ssl') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
-                >
-                  <Lock className="w-4 h-4 text-emerald-400" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
-                SSL Certificates
-              </TooltipContent>
-            </Tooltip>
-          ) : (
-            <button
-              onClick={() => navigate('/ssl')}
-              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/ssl') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Lock className="w-4 h-4 text-emerald-400" />
-                <span>SSL Certificates</span>
-              </div>
-              <Badge variant="outline" className="text-[9px] px-1 py-0 text-emerald-400 border-emerald-500/20">acme.sh</Badge>
             </button>
           )}
 

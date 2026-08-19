@@ -106,8 +106,23 @@ func Web() {
 
 	// Direct Webmail launcher (Redirects to Roundcube on standard port or host)
 	facades.Route().Get("/webmail", func(ctx http.Context) http.Response {
-		host := ctx.Request().Header("Host", "localhost")
+		host := ctx.Request().Header("X-Forwarded-Host", "")
+		if host == "" {
+			host = ctx.Request().Header("x-forwarded-host", "")
+		}
+		if host == "" {
+			host = ctx.Request().Header("Host", "")
+		}
+		if host == "" {
+			host = ctx.Request().Header("host", "")
+		}
+		if host == "" {
+			host = ctx.Request().Ip()
+		}
 		hostname := strings.Split(host, ":")[0]
+		if hostname == "" || hostname == "localhost" || hostname == "127.0.0.1" {
+			hostname = services.NewDNSService().GetSystemIP()
+		}
 		return ctx.Response().Redirect(302, fmt.Sprintf("http://%s/webmail/", hostname))
 	})
 
