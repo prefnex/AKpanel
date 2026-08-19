@@ -114,6 +114,7 @@ func NewEmailService() *EmailService {
 		s.initDefaultConfig()
 		s.initDefaultEmails()
 		s.initDefaultAliases()
+		s.EnsureRoundcubeWebmail()
 		emailServiceInstance = s
 	})
 	return emailServiceInstance
@@ -637,4 +638,82 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// EnsureRoundcubeWebmail automates Roundcube directory, config, SQLite database, and web server aliases
+func (s *EmailService) EnsureRoundcubeWebmail() {
+	rcDir := "/var/www/roundcube"
+	_ = os.MkdirAll(rcDir, 0755)
+	_ = os.MkdirAll(rcDir+"/config", 0755)
+	_ = os.MkdirAll(rcDir+"/db", 0777)
+	_ = os.MkdirAll(rcDir+"/temp", 0777)
+	_ = os.MkdirAll(rcDir+"/logs", 0777)
+
+	// If Roundcube index.php doesn't exist, check system paths or link
+	if _, err := os.Stat(rcDir + "/index.php"); os.IsNotExist(err) {
+		if _, errSys := os.Stat("/usr/share/roundcube/index.php"); errSys == nil {
+			_ = exec.Command("bash", "-c", "cp -rn /usr/share/roundcube/* /var/www/roundcube/ 2>/dev/null || ln -sfn /usr/share/roundcube/* /var/www/roundcube/").Run()
+		} else if _, errVar := os.Stat("/var/lib/roundcube/index.php"); errVar == nil {
+			_ = exec.Command("bash", "-c", "cp -rn /var/lib/roundcube/* /var/www/roundcube/ 2>/dev/null").Run()
+		}
+	}
+
+	// Write modern optimized config.inc.php
+	cfgPath := rcDir + "/config/config.inc.php"
+	rcConfig := `<?php
+$config = [];
+$config['db_dsnw'] = 'sqlite:////var/www/roundcube/db/sqlite.db?mode=0646';
+$config['default_host'] = 'localhost';
+$config['default_port'] = 143;
+$config['smtp_server'] = 'localhost';
+$config['smtp_port'] = 587;
+$config['smtp_user'] = '%u';
+$config['smtp_pass'] = '%p';
+$config['support_url'] = '';
+$config['product_name'] = 'AKpanel Webmail';
+$config['des_key'] = 'rcmail-akpanel-sec-key-9988';
+$config['plugins'] = ['archive', 'zipdownload'];
+$config['skin'] = 'elastic';
+$config['enable_spellcheck'] = true;
+$config['auto_create_user'] = true;
+`
+	_ = os.WriteFile(cfgPath, []byte(rcConfig), 0644)
+
+	// Set permissions
+	_ = exec.Command("chown", "-R", "www-data:www-data", rcDir).Run()
+	_ = exec.Command("chmod", "-R", "777", rcDir+"/db", rcDir+"/temp", rcDir+"/logs").Run()
+
+	// Ensure Apache configuration
+	apacheConf := `Alias /webmail /var/www/roundcube
+Alias /roundcube /var/www/roundcube
+
+<Directory /var/www/roundcube>
+    Options +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+`
+	_ = os.MkdirAll("/etc/apache2/conf-available", 0755)
+	_ = os.WriteFile("/etc/apache2/conf-available/roundcube.conf", []byte(apacheConf), 0644)
+	_ = exec.Command("bash", "-c", "a2enconf roundcube 2>/dev/null; service apache2 reload 2>/dev/null").Run()
+
+	// Ensure Nginx snippet
+	_ = os.MkdirAll("/etc/nginx/snippets", 0755)
+	nginxSnippet := `location /webmail {
+    alias /var/www/roundcube;
+    index index.php index.html;
+    try_files $uri $uri/ @rc_php;
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.2-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $request_filename;
+        include fastcgi_params;
+    }
+}
+location @rc_php {
+    rewrite ^/webmail/(.*)$ /webmail/index.php?$1 last;
+}
+`
+	_ = os.WriteFile("/etc/nginx/snippets/webmail.conf", []byte(nginxSnippet), 0644)
+	_ = exec.Command("service", "nginx", "reload").Run()
 }
