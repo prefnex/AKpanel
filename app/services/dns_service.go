@@ -1300,7 +1300,7 @@ func (s *DNSService) GenerateDKIM(domain string) (string, error) {
 }
 
 func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string) DNSZone {
-	if serverIP == "" || serverIP == "37.27.116.105" {
+	if serverIP == "" {
 		serverIP = s.GetSystemIP()
 	}
 	if ownerUser == "" {

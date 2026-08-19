@@ -29,7 +29,9 @@ import {
   Play,
   SlidersHorizontal,
   Sliders,
-  AlertTriangle
+  AlertTriangle,
+  Smartphone,
+  Copy
 } from 'lucide-react';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
@@ -71,6 +73,8 @@ export default function EmailManager({ showToast }) {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isAliasOpen, setIsAliasOpen] = useState(false);
   const [isChangePassOpen, setIsChangePassOpen] = useState(false);
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [activeConfigMailbox, setActiveConfigMailbox] = useState(null);
   const [isFlushLoading, setIsFlushLoading] = useState(false);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
@@ -584,6 +588,18 @@ export default function EmailManager({ showToast }) {
                         </td>
                         <td className="py-3.5 px-4 text-zinc-400 font-mono">{e.created_at || '2026-08-18'}</td>
                         <td className="py-3.5 px-4 text-right space-x-2">
+                          <Button
+                            onClick={() => {
+                              setActiveConfigMailbox(e);
+                              setIsConfigModalOpen(true);
+                            }}
+                            variant="ghost"
+                            size="sm"
+                            className="text-cyan-400 hover:text-cyan-300 hover:bg-zinc-800 p-1.5 h-auto rounded-lg"
+                            title="Mail Client Manual Settings (IMAP/SMTP)"
+                          >
+                            <Smartphone className="w-3.5 h-3.5" />
+                          </Button>
                           <Button
                             onClick={() => {
                               setTargetEmail(e.email);
@@ -1158,6 +1174,86 @@ export default function EmailManager({ showToast }) {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ========================================================================= */}
+      {/* MODAL: MAIL CLIENT MANUAL SETTINGS                                        */}
+      {/* ========================================================================= */}
+      <Dialog open={isConfigModalOpen} onOpenChange={setIsConfigModalOpen}>
+        <DialogContent className="bg-zinc-950 border-zinc-800 text-white max-w-lg rounded-2xl p-6 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2 text-white">
+              <Smartphone className="w-5 h-5 text-cyan-400" />
+              <span>Mail Client Manual Settings (IMAP / SMTP)</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          {activeConfigMailbox && (
+            <div className="space-y-4 text-xs pt-2">
+              <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl font-mono">
+                <span className="text-zinc-500 text-[11px] block">Mailbox Account</span>
+                <span className="text-white font-bold text-sm">{activeConfigMailbox.email}</span>
+              </div>
+
+              {/* Secure SSL/TLS (Recommended) */}
+              <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Secure SSL/TLS Settings (Recommended)</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px] text-zinc-300 font-mono pt-1">
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Username</span>
+                    <strong className="text-white">{activeConfigMailbox.email}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Password</span>
+                    <strong className="text-white">[Mailbox Password]</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Incoming Server (IMAP)</span>
+                    <span className="text-emerald-300">mail.{activeConfigMailbox.domain || 'domain.com'}</span> : <strong>Port 993 (SSL/TLS)</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Incoming Server (POP3)</span>
+                    <span className="text-emerald-300">mail.{activeConfigMailbox.domain || 'domain.com'}</span> : <strong>Port 995 (SSL/TLS)</strong>
+                  </div>
+                  <div className="col-span-2 pt-1">
+                    <span className="text-zinc-500 block text-[10px]">Outgoing Server (SMTP)</span>
+                    <span className="text-emerald-300">mail.{activeConfigMailbox.domain || 'domain.com'}</span> : <strong>Port 465 (SSL/TLS)</strong> or <strong>Port 587 (STARTTLS)</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Non-SSL Settings */}
+              <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl space-y-1 text-[11px] text-zinc-400 font-mono">
+                <span className="text-zinc-500 font-bold text-[10px] uppercase">Non-SSL Settings (Not Recommended)</span>
+                <div>Incoming (IMAP): <code>mail.{activeConfigMailbox.domain || 'domain.com'}</code> : <strong>Port 143</strong></div>
+                <div>Incoming (POP3): <code>mail.{activeConfigMailbox.domain || 'domain.com'}</code> : <strong>Port 110</strong></div>
+                <div>Outgoing (SMTP): <code>mail.{activeConfigMailbox.domain || 'domain.com'}</code> : <strong>Port 587 / 25</strong></div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="pt-2">
+            <Button
+              type="button"
+              onClick={() => {
+                const domain = activeConfigMailbox?.domain || 'domain.com';
+                const text = `Mail Settings for ${activeConfigMailbox?.email}\nUsername: ${activeConfigMailbox?.email}\nIncoming Server: mail.${domain} (IMAP: 993 SSL, POP3: 995 SSL)\nOutgoing Server: mail.${domain} (SMTP: 465 SSL / 587 TLS)`;
+                navigator.clipboard.writeText(text);
+                showToast('Mail configuration copied to clipboard!');
+              }}
+              className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-xl gap-1.5"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>Copy Settings</span>
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setIsConfigModalOpen(false)} className="rounded-xl border-zinc-800 text-xs">
+              Close
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

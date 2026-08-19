@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { 
   Server, 
   Play, 
@@ -33,7 +33,21 @@ import { Badge } from './ui/badge';
 export default function WebServerManager({ showToast }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
-  const activeTab = searchParams.get('tab') || 'select';
+  const location = useLocation();
+
+  const getTabFromPath = () => {
+    const p = location.pathname;
+    if (p.includes('/webservers/main-conf')) return 'main-conf';
+    if (p.includes('/webservers/domain-conf')) return 'domain-conf';
+    if (p.includes('/webservers/templates')) return 'templates';
+    if (p.includes('/webservers/conf-editor')) return 'conf-editor';
+    if (p.includes('/webservers/apache-status')) return 'apache-status';
+    if (p.includes('/webservers/rebuild')) return 'rebuild';
+    if (p.includes('/webservers/redirects')) return 'redirects';
+    return searchParams.get('tab') || 'select';
+  };
+
+  const activeTab = getTabFromPath();
 
   // State
   const [profiles, setProfiles] = useState([]);
@@ -50,7 +64,7 @@ export default function WebServerManager({ showToast }) {
   // Domain Conf State
   const [users, setUsers] = useState([]);
   const [websites, setWebsites] = useState([]);
-  const [selectedUser, setSelectedUser] = useState('admin');
+  const [selectedUser, setSelectedUser] = useState('');
   const [selectedDomain, setSelectedDomain] = useState('');
   const [domainVhostData, setDomainVhostData] = useState(null);
   const [domainNginxConf, setDomainNginxConf] = useState('');
@@ -76,7 +90,7 @@ export default function WebServerManager({ showToast }) {
   const [redirectTarget, setRedirectTarget] = useState('https://');
 
   const setTab = (tabId) => {
-    setSearchParams({ tab: tabId });
+    navigate(`/webservers/${tabId}`);
   };
 
   // Fetch initial data

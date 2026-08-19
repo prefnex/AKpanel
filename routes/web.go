@@ -1,6 +1,9 @@
 package routes
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/goravel/framework/contracts/http"
 
 	"goravel/app/facades"
@@ -73,8 +76,15 @@ func Web() {
 	facades.Route().Get("/emails/dkim", serveSPA)
 	facades.Route().Get("/emails/policyd", serveSPA)
 	facades.Route().Get("/emails/antispam", serveSPA)
-	facades.Route().Get("/emails/spamexperts", serveSPA)
 	facades.Route().Get("/webservers", serveSPA)
+	facades.Route().Get("/webservers/select", serveSPA)
+	facades.Route().Get("/webservers/main-conf", serveSPA)
+	facades.Route().Get("/webservers/domain-conf", serveSPA)
+	facades.Route().Get("/webservers/templates", serveSPA)
+	facades.Route().Get("/webservers/conf-editor", serveSPA)
+	facades.Route().Get("/webservers/apache-status", serveSPA)
+	facades.Route().Get("/webservers/rebuild", serveSPA)
+	facades.Route().Get("/webservers/redirects", serveSPA)
 	facades.Route().Get("/php", serveSPA)
 	facades.Route().Get("/dashboard", serveSPA)
 	facades.Route().Get("/websites", serveSPA)
@@ -92,6 +102,14 @@ func Web() {
 	facades.Route().Get("/ssl", serveSPA)
 	facades.Route().Get("/terminal", serveSPA)
 	facades.Route().Get("/security", serveSPA)
+	facades.Route().Get("/firewall", serveSPA)
+
+	// Direct Webmail launcher (Redirects to Roundcube on standard port or host)
+	facades.Route().Get("/webmail", func(ctx http.Context) http.Response {
+		host := ctx.Request().Header("Host", "localhost")
+		hostname := strings.Split(host, ":")[0]
+		return ctx.Response().Redirect(302, fmt.Sprintf("http://%s/webmail/", hostname))
+	})
 
 	// Fallback route: Serves SPA shell for any unmapped URL so React Router renders NotFoundPage
 	facades.Route().Fallback(serveSPA)
@@ -286,6 +304,11 @@ func Web() {
 	facades.Route().Post("/api/security/ssl", securityController.IssueSSL)
 	facades.Route().Get("/api/security/firewall", securityController.Firewall)
 	facades.Route().Post("/api/security/firewall/toggle", securityController.TogglePort)
+	facades.Route().Post("/api/security/firewall/rule", securityController.AddRule)
+	facades.Route().Delete("/api/security/firewall/rule", securityController.DeleteRule)
+	facades.Route().Post("/api/security/firewall/toggle-enabled", securityController.ToggleFirewall)
+	facades.Route().Post("/api/security/firewall/unban", securityController.UnbanIP)
+	facades.Route().Post("/api/security/firewall/ban", securityController.BanIP)
 
 	// Web Terminal API
 	facades.Route().Post("/api/terminal/exec", terminalController.Execute)

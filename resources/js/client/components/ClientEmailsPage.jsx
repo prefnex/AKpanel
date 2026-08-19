@@ -11,7 +11,11 @@ import {
   Check, 
   Copy,
   Lock,
-  Globe
+  Globe,
+  Smartphone,
+  Server,
+  Settings,
+  Download
 } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -31,22 +35,28 @@ export default function ClientEmailsPage({ showToast }) {
   const [websites, setWebsites] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isAddOpen, setIsAddOpen] = useState(false);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
+  const [activeMailbox, setActiveMailbox] = useState(null);
 
+  // Form State
   const [emailUser, setEmailUser] = useState('');
-  const [emailDomain, setEmailDomain] = useState('');
-  const [emailPassword, setEmailPassword] = useState('');
-  const [emailQuota, setEmailQuota] = useState(1024);
+  const [selectedDomain, setSelectedDomain] = useState('');
+  const [password, setPassword] = useState('');
+  const [quota, setQuota] = useState(1024);
 
   const fetchEmails = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/client/emails');
+      const token = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
+      const res = await fetch('/api/client/emails', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (res.ok) {
         const json = await res.json();
         setEmails(json.data || []);
       }
     } catch (e) {
-      console.error(e);
+      showToast('Network error loading mailboxes', 'error');
     } finally {
       setLoading(false);
     }
@@ -54,18 +64,17 @@ export default function ClientEmailsPage({ showToast }) {
 
   const fetchWebsites = async () => {
     try {
-      const res = await fetch('/api/client/websites');
+      const token = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
+      const res = await fetch('/api/client/websites', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       if (res.ok) {
         const json = await res.json();
         const list = json.data || [];
         setWebsites(list);
-        if (list.length > 0 && !emailDomain) {
-          setEmailDomain(list[0].domain);
-        }
+        if (list.length > 0) setSelectedDomain(list[0].domain);
       }
-    } catch (e) {
-      console.error(e);
-    }
+    } catch (e) {}
   };
 
   useEffect(() => {
@@ -75,28 +84,56 @@ export default function ClientEmailsPage({ showToast }) {
 
   const handleCreateEmail = async (e) => {
     e.preventDefault();
-    const fullEmail = `${emailUser.trim()}@${emailDomain}`;
     try {
+      const token = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
       const res = await fetch('/api/client/emails', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({
-          email: fullEmail,
-          password: emailPassword,
-          quota_mb: parseInt(emailQuota) || 1024,
-        }),
+          email_user: emailUser,
+          domain: selectedDomain,
+          password,
+          quota_mb: parseInt(quota, 10)
+        })
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message || 'Failed to create email');
+
+      showToast('Mailbox created successfully!');
+      setIsAddOpen(false);
+      setEmailUser('');
+      setPassword('');
+      fetchEmails();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleDeleteEmail = async (email) => {
+    if (!confirm(`Are you sure you want to delete ${email}?`)) return;
+    try {
+      const token = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
+      const res = await fetch(`/api/client/emails?email=${encodeURIComponent(email)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
 
-      if (showToast) showToast(json.message);
-      setIsAddOpen(false);
-      setEmailUser('');
-      setEmailPassword('');
+      showToast('Mailbox deleted');
       fetchEmails();
     } catch (err) {
-      if (showToast) showToast(err.message, 'error');
+      showToast(err.message, 'error');
     }
+  };
+
+  const handleOpenConfig = (mailbox) => {
+    setActiveMailbox(mailbox);
+    setIsConfigOpen(true);
   };
 
   return (
@@ -165,11 +202,26 @@ export default function ClientEmailsPage({ showToast }) {
                     <ShieldCheck className="w-3 h-3" />
                     <span>DKIM/SPF</span>
                   </Badge>
+
+                  <button
+                    onClick={() => handleDeleteEmail(m.email)}
+                    className="p-1 text-zinc-500 hover:text-rose-400 transition"
+                    title="Delete Mailbox"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
 
               <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between text-xs text-zinc-400">
-                <span className="text-[10px] font-mono text-zinc-500">IMAP/SMTP: mail.{m.domain}</span>
+                <button
+                  type="button"
+                  onClick={() => handleOpenConfig(m)}
+                  className="text-cyan-400 hover:text-cyan-300 text-[11px] font-semibold flex items-center gap-1.5 transition"
+                >
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Mail Client Setup</span>
+                </button>
                 <a
                   href={`http://${window.location.hostname}:2087/webmail`}
                   target="_blank"
@@ -184,6 +236,83 @@ export default function ClientEmailsPage({ showToast }) {
           ))
         )}
       </div>
+
+      {/* Modal: Mail Client Manual Settings Guide */}
+      <Dialog open={isConfigOpen} onOpenChange={setIsConfigOpen}>
+        <DialogContent className="bg-[#0f1015] border-zinc-800 text-white max-w-lg rounded-2xl p-6 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2 text-white">
+              <Smartphone className="w-5 h-5 text-cyan-400" />
+              <span>Mail Client Manual Settings</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          {activeMailbox && (
+            <div className="space-y-4 text-xs pt-2">
+              <div className="p-3 bg-zinc-950/80 border border-zinc-800 rounded-xl font-mono">
+                <span className="text-zinc-500 text-[11px] block">Mailbox Account</span>
+                <span className="text-white font-bold text-sm">{activeMailbox.email}</span>
+              </div>
+
+              {/* Secure SSL/TLS (Recommended) */}
+              <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Secure SSL/TLS Settings (Recommended)</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-[11px] text-zinc-300 font-mono pt-1">
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Username</span>
+                    <strong className="text-white">{activeMailbox.email}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Password</span>
+                    <strong className="text-white">[Mailbox Password]</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Incoming Server (IMAP)</span>
+                    <span className="text-emerald-300">mail.{activeMailbox.domain}</span> : <strong>Port 993 (SSL/TLS)</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Incoming Server (POP3)</span>
+                    <span className="text-emerald-300">mail.{activeMailbox.domain}</span> : <strong>Port 995 (SSL/TLS)</strong>
+                  </div>
+                  <div className="col-span-2 pt-1">
+                    <span className="text-zinc-500 block text-[10px]">Outgoing Server (SMTP)</span>
+                    <span className="text-emerald-300">mail.{activeMailbox.domain}</span> : <strong>Port 465 (SSL/TLS)</strong> or <strong>Port 587 (STARTTLS)</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Non-SSL Settings */}
+              <div className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1.5 text-[11px] text-zinc-400 font-mono">
+                <span className="text-zinc-500 font-bold text-[10px] uppercase">Non-SSL Settings (Not Recommended)</span>
+                <div>Incoming (IMAP): <code>mail.{activeMailbox.domain}</code> : <strong>Port 143</strong></div>
+                <div>Incoming (POP3): <code>mail.{activeMailbox.domain}</code> : <strong>Port 110</strong></div>
+                <div>Outgoing (SMTP): <code>mail.{activeMailbox.domain}</code> : <strong>Port 587 / 25</strong></div>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="pt-2">
+            <Button
+              type="button"
+              onClick={() => {
+                const text = `Mail Settings for ${activeMailbox?.email}\nUsername: ${activeMailbox?.email}\nIncoming Server: mail.${activeMailbox?.domain} (IMAP: 993 SSL, POP3: 995 SSL)\nOutgoing Server: mail.${activeMailbox?.domain} (SMTP: 465 SSL / 587 TLS)`;
+                navigator.clipboard.writeText(text);
+                showToast('Configuration copied to clipboard!');
+              }}
+              className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs rounded-xl gap-1.5"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>Copy Settings</span>
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setIsConfigOpen(false)} className="rounded-xl text-xs">
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Modal: Create Email */}
       <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
@@ -210,7 +339,7 @@ export default function ClientEmailsPage({ showToast }) {
 
               <div>
                 <label className="text-xs font-semibold text-zinc-300 block mb-1">Domain</label>
-                <Select value={emailDomain} onValueChange={setEmailDomain}>
+                <Select value={selectedDomain} onValueChange={setSelectedDomain}>
                   <SelectTrigger className="bg-zinc-950 border-zinc-800 text-xs rounded-xl h-10 text-white font-mono">
                     <SelectValue placeholder="Domain" />
                   </SelectTrigger>
@@ -229,8 +358,8 @@ export default function ClientEmailsPage({ showToast }) {
               <label className="text-xs font-semibold text-zinc-300 block mb-1">Password</label>
               <Input
                 type="password"
-                value={emailPassword}
-                onChange={(e) => setEmailPassword(e.target.value)}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 placeholder="Strong mailbox password"
                 className="bg-zinc-950 border-zinc-800 text-xs rounded-xl font-mono h-10"
                 required
@@ -241,8 +370,8 @@ export default function ClientEmailsPage({ showToast }) {
               <label className="text-xs font-semibold text-zinc-300 block mb-1">Storage Quota (MB)</label>
               <Input
                 type="number"
-                value={emailQuota}
-                onChange={(e) => setEmailQuota(e.target.value)}
+                value={quota}
+                onChange={(e) => setQuota(e.target.value)}
                 className="bg-zinc-950 border-zinc-800 text-xs rounded-xl font-mono h-10"
                 required
               />

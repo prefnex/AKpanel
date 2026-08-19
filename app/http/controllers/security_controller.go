@@ -95,10 +95,31 @@ func (r *SecurityController) InstallCustom(ctx http.Context) http.Response {
 	})
 }
 
-// Firewall returns UFW firewall rules
+// Firewall returns UFW firewall rules and fail2ban data
 func (r *SecurityController) Firewall(ctx http.Context) http.Response {
-	active, rules, err := r.securityService.GetFirewallStatus()
-	if err != nil {
+	data := r.securityService.GetFullFirewallInfo()
+	return ctx.Response().Success().Json(http.Json{
+		"status": "success",
+		"data":   data,
+	})
+}
+
+// AddRule creates a new firewall rule
+func (r *SecurityController) AddRule(ctx http.Context) http.Response {
+	port := ctx.Request().Input("port")
+	proto := ctx.Request().Input("protocol", "TCP/UDP")
+	action := ctx.Request().Input("action", "allow")
+	fromIP := ctx.Request().Input("from_ip", "Anywhere")
+	comment := ctx.Request().Input("comment", "Custom Rule")
+
+	if port == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "Port or port range is required",
+		})
+	}
+
+	if err := r.securityService.AddFirewallRule(port, proto, action, fromIP, comment); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
 			"message": err.Error(),
@@ -106,9 +127,102 @@ func (r *SecurityController) Firewall(ctx http.Context) http.Response {
 	}
 
 	return ctx.Response().Success().Json(http.Json{
-		"status":    "success",
-		"is_active": active,
-		"data":      rules,
+		"status":  "success",
+		"message": "Firewall rule created successfully for port " + port,
+	})
+}
+
+// DeleteRule removes a firewall rule
+func (r *SecurityController) DeleteRule(ctx http.Context) http.Response {
+	rule := ctx.Request().Input("rule")
+	if rule == "" {
+		rule = ctx.Request().Input("number")
+	}
+	if rule == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "Rule number or port is required",
+		})
+	}
+
+	if err := r.securityService.DeleteFirewallRule(rule); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": "Firewall rule deleted successfully",
+	})
+}
+
+// ToggleFirewall enables or disables the whole firewall
+func (r *SecurityController) ToggleFirewall(ctx http.Context) http.Response {
+	enable := ctx.Request().InputBool("enable", true)
+	if err := r.securityService.SetFirewallEnabled(enable); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	state := "enabled"
+	if !enable {
+		state = "disabled"
+	}
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": "UFW Firewall " + state + " successfully",
+	})
+}
+
+// UnbanIP unbans an IP from Fail2Ban
+func (r *SecurityController) UnbanIP(ctx http.Context) http.Response {
+	ip := ctx.Request().Input("ip")
+	jail := ctx.Request().Input("jail", "sshd")
+	if ip == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "IP address is required",
+		})
+	}
+
+	if err := r.securityService.UnbanIP(ip, jail); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": "IP " + ip + " unbanned successfully from " + jail,
+	})
+}
+
+// BanIP manually bans an IP in the firewall
+func (r *SecurityController) BanIP(ctx http.Context) http.Response {
+	ip := ctx.Request().Input("ip")
+	reason := ctx.Request().Input("reason", "Manual Ban by Admin")
+	if ip == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "IP address is required",
+		})
+	}
+
+	if err := r.securityService.BanIP(ip, reason); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": "IP " + ip + " added to blacklist successfully",
 	})
 }
 

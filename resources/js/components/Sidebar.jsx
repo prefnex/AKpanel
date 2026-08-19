@@ -362,7 +362,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
               </button>
 
               {openSections.email && (
-                <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200 max-h-64 overflow-y-auto custom-scrollbar">
+                <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
                   <button
                     onClick={() => navigate('/emails')}
                     className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/emails') || isNavActive('/emails/accounts') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
@@ -476,64 +476,64 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
               {openSections.webserver && (
                 <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
                   <button
-                    onClick={() => navigate('/webservers?tab=select')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/select')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/select') || location.pathname === '/webservers' ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     <span>Select WebServers</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers?tab=main_conf')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/main-conf')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/main-conf') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
                     <span>WebServers Main Conf</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers?tab=domain_conf')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/domain-conf')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/domain-conf') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
                     <span>WebServers Domain Conf</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers?tab=templates')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/templates')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/templates') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                     <span>WebServers Template Editor</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers?tab=conf_editor')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/conf-editor')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/conf-editor') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
                     <span>WebServers Conf Editor</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers?tab=apache_status')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/apache-status')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/apache-status') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
                     <span>Apache Status</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers?tab=rebuild')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/rebuild')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/rebuild') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
                     <span>Apache Re-Build</span>
                   </button>
 
                   <button
-                    onClick={() => navigate('/webservers?tab=redirects')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    onClick={() => navigate('/webservers/redirects')}
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/webservers/redirects') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />
                     <span>Apache Redirects</span>
@@ -541,7 +541,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
 
                   <button
                     onClick={() => navigate('/ssl')}
-                    className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-900/40 transition"
+                    className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/ssl') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
                   >
                     <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
                     <span>SSL Certificates</span>
@@ -867,26 +867,26 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  onClick={() => navigate('/security')}
-                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
+                  onClick={() => navigate('/firewall')}
+                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/firewall') || isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'}`}
                 >
-                  <ShieldCheck className="w-4 h-4 text-cyan-400" />
+                  <ShieldCheck className="w-4 h-4 text-rose-400" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right" className="bg-zinc-900 border-zinc-800 text-xs">
-                Firewall & Security
+                Firewall & Security Suite
               </TooltipContent>
             </Tooltip>
           ) : (
             <button
-              onClick={() => navigate('/security')}
-              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
+              onClick={() => navigate('/firewall')}
+              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition ${isNavActive('/firewall') || isNavActive('/security') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60'}`}
             >
               <div className="flex items-center gap-2.5">
-                <ShieldCheck className="w-4 h-4 text-cyan-400" />
+                <ShieldCheck className="w-4 h-4 text-rose-400" />
                 <span>Firewall & Security</span>
               </div>
-              <Badge variant="outline" className="text-[9px] px-1 py-0 text-cyan-400 border-cyan-500/20">UFW</Badge>
+              <Badge variant="outline" className="text-[9px] px-1 py-0 text-rose-400 border-rose-500/20">UFW / WAF</Badge>
             </button>
           )}
 

@@ -209,20 +209,54 @@ func (n *NginxService) createStarterFiles(cfg WebsiteConfig) {
 	}
 }
 
+func (n *NginxService) ensureFallbackSSL() (string, string) {
+	certPath := "/etc/ssl/certs/akpanel-selfsigned.crt"
+	keyPath := "/etc/ssl/private/akpanel-selfsigned.key"
+	if _, err := os.Stat(certPath); os.IsNotExist(err) {
+		_ = os.MkdirAll("/etc/ssl/certs", 0755)
+		_ = os.MkdirAll("/etc/ssl/private", 0700)
+		_ = exec.Command("openssl", "req", "-x509", "-nodes", "-days", "3650",
+			"-newkey", "rsa:2048",
+			"-keyout", keyPath,
+			"-out", certPath,
+			"-subj", "/C=US/ST=Cloud/L=Host/O=AKpanel/CN=akpanel.local").Run()
+	}
+	return certPath, keyPath
+}
+
+func (n *NginxService) getSSLCertAndKey(domain string) (string, string) {
+	letsCert := fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", domain)
+	letsKey := fmt.Sprintf("/etc/letsencrypt/live/%s/privkey.pem", domain)
+	if _, err := os.Stat(letsCert); err == nil {
+		if _, errKey := os.Stat(letsKey); errKey == nil {
+			return letsCert, letsKey
+		}
+	}
+	return n.ensureFallbackSSL()
+}
+
 func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) string {
 	if cfg.PHPVersion == "" {
 		cfg.PHPVersion = "8.2"
 	}
 
 	phpSocket := fmt.Sprintf("unix:/run/php/php%s-fpm.sock", cfg.PHPVersion)
+	sslCert, sslKey := n.getSSLCertAndKey(cfg.Domain)
 
 	// Hybrid Mode: Nginx caches static assets and proxies PHP requests to Apache on port 8081
 	if isHybrid {
 		return fmt.Sprintf(`server {
     listen 80;
     listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
     server_name %s www.%s;
     root %s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
 
     access_log /var/log/nginx/%s.access.log;
     error_log /var/log/nginx/%s.error.log;
@@ -250,7 +284,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.RootPath, cfg.Domain, cfg.Domain)
+`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain)
 	}
 
 	// Reverse Proxy / Node / Python / Go
@@ -258,7 +292,13 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
 		return fmt.Sprintf(`server {
     listen 80;
     listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
     server_name %s www.%s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     access_log /var/log/nginx/%s.access.log;
     error_log /var/log/nginx/%s.error.log;
@@ -275,7 +315,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         proxy_cache_bypass $http_upgrade;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.Domain, cfg.Domain, cfg.ProxyPort)
+`, cfg.Domain, cfg.Domain, sslCert, sslKey, cfg.Domain, cfg.Domain, cfg.ProxyPort)
 	}
 
 	// Static / SPA
@@ -283,8 +323,14 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
 		return fmt.Sprintf(`server {
     listen 80;
     listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
     server_name %s www.%s;
     root %s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     index index.html index.htm;
 
@@ -299,15 +345,21 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         deny all;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.RootPath, cfg.Domain, cfg.Domain)
+`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain)
 	}
 
 	// Default: Pure Nginx PHP FastCGI
 	return fmt.Sprintf(`server {
     listen 80;
     listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
     server_name %s www.%s;
     root %s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
 
     index index.php index.html index.htm;
 
@@ -329,5 +381,5 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         deny all;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.RootPath, cfg.Domain, cfg.Domain, phpSocket)
+`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, phpSocket)
 }

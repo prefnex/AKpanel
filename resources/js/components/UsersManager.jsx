@@ -47,14 +47,16 @@ export default function UsersManager({ showToast }) {
   const [selectedUser, setSelectedUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
   const [targetPackage, setTargetPackage] = useState('');
+  const [availableIps, setAvailableIps] = useState([]);
 
   // Create Form State (Matching Screenshot 3)
   const [formData, setFormData] = useState({
     main_domain: '',
     username: '',
     password: '',
-    email: 'admin@akpanel.local',
-    server_ip: '37.27.116.105 (Shared)',
+    email: '',
+    server_ip: '',
+    document_root: '/public_html',
     package_id: 'standard',
     is_reseller: false,
     language: 'en',
@@ -63,7 +65,7 @@ export default function UsersManager({ showToast }) {
     open_files_limit: 200,
     backup_enabled: true,
     shell_access: false,
-    autossl: false,
+    autossl: true,
     create_mysql: true,
   });
 
@@ -97,9 +99,38 @@ export default function UsersManager({ showToast }) {
     }
   };
 
+  const fetchIps = async () => {
+    try {
+      const res = await fetch('/api/ips');
+      const statsRes = await fetch('/api/system/stats');
+      let primaryIp = '127.0.0.1';
+      if (statsRes.ok) {
+        const sJson = await statsRes.json();
+        if (sJson.data?.system_info?.server_ip) {
+          primaryIp = sJson.data.system_info.server_ip;
+        }
+      }
+      const list = [`${primaryIp} (Shared)`];
+      if (res.ok) {
+        const json = await res.json();
+        if (json.data && Array.isArray(json.data)) {
+          json.data.forEach(ip => {
+            const label = `${ip.ip_address || ip.ip} (${ip.type || 'Dedicated'})`;
+            if (!list.includes(label)) list.push(label);
+          });
+        }
+      }
+      setAvailableIps(list);
+      setFormData(prev => ({ ...prev, server_ip: prev.server_ip || list[0] }));
+    } catch (e) {
+      setAvailableIps(['Dynamic Shared IP']);
+    }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchPackages();
+    fetchIps();
   }, []);
 
   const generateRandomPassword = () => {
@@ -418,12 +449,11 @@ export default function UsersManager({ showToast }) {
                           ) : null}
                         </div>
                       </td>
-
                       {/* Domain */}
                       <td className="py-3 px-3">
                         {u.main_domain ? (
                           <a
-                            href={`http://${u.main_domain}:8080`}
+                            href={`http://${u.main_domain}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="font-mono text-cyan-400 hover:underline flex items-center gap-1"
@@ -438,26 +468,30 @@ export default function UsersManager({ showToast }) {
 
                       {/* IP Address */}
                       <td className="py-3 px-3 font-mono text-zinc-400 text-[11px]">
-                        {u.ip_address || '37.27.116.105'}
+                        {u.ip_address || availableIps[0] || 'Shared IP'}
                       </td>
 
                       {/* Email */}
                       <td className="py-3 px-3 font-mono text-zinc-400 text-[11px] truncate max-w-[150px]">
-                        {u.email || 'admin@nexus.net'}
+                        {u.email || 'admin@' + (u.main_domain || 'domain.com')}
                       </td>
 
                       {/* Setup Time */}
                       <td className="py-3 px-3 font-mono text-zinc-500 text-[10px]">
-                        {u.setup_time || u.created_at || '2026-08-17'}
+                        {u.setup_time || u.created_at || 'Recently'}
                       </td>
 
                       {/* Package with Quick Edit */}
                       <td className="py-3 px-3">
-                        <div className="flex items-center gap-1.5">
-                          <span className="font-mono text-xs text-zinc-200">{u.package_name || u.package_id}</span>
+                        <div className="flex items-center gap-1.5 text-xs text-white">
+                          <span className="font-semibold">{u.package_name || u.package_id || 'Standard'}</span>
                           <button
-                            onClick={() => { setSelectedUser(u); setTargetPackage(u.package_id); setIsPkgModalOpen(true); }}
-                            className="p-1 text-zinc-500 hover:text-purple-400 transition"
+                            onClick={() => {
+                              setSelectedUser({ ...u });
+                              setTargetPackage(u.package_id || 'standard');
+                              setIsPkgModalOpen(true);
+                            }}
+                            className="p-1 text-zinc-500 hover:text-white transition rounded"
                             title="Change Package"
                           >
                             <Edit2 className="w-3 h-3" />
@@ -466,167 +500,187 @@ export default function UsersManager({ showToast }) {
                       </td>
 
                       {/* Reseller */}
-                      <td className="py-3 px-3 font-mono text-zinc-500 text-[11px]">
-                        {u.is_reseller ? <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/20 text-[9px]">Reseller</Badge> : '---'}
+                      <td className="py-3 px-3">
+                        {u.is_reseller ? (
+                          <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-[9px]">Reseller</Badge>
+                        ) : (
+                          <span className="text-zinc-600 font-mono">---</span>
+                        )}
                       </td>
 
-                      {/* Bandwidth Progress */}
-                      <td className="py-3 px-3 min-w-28">
-                        <div className="text-[10px] font-mono text-zinc-400 mb-0.5 flex justify-between">
-                          <span>{bwUsed} MB</span>
-                          <span>{bwLimit === 0 ? '∞' : `${bwLimit / 1024} GB`}</span>
-                        </div>
-                        <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-                          <div className="h-full rounded-full bg-blue-500" style={{ width: '10%' }} />
-                        </div>
-                      </td>
-
-                      {/* Disk Usage Progress */}
-                      <td className="py-3 px-3 min-w-28">
-                        <div className="text-[10px] font-mono text-zinc-400 mb-0.5 flex justify-between">
-                          <span>{diskUsed} MB</span>
-                          <span>{diskQuota === 0 ? '∞' : `${diskQuota / 1024} GB`}</span>
-                        </div>
-                        <div className="w-full h-1.5 rounded-full bg-zinc-800 overflow-hidden">
-                          <div 
-                            className={`h-full rounded-full ${diskPct > 85 ? 'bg-rose-500' : 'bg-emerald-500'}`} 
-                            style={{ width: `${diskPct}%` }}
-                          />
+                      {/* Bandwidth Usage */}
+                      <td className="py-3 px-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                            <span>{u.bandwidth_used_mb || 0} MB</span>
+                            <span className="text-zinc-500">{u.bandwidth_limit_mb === 0 ? 'Unlimited' : `${u.bandwidth_limit_mb} MB`}</span>
+                          </div>
+                          <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-cyan-500 h-full rounded-full" style={{ width: `${Math.min(100, (u.bandwidth_limit_mb ? (u.bandwidth_used_mb / u.bandwidth_limit_mb) * 100 : 5))}%` }} />
+                          </div>
                         </div>
                       </td>
 
-                      {/* Actions Toolbar (Matching Screenshot 2 Icons) */}
-                      <td className="py-3 px-3 text-center">
-                        <div className="flex items-center justify-center gap-1.5">
-                          {/* Green/Red ON/OFF Toggle Switch */}
+                      {/* Disk Usage */}
+                      <td className="py-3 px-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between text-[10px] text-zinc-400">
+                            <span>{u.disk_used_mb || 0} MB</span>
+                            <span className="text-zinc-500">{u.disk_quota_mb === 0 ? 'Unlimited' : `${u.disk_quota_mb} MB`}</span>
+                          </div>
+                          <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${Math.min(100, (u.disk_quota_mb ? (u.disk_used_mb / u.disk_quota_mb) * 100 : 2))}%` }} />
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Actions (Switch, Pass, Edit, Susp, Delete) */}
+                      <td className="py-3 px-3 text-right">
+                        <div className="flex items-center justify-end gap-1.5">
+                          {/* Toggle Active Status */}
                           <button
                             onClick={() => handleToggleActive(u)}
-                            title={isSuspended ? 'Click to Activate Account' : 'Click to Suspend Account'}
-                            className={`px-2 py-0.5 rounded-lg font-mono text-[10px] font-bold transition flex items-center gap-1 ${
-                              isSuspended
-                                ? 'bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700'
-                                : 'bg-emerald-600 text-white shadow-sm shadow-emerald-600/30 hover:bg-emerald-500'
-                            }`}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase transition ${u.status === 'active' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30 hover:bg-rose-500/30'}`}
+                            title={u.status === 'active' ? 'Active Account (Click to Suspend)' : 'Suspended Account (Click to Unsuspend)'}
                           >
-                            <span>{isSuspended ? 'OFF' : 'ON'}</span>
+                            {u.status === 'active' ? 'ON' : 'OFF'}
                           </button>
 
-                          {/* Fix Permissions (Wrench) */}
+                          {/* Quick Password Reset */}
                           <button
-                            onClick={() => handleFixPermissions(u)}
-                            title="Fix Linux Permissions (chown & chmod 755/644)"
-                            className="p-1 rounded-md text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800 transition"
-                          >
-                            <Wrench className="w-3.5 h-3.5" />
-                          </button>
-
-                          {/* Reset Password (Key) */}
-                          <button
-                            onClick={() => { setSelectedUser(u); setNewPassword(''); setIsPassModalOpen(true); }}
-                            title="Change Password"
-                            className="p-1 rounded-md text-zinc-400 hover:text-amber-400 hover:bg-zinc-800 transition"
+                            onClick={() => {
+                              setSelectedUser(u);
+                              setNewPassword(generateRandomPassword());
+                              setIsPassModalOpen(true);
+                            }}
+                            className="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition"
+                            title="Reset Password"
                           >
                             <Key className="w-3.5 h-3.5" />
                           </button>
 
-                          {/* Edit / Change Package (Cog) */}
+                          {/* Fix File Permissions */}
                           <button
-                            onClick={() => { setSelectedUser(u); setTargetPackage(u.package_id); setIsPkgModalOpen(true); }}
-                            title="Edit Account / Package"
-                            className="p-1 rounded-md text-zinc-400 hover:text-purple-400 hover:bg-zinc-800 transition"
+                            onClick={() => handleFixPermissions(u)}
+                            className="p-1.5 rounded-lg text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800 transition"
+                            title="Fix Permissions & Ownership"
+                          >
+                            <Wrench className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Edit Full User Settings */}
+                          <button
+                            onClick={() => {
+                              setSelectedUser({ ...u });
+                              setIsPkgModalOpen(true);
+                            }}
+                            className="p-1.5 rounded-lg text-zinc-400 hover:text-indigo-400 hover:bg-zinc-800 transition"
+                            title="Edit User Limits & Settings"
                           >
                             <Settings className="w-3.5 h-3.5" />
                           </button>
 
-                          {/* Delete (Red Trash) */}
-                          {u.username !== 'root' && u.username !== 'admin' && (
-                            <button
-                              onClick={() => handleDeleteUser(u)}
-                              title="Delete Account"
-                              className="p-1 rounded-md text-zinc-500 hover:text-rose-400 hover:bg-rose-950/30 transition"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          )}
+                          {/* Delete */}
+                          <button
+                            onClick={() => handleDeleteUser(u)}
+                            className="p-1.5 rounded-lg text-zinc-400 hover:text-rose-400 hover:bg-zinc-800 transition"
+                            title="Delete Account"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </td>
                     </tr>
                   );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+                }))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
 
-      {/* Create Account Modal (Matching Screenshot 3 Exact Fields) */}
+      {/* 2. CREATE ACCOUNT MODAL */}
       <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-        <DialogContent className="bg-[#121215] border-zinc-800 text-white rounded-3xl max-w-2xl p-6 max-h-[90vh] overflow-y-auto custom-scrollbar">
+        <DialogContent className="max-w-xl bg-zinc-900 border-zinc-800 text-white rounded-2xl p-6">
           <DialogHeader>
-            <DialogTitle className="text-base font-bold flex items-center gap-2 border-b border-zinc-800 pb-3">
-              <UserPlus className="w-4 h-4 text-blue-400" />
+            <DialogTitle className="text-base font-bold text-white flex items-center gap-2">
+              <UserPlus className="w-5 h-5 text-blue-400" />
               <span>Create a New Account</span>
             </DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={handleCreateUser} className="space-y-4 py-2 text-xs">
-            {/* Domain Name */}
+          <form onSubmit={handleCreateUser} className="space-y-4 pt-2 text-xs">
+            {/* Domain name */}
             <div className="space-y-1">
               <label className="font-bold text-zinc-300">Domain name:</label>
               <Input
-                required
+                type="text"
+                placeholder="example.com"
                 value={formData.main_domain}
                 onChange={(e) => handleDomainChange(e.target.value)}
-                placeholder="Enter domain name without www."
-                className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white"
+                className="h-9 bg-zinc-950 border-zinc-800 rounded-xl text-xs text-white"
+                required
               />
-              <span className="text-[10px] text-zinc-500">Enter domain name without www.</span>
+              <span className="text-[10px] text-zinc-500">Enter domain name without www or http://</span>
             </div>
 
             {/* Username */}
             <div className="space-y-1">
               <label className="font-bold text-zinc-300">Username:</label>
               <Input
-                required
+                type="text"
+                placeholder="username"
                 value={formData.username}
-                onChange={(e) => setFormData(prev => ({ ...prev, username: e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '') }))}
-                placeholder="Enter username"
-                className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white"
+                onChange={(e) => setFormData(prev => ({ ...prev, username: e.target.value.toLowerCase().replace(/[^a-z0-9]/g, '') }))}
+                className="h-9 bg-zinc-950 border-zinc-800 rounded-xl text-xs text-white font-mono"
+                required
               />
             </div>
 
-            {/* Password */}
+            {/* Password with generator */}
             <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <label className="font-bold text-zinc-300">Password:</label>
                 <button
                   type="button"
                   onClick={generateRandomPassword}
-                  className="text-[10px] text-blue-400 hover:underline flex items-center gap-1 font-mono"
+                  className="text-[11px] text-blue-400 hover:underline flex items-center gap-1 font-bold"
                 >
                   <Sparkles className="w-3 h-3" />
                   <span>Generate Password</span>
                 </button>
               </div>
               <Input
-                required
+                type="text"
                 value={formData.password}
                 onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
-                placeholder="Password"
-                className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white"
+                className="h-9 bg-zinc-950 border-zinc-800 rounded-xl text-xs text-white font-mono"
+                required
               />
             </div>
 
-            {/* Admin Email */}
-            <div className="space-y-1">
-              <label className="font-bold text-zinc-300">Admin Email:</label>
-              <Input
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
-                placeholder="admin@domain.com"
-                className="bg-zinc-950 border-zinc-800 rounded-xl text-xs text-white"
-              />
+            {/* Admin Email & Document Root */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="font-bold text-zinc-300">Admin Email:</label>
+                <Input
+                  type="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+                  className="h-9 bg-zinc-950 border-zinc-800 rounded-xl text-xs text-white"
+                  required
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="font-bold text-zinc-300">Document Root:</label>
+                <Input
+                  type="text"
+                  value={formData.document_root}
+                  onChange={(e) => setFormData(prev => ({ ...prev, document_root: e.target.value }))}
+                  placeholder="/public_html"
+                  className="h-9 bg-zinc-950 border-zinc-800 rounded-xl text-xs text-white font-mono"
+                />
+              </div>
             </div>
 
             {/* Server IPs & Package Dropdown */}
@@ -638,8 +692,9 @@ export default function UsersManager({ showToast }) {
                   onChange={(e) => setFormData(prev => ({ ...prev, server_ip: e.target.value }))}
                   className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white px-3 focus:outline-none"
                 >
-                  <option value="37.27.116.105 (Shared)">37.27.116.105 (Shared)</option>
-                  <option value="127.0.0.1 (Localhost)">127.0.0.1 (Localhost)</option>
+                  {availableIps.map((ipLabel, idx) => (
+                    <option key={idx} value={ipLabel}>{ipLabel}</option>
+                  ))}
                 </select>
               </div>
 

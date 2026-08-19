@@ -39,6 +39,7 @@ func NewWebServerManagerService() *WebServerManagerService {
 		templatesDir:   "app/templates",
 	}
 	s.loadCurrentProfile()
+	s.EnsureDefaultLandingPage()
 	return s
 }
 
@@ -342,6 +343,186 @@ func (w *WebServerManagerService) GetApacheStatus() (string, error) {
 	return string(out), nil
 }
 
+// EnsureDefaultLandingPage creates an ultra-sleek AKpanel default landing page at /var/www/html/index.html
+func (w *WebServerManagerService) EnsureDefaultLandingPage() {
+	_ = os.MkdirAll("/var/www/html", 0755)
+	landingPath := "/var/www/html/index.html"
+	
+	htmlContent := `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AKpanel Cloud Web Server</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #06070a;
+            color: #f3f4f6;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            position: relative;
+            overflow-x: hidden;
+        }
+        .bg-glow {
+            position: absolute;
+            width: 500px;
+            height: 500px;
+            background: radial-gradient(circle, rgba(99, 102, 241, 0.15) 0%, rgba(16, 185, 129, 0.08) 50%, transparent 70%);
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            filter: blur(60px);
+            z-index: 0;
+            pointer-events: none;
+        }
+        .card {
+            position: relative;
+            z-index: 1;
+            background: rgba(15, 17, 23, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 28px;
+            padding: 44px 36px;
+            max-width: 580px;
+            width: 100%;
+            text-align: center;
+            backdrop-filter: blur(24px);
+            box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.7);
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            color: #34d399;
+            padding: 6px 14px;
+            border-radius: 9999px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 20px;
+        }
+        .pulse-dot {
+            width: 7px;
+            height: 7px;
+            background: #10b981;
+            border-radius: 50%;
+            box-shadow: 0 0 8px #10b981;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.85); } }
+        h1 {
+            font-size: 2.2rem;
+            font-weight: 800;
+            line-height: 1.2;
+            margin-bottom: 12px;
+            background: linear-gradient(135deg, #ffffff 40%, #a5b4fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        p {
+            color: #9ca3af;
+            font-size: 0.95rem;
+            line-height: 1.6;
+            margin-bottom: 28px;
+        }
+        .server-meta {
+            background: rgba(0, 0, 0, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 16px;
+            padding: 14px;
+            margin-bottom: 28px;
+            display: flex;
+            justify-content: space-around;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+        }
+        .meta-item span { display: block; font-size: 10px; color: #6b7280; text-transform: uppercase; margin-bottom: 2px; }
+        .meta-item strong { color: #e5e7eb; }
+        .actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 18px;
+            border-radius: 14px;
+            font-size: 12px;
+            font-weight: 700;
+            text-decoration: none;
+            transition: all 0.2s ease;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1, #4f46e5);
+            color: #fff;
+            box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.4);
+        }
+        .btn-primary:hover { background: linear-gradient(135deg, #4f46e5, #4338ca); transform: translateY(-1px); }
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #e5e7eb;
+        }
+        .btn-secondary:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+        .webmail-link {
+            font-size: 11px;
+            color: #818cf8;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-weight: 600;
+        }
+        .webmail-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="bg-glow"></div>
+    <div class="card">
+        <div class="badge"><div class="pulse-dot"></div> AKpanel Server Node Active</div>
+        <h1>AKpanel Cloud Web Server</h1>
+        <p>This server node is powered and managed by AKpanel. Virtual Host routing, Nginx reverse proxy, and SSL/TLS encryption are running normally.</p>
+        
+        <div class="server-meta">
+            <div class="meta-item"><span>Hostname</span><strong id="host-name">Local Node</strong></div>
+            <div class="meta-item"><span>Stack</span><strong>Nginx • Apache • PHP</strong></div>
+            <div class="meta-item"><span>Security</span><strong style="color: #34d399;">SSL/TLS Active</strong></div>
+        </div>
+
+        <div class="actions">
+            <a id="whm-link" href=":2087" class="btn btn-primary">🛡️ Root WHM (2087)</a>
+            <a id="client-link" href=":2083" class="btn btn-secondary">🌐 Client Portal (2083)</a>
+        </div>
+
+        <a id="webmail-link" href="/webmail" class="webmail-link">✉️ Access Roundcube Webmail &rarr;</a>
+    </div>
+
+    <script>
+        const host = window.location.hostname;
+        document.getElementById('host-name').innerText = host;
+        document.getElementById('whm-link').href = 'http://' + host + ':2087';
+        document.getElementById('client-link').href = 'http://' + host + ':2083';
+        document.getElementById('webmail-link').href = 'http://' + host + ':2087/webmail';
+    </script>
+</body>
+</html>`
+
+	_ = os.WriteFile(landingPath, []byte(htmlContent), 0644)
+}
+
 func (w *WebServerManagerService) loadCurrentProfile() {
 	if data, err := os.ReadFile(w.profileFile); err == nil {
 		w.currentProfile = stringsTrim(string(data))
@@ -354,4 +535,5 @@ func stringsTrim(s string) string {
 	}
 	return s
 }
+
 

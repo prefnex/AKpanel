@@ -28,6 +28,7 @@ import EmailManager from './components/EmailManager';
 import IPManager from './components/IPManager';
 import ServerSettingsManager from './components/ServerSettingsManager';
 import SSLManager from './components/SSLManager';
+import FirewallManager from './components/FirewallManager';
 import NotFoundPage from './components/NotFoundPage';
 import LoginView from './components/LoginView';
 import Toast from './components/Toast';
@@ -428,6 +429,11 @@ export default function App() {
                 <WebServerManager showToast={showToast} />
               </div>
             } />
+            <Route path="/webservers/*" element={
+              <div className="max-w-[1400px] mx-auto">
+                <WebServerManager showToast={showToast} />
+              </div>
+            } />
 
             {/* Multi-PHP Management Route */}
             <Route path="/php" element={
@@ -463,7 +469,7 @@ export default function App() {
               </div>
             } />
 
-            {/* File Manager & Code Editor Route */}
+            {/* File Manager (Standard Integrated View) */}
             <Route path="/filemanager" element={
               <div className="max-w-[1400px] mx-auto">
                 <FileManager showToast={showToast} />
@@ -477,12 +483,13 @@ export default function App() {
               </div>
             } />
 
-            {/* SSL & Security Route */}
-            <Route path="/security" element={
+            {/* Enterprise Firewall & Security Suite */}
+            <Route path="/firewall" element={
               <div className="max-w-[1400px] mx-auto">
-                <SecurityManager showToast={showToast} />
+                <FirewallManager showToast={showToast} />
               </div>
             } />
+            <Route path="/security" element={<Navigate to="/firewall" replace />} />
 
             {/* Websites & Vhosts Route */}
             <Route path="/websites" element={

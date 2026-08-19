@@ -30,6 +30,8 @@ export default function ServerSettingsManager({ showToast }) {
     client_port: 2083,
     primary_ns: '',
     secondary_ns: '',
+    shared_ip: '',
+    ip_stack_mode: 'dual', // 'ipv4_only' | 'dual'
     timezone: 'UTC',
     language: 'en',
     auto_renew_ssl: true,
@@ -37,9 +39,11 @@ export default function ServerSettingsManager({ showToast }) {
     session_timeout_mins: 60
   });
 
+  const [availableIps, setAvailableIps] = useState([]);
   const [hostnameSSL, setHostnameSSL] = useState(null);
   const [loading, setLoading] = useState(false);
   const [sslLoading, setSslLoading] = useState(false);
+  const [syncNsLoading, setSyncNsLoading] = useState(false);
 
   const fetchSettings = async () => {
     setLoading(true);
@@ -47,7 +51,7 @@ export default function ServerSettingsManager({ showToast }) {
       const res = await fetch('/api/settings/server');
       if (res.ok) {
         const json = await res.json();
-        if (json.data) setSettings(json.data);
+        if (json.data) setSettings(prev => ({ ...prev, ...json.data }));
         if (json.hostname_ssl) setHostnameSSL(json.hostname_ssl);
       }
     } catch (e) {
@@ -57,8 +61,26 @@ export default function ServerSettingsManager({ showToast }) {
     }
   };
 
+  const fetchIps = async () => {
+    try {
+      const res = await fetch('/api/ips');
+      if (res.ok) {
+        const json = await res.json();
+        const list = json.data || [];
+        setAvailableIps(list);
+        if (list.length > 0 && !settings.shared_ip) {
+          const main = list.find(x => x.is_main) || list[0];
+          setSettings(prev => ({ ...prev, shared_ip: main.ip }));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     fetchSettings();
+    fetchIps();
   }, []);
 
   const handleSaveSettings = async (e) => {
@@ -76,6 +98,30 @@ export default function ServerSettingsManager({ showToast }) {
       fetchSettings();
     } catch (err) {
       showToast(err.message, 'error');
+    }
+  };
+
+  const handleSyncNameserversToBind = async () => {
+    setSyncNsLoading(true);
+    try {
+      const res = await fetch('/api/dns/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          primary_ns: settings.primary_ns,
+          secondary_ns: settings.secondary_ns,
+          admin_email: settings.admin_email,
+          server_ip: settings.shared_ip || window.location.hostname
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message);
+
+      showToast('Nameservers synced to BIND 9 & DNS templates!');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setSyncNsLoading(false);
     }
   };
 
@@ -247,7 +293,17 @@ export default function ServerSettingsManager({ showToast }) {
             <div className="space-y-3 text-xs">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold text-zinc-300 mb-1">Primary Nameserver (NS1)</label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-semibold text-zinc-300">Primary NS (NS1)</label>
+                    <button
+                      type="button"
+                      onClick={handleSyncNameserversToBind}
+                      disabled={syncNsLoading}
+                      className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold"
+                    >
+                      {syncNsLoading ? 'Syncing...' : '⚡ Sync to BIND 9'}
+                    </button>
+                  </div>
                   <Input 
                     type="text"
                     placeholder="ns1.akpanel.site"
@@ -258,7 +314,7 @@ export default function ServerSettingsManager({ showToast }) {
                 </div>
 
                 <div>
-                  <label className="block font-semibold text-zinc-300 mb-1">Secondary Nameserver (NS2)</label>
+                  <label className="block font-semibold text-zinc-300 mb-1">Secondary NS (NS2)</label>
                   <Input 
                     type="text"
                     placeholder="ns2.akpanel.site"
@@ -269,32 +325,67 @@ export default function ServerSettingsManager({ showToast }) {
                 </div>
               </div>
 
-              <div>
-                <label className="block font-semibold text-zinc-300 mb-1">Server Timezone</label>
-                <select
-                  value={settings.timezone}
-                  onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
-                >
-                  <option value="UTC">UTC (Universal Coordinated Time)</option>
-                  <option value="America/New_York">America/New_York (EST / EDT)</option>
-                  <option value="Europe/London">Europe/London (GMT / BST)</option>
-                  <option value="Europe/Berlin">Europe/Berlin (CET / CEST)</option>
-                  <option value="Africa/Cairo">Africa/Cairo (EET)</option>
-                  <option value="Asia/Dubai">Asia/Dubai (GST)</option>
-                  <option value="Asia/Riyadh">Asia/Riyadh (AST)</option>
-                  <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-zinc-300 mb-1">Main Shared Hosting IP</label>
+                  <select
+                    value={settings.shared_ip}
+                    onChange={(e) => setSettings({ ...settings, shared_ip: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    {availableIps.length === 0 ? (
+                      <option value={window.location.hostname}>{window.location.hostname} (Default Host)</option>
+                    ) : (
+                      availableIps.map(ip => (
+                        <option key={ip.ip} value={ip.ip}>
+                          {ip.ip} {ip.is_main ? '(Main Server IP)' : `(${ip.type || 'Secondary'})`}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-zinc-300 mb-1">Tenant IP Stack Mode</label>
+                  <select
+                    value={settings.ip_stack_mode}
+                    onChange={(e) => setSettings({ ...settings, ip_stack_mode: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="dual">Dual-Stack (IPv4 + IPv6 Active)</option>
+                    <option value="ipv4_only">IPv4 Only (Legacy Single-Stack)</option>
+                  </select>
+                </div>
               </div>
 
-              <div>
-                <label className="block font-semibold text-zinc-300 mb-1">Session Inactivity Timeout (Minutes)</label>
-                <Input 
-                  type="number"
-                  value={settings.session_timeout_mins}
-                  onChange={(e) => setSettings({ ...settings, session_timeout_mins: parseInt(e.target.value) || 60 })}
-                  className="bg-zinc-900 border-zinc-800 rounded-xl px-4 py-2 font-mono text-white text-xs"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-semibold text-zinc-300 mb-1">Server Timezone</label>
+                  <select
+                    value={settings.timezone}
+                    onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="UTC">UTC (Universal Coordinated Time)</option>
+                    <option value="America/New_York">America/New_York (EST / EDT)</option>
+                    <option value="Europe/London">Europe/London (GMT / BST)</option>
+                    <option value="Europe/Berlin">Europe/Berlin (CET / CEST)</option>
+                    <option value="Africa/Cairo">Africa/Cairo (EET)</option>
+                    <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                    <option value="Asia/Riyadh">Asia/Riyadh (AST)</option>
+                    <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-zinc-300 mb-1">Session Inactivity Timeout (Mins)</label>
+                  <Input 
+                    type="number"
+                    value={settings.session_timeout_mins}
+                    onChange={(e) => setSettings({ ...settings, session_timeout_mins: parseInt(e.target.value) || 60 })}
+                    className="bg-zinc-900 border-zinc-800 rounded-xl px-4 py-2 font-mono text-white text-xs"
+                  />
+                </div>
               </div>
             </div>
           </Card>

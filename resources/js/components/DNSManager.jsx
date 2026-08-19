@@ -1610,7 +1610,7 @@ export default function DNSManager({ initialTab = 'zones', showToast }) {
               <Input
                 value={migrateNewIP}
                 onChange={(e) => setMigrateNewIP(e.target.value)}
-                placeholder="e.g. 37.27.116.105"
+                placeholder="e.g. 192.0.2.1"
                 className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
                 required
               />
