@@ -97,7 +97,7 @@ export default function EmailManager({ showToast }) {
     webmail_path: '/webmail',
   });
   const [securityReport, setSecurityReport] = useState(null);
-  const [selectedDomain, setSelectedDomain] = useState('server.akpanel.site');
+  const [selectedDomain, setSelectedDomain] = useState(window.location.hostname);
   const [mailRoutingMode, setMailRoutingMode] = useState('local'); // 'local' | 'backup' | 'remote'
 
   const [loading, setLoading] = useState(false);

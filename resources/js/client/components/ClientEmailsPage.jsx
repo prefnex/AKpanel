@@ -154,7 +154,7 @@ export default function ClientEmailsPage({ showToast }) {
 
         <div className="flex items-center gap-3">
           <a
-            href={`http://${window.location.hostname}:2087/webmail`}
+            href={`http://${window.location.hostname}/webmail/`}
             target="_blank"
             rel="noreferrer"
             className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs font-bold h-10 px-4 rounded-xl transition"
@@ -223,7 +223,7 @@ export default function ClientEmailsPage({ showToast }) {
                   <span>Mail Client Setup</span>
                 </button>
                 <a
-                  href={`http://${window.location.hostname}:2087/webmail`}
+                  href={`http://${window.location.hostname}/webmail/`}
                   target="_blank"
                   rel="noreferrer"
                   className="text-purple-400 hover:underline text-[11px] font-semibold flex items-center gap-1"

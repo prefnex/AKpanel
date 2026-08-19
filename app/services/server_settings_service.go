@@ -69,8 +69,8 @@ func (s *ServerSettingsService) initSettings() {
 
 	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
 		hostname := s.dnsService.GetSystemHostname()
-		if hostname == "" {
-			hostname = "server.akpanel.site"
+		if hostname == "" || hostname == "localhost" {
+			hostname = s.dnsService.GetSystemIP()
 		}
 
 		defaults := ServerSettings{

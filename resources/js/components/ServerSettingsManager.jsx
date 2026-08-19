@@ -196,7 +196,7 @@ export default function ServerSettingsManager({ showToast }) {
               </p>
 
               <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-zinc-400">
-                <div><strong className="text-zinc-300">Hostname:</strong> <span className="font-mono text-white">{settings.hostname || 'server.akpanel.site'}</span></div>
+                <div><strong className="text-zinc-300">Hostname:</strong> <span className="font-mono text-white">{settings.hostname || window.location.hostname}</span></div>
                 <div><strong className="text-zinc-300">Issuer:</strong> <span className="text-zinc-200">{hostnameSSL?.issuer || "Let's Encrypt / acme.sh"}</span></div>
                 <div><strong className="text-zinc-300">Days Left:</strong> <span className="text-emerald-400 font-mono">{hostnameSSL?.days_left || 90} Days</span></div>
               </div>

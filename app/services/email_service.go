@@ -649,9 +649,11 @@ func (s *EmailService) EnsureRoundcubeWebmail() {
 	_ = os.MkdirAll(rcDir+"/temp", 0777)
 	_ = os.MkdirAll(rcDir+"/logs", 0777)
 
-	// If Roundcube index.php doesn't exist, install or copy from system package
+	// Ensure required PHP and SQLite packages are installed
+	_ = exec.Command("bash", "-c", "which apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq roundcube roundcube-sqlite3 roundcube-plugins sqlite3 php-sqlite3 php-mbstring php-xml 2>/dev/null").Run()
+
+	// If Roundcube index.php doesn't exist, copy from system package
 	if _, err := os.Stat(rcDir + "/index.php"); os.IsNotExist(err) {
-		_ = exec.Command("bash", "-c", "which apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq roundcube roundcube-sqlite3 roundcube-plugins 2>/dev/null").Run()
 		if _, errSys := os.Stat("/usr/share/roundcube/index.php"); errSys == nil {
 			_ = exec.Command("bash", "-c", "cp -rn /usr/share/roundcube/* /var/www/roundcube/ 2>/dev/null || ln -sfn /usr/share/roundcube/* /var/www/roundcube/").Run()
 		} else if _, errVar := os.Stat("/var/lib/roundcube/index.php"); errVar == nil {
@@ -659,28 +661,96 @@ func (s *EmailService) EnsureRoundcubeWebmail() {
 		}
 	}
 
-	// Write modern optimized config.inc.php
+	// Initialize Roundcube SQLite Database Schema if missing or empty
+	dbPath := rcDir + "/db/sqlite.db"
+	sqlSchema := `
+CREATE TABLE IF NOT EXISTS users (
+  user_id integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+  username varchar(128) NOT NULL,
+  mail_host varchar(128) NOT NULL,
+  created datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_login datetime DEFAULT NULL,
+  failed_login datetime DEFAULT NULL,
+  failed_login_counter integer DEFAULT NULL,
+  language varchar(16),
+  preferences text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS lx_users_username ON users (username, mail_host);
+
+CREATE TABLE IF NOT EXISTS session (
+  sess_id varchar(128) NOT NULL PRIMARY KEY,
+  created datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  changed datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  ip varchar(41) NOT NULL,
+  vars text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_session_changed ON session (changed);
+
+CREATE TABLE IF NOT EXISTS identities (
+  identity_id integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+  user_id integer NOT NULL REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
+  changed datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  del smallint NOT NULL DEFAULT '0',
+  standard smallint NOT NULL DEFAULT '0',
+  name varchar(128) NOT NULL,
+  organization varchar(128) NOT NULL DEFAULT '',
+  email varchar(255) NOT NULL,
+  "reply-to" varchar(255) NOT NULL DEFAULT '',
+  bcc varchar(255) NOT NULL DEFAULT '',
+  signature text,
+  html_signature integer NOT NULL DEFAULT '0'
+);
+CREATE INDEX IF NOT EXISTS ix_identities_user_id ON identities (user_id, del);
+
+CREATE TABLE IF NOT EXISTS contacts (
+  contact_id integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+  user_id integer NOT NULL REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
+  changed datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  del smallint NOT NULL DEFAULT '0',
+  name varchar(128) NOT NULL DEFAULT '',
+  email text NOT NULL DEFAULT '',
+  firstname varchar(128) NOT NULL DEFAULT '',
+  lastname varchar(128) NOT NULL DEFAULT '',
+  vcard text,
+  words text
+);
+CREATE INDEX IF NOT EXISTS ix_contacts_user_id ON contacts (user_id, del);
+`
+	// Try running system SQL file first, or apply inline fallback schema
+	systemSql := "/usr/share/roundcube/SQL/sqlite.initial.sql"
+	if _, errSql := os.Stat(systemSql); errSql == nil {
+		_ = exec.Command("bash", "-c", fmt.Sprintf("sqlite3 %s < %s 2>/dev/null", dbPath, systemSql)).Run()
+	} else {
+		tmpSql := "/tmp/rc_init.sql"
+		_ = os.WriteFile(tmpSql, []byte(sqlSchema), 0644)
+		_ = exec.Command("bash", "-c", fmt.Sprintf("sqlite3 %s < %s 2>/dev/null", dbPath, tmpSql)).Run()
+		_ = os.Remove(tmpSql)
+	}
+
+	// Write modern optimized config.inc.php compatible with all Roundcube versions
 	cfgPath := rcDir + "/config/config.inc.php"
 	rcConfig := `<?php
 $config = [];
-$config['db_dsnw'] = 'sqlite:////var/www/roundcube/db/sqlite.db?mode=0646';
-$config['default_host'] = 'localhost';
+$config['db_dsnw'] = 'sqlite:////var/www/roundcube/db/sqlite.db?mode=0666';
+$config['default_host'] = '127.0.0.1';
+$config['imap_host'] = '127.0.0.1:143';
 $config['default_port'] = 143;
-$config['smtp_server'] = 'localhost';
+$config['smtp_server'] = '127.0.0.1';
+$config['smtp_host'] = '127.0.0.1:587';
 $config['smtp_port'] = 587;
 $config['smtp_user'] = '%u';
 $config['smtp_pass'] = '%p';
 $config['support_url'] = '';
 $config['product_name'] = 'AKpanel Webmail';
-$config['des_key'] = 'rcmail-akpanel-sec-key-9988';
+$config['des_key'] = 'rcmail-akpanel-sec-key-998877665544';
 $config['plugins'] = ['archive', 'zipdownload'];
 $config['skin'] = 'elastic';
-$config['enable_spellcheck'] = true;
+$config['enable_spellcheck'] = false;
 $config['auto_create_user'] = true;
 `
 	_ = os.WriteFile(cfgPath, []byte(rcConfig), 0644)
 
-	// Set permissions
+	// Set full permissions
 	_ = exec.Command("chown", "-R", "www-data:www-data", rcDir).Run()
 	_ = exec.Command("chmod", "-R", "777", rcDir+"/db", rcDir+"/temp", rcDir+"/logs").Run()
 

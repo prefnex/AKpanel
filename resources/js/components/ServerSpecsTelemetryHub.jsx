@@ -247,7 +247,7 @@ export default function ServerSpecsTelemetryHub({ stats, showToast }) {
 
             <div className="flex items-center justify-between pt-2 group">
               <span className="text-zinc-400">Server Hostname:</span>
-              <span className="text-purple-300 font-bold">{sys.hostname || 'server.akpanel.site'}</span>
+              <span className="text-purple-300 font-bold">{sys.hostname || sys.server_ip || window.location.hostname}</span>
             </div>
 
             <div className="flex items-center justify-between pt-2">
