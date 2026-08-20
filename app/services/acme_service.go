@@ -55,13 +55,24 @@ func (a *ACMEService) detectAcmeBin() string {
 	return "/root/.acme.sh/acme.sh"
 }
 
+func (a *ACMEService) isAcmeAvailable() bool {
+	bin := a.detectAcmeBin()
+	if _, err := os.Stat(bin); err == nil {
+		a.acmeBin = bin
+		return true
+	}
+	return false
+}
+
 func (a *ACMEService) EnsureAcmeInstalled() error {
-	if _, err := os.Stat(a.acmeBin); err == nil {
+	if a.isAcmeAvailable() {
 		return nil
 	}
-	cmd := exec.Command("bash", "-c", "curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site")
-	_ = cmd.Run()
+	installCmd := `curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site || (git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /root/.acme.sh-repo && cd /root/.acme.sh-repo && ./acme.sh --install -m admin@akpanel.site)`
+	_ = exec.Command("bash", "-c", installCmd).Run()
+	_ = exec.Command("ln", "-sfn", "/root/.acme.sh/acme.sh", "/usr/local/bin/acme.sh").Run()
 	a.acmeBin = a.detectAcmeBin()
+	_ = exec.Command(a.acmeBin, "--set-default-ca", "--server", "letsencrypt").Run()
 	return nil
 }
 
@@ -92,7 +103,7 @@ func (a *ACMEService) GenerateSelfSigned(domain string) (string, string, error) 
 	return certPath, keyPath, nil
 }
 
-// IssueSSL requests Let's Encrypt via acme.sh, and falls back to self-signed on failure
+// IssueSSL requests Let's Encrypt via acme.sh, and falls back to self-signed on failure with transparent logs
 func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -107,6 +118,16 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 	if webroot == "" {
 		webroot = paths.ResolveWebsiteRoot("", domain)
 	}
+	if webroot == "" {
+		webroot = "/var/www/html"
+	} else if _, err := os.Stat(webroot); os.IsNotExist(err) {
+		webroot = "/var/www/html"
+	}
+
+	// Ensure challenge directories
+	_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0777)
+	_ = os.MkdirAll(filepath.Join(webroot, ".well-known/acme-challenge"), 0777)
+	_ = exec.Command("chmod", "-R", "777", "/var/www/html/.well-known").Run()
 
 	domainDir := filepath.Join(a.sslBaseDir, domain)
 	_ = os.MkdirAll(domainDir, 0755)
@@ -115,9 +136,13 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 
 	_ = a.EnsureAcmeInstalled()
 
-	// Try acme.sh issuance
+	// Try acme.sh issuance with detailed log recording
 	var issueSuccess bool
-	if _, err := os.Stat(a.acmeBin); err == nil {
+	var acmeOutput string
+	logPath := "/var/log/akpanel/acme.log"
+	_ = os.MkdirAll("/var/log/akpanel", 0755)
+
+	if a.isAcmeAvailable() {
 		cmdIssue := exec.Command(a.acmeBin,
 			"--issue",
 			"-d", domain,
@@ -125,7 +150,18 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 			"--server", "letsencrypt",
 			"--force",
 		)
-		if err := cmdIssue.Run(); err == nil {
+		out, err := cmdIssue.CombinedOutput()
+		acmeOutput = string(out)
+
+		// Append to persistent log file
+		logEntry := fmt.Sprintf("\n=== ACME Issue [%s] %s ===\n%s\n", time.Now().Format(time.RFC3339), domain, acmeOutput)
+		f, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if f != nil {
+			_, _ = f.WriteString(logEntry)
+			f.Close()
+		}
+
+		if err == nil {
 			cmdInstall := exec.Command(a.acmeBin,
 				"--install-cert",
 				"-d", domain,
@@ -142,7 +178,7 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 	if issueSuccess {
 		return &SSLStatus{
 			Domain:       domain,
-			Issuer:       "Let's Encrypt / ZeroSSL (acme.sh)",
+			Issuer:       "Let's Encrypt (acme.sh)",
 			Status:       "Active (Let's Encrypt)",
 			CertPath:     certPath,
 			KeyPath:      keyPath,
@@ -157,6 +193,13 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 		return nil, fmt.Errorf("failed to generate fallback SSL certificate: %w", err)
 	}
 
+	failReason := "DNS or HTTP verification failed. Check /var/log/akpanel/acme.log for details."
+	if strings.Contains(acmeOutput, "NXDOMAIN") || strings.Contains(acmeOutput, "DNS problem") {
+		failReason = "DNS A-record check failed: The domain does not yet point to this server IP in public DNS."
+	} else if strings.Contains(acmeOutput, "Connection refused") || strings.Contains(acmeOutput, "Timeout") {
+		failReason = "HTTP challenge timed out or Port 80 was unreachable from Let's Encrypt servers."
+	}
+
 	return &SSLStatus{
 		Domain:       domain,
 		Issuer:       "Local Self-Signed (Temporary Fallback)",
@@ -164,7 +207,7 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 		CertPath:     certPath,
 		KeyPath:      keyPath,
 		IsSelfSigned: true,
-		Message:      "DNS verification pending. Self-signed SSL certificate activated as temporary fallback so HTTPS works immediately.",
+		Message:      fmt.Sprintf("%s Self-signed certificate activated so HTTPS remains functional.", failReason),
 	}, nil
 }
 
@@ -221,8 +264,13 @@ func (a *ACMEService) GetAllCertificates() []CertificateDetail {
 			}
 		}
 
+		displayDomain := domain
+		if domain == "server" {
+			displayDomain = "server (Panel Hostname SSL :2087/:2083)"
+		}
+
 		list = append(list, CertificateDetail{
-			Domain:       domain,
+			Domain:       displayDomain,
 			Issuer:       issuer,
 			Status:       status,
 			ExpiryDate:   expiryStr,

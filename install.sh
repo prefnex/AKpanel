@@ -279,9 +279,15 @@ task_step3() {
 
     # Install acme.sh for SSL management & setup daily auto-renewal cron
     if [ ! -f /root/.acme.sh/acme.sh ]; then
-        curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site >> "$LOG_FILE" 2>&1 || true
+        curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site >> "$LOG_FILE" 2>&1 || \
+        (git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /root/.acme.sh-repo >> "$LOG_FILE" 2>&1 && cd /root/.acme.sh-repo && ./acme.sh --install -m admin@akpanel.site >> "$LOG_FILE" 2>&1) || true
     fi
-    mkdir -p /etc/cron.d
+    ln -sfn /root/.acme.sh/acme.sh /usr/local/bin/acme.sh 2>/dev/null || true
+    if [ -f /root/.acme.sh/acme.sh ]; then
+        /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >> "$LOG_FILE" 2>&1 || true
+    fi
+    mkdir -p /etc/cron.d /var/www/html/.well-known/acme-challenge
+    chmod -R 777 /var/www/html/.well-known 2>/dev/null || true
     echo "0 2 * * * root /root/.acme.sh/acme.sh --cron --home /root/.acme.sh > /var/log/akpanel-ssl-renew.log 2>&1" > /etc/cron.d/akpanel-ssl-renew
     chmod 644 /etc/cron.d/akpanel-ssl-renew 2>/dev/null || true
 
