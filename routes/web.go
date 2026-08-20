@@ -1,9 +1,6 @@
 package routes
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/goravel/framework/contracts/http"
 
 	"goravel/app/facades"
@@ -30,6 +27,7 @@ func Web() {
 	clientController := controllers.NewClientController()
 	ipsController := controllers.NewIPsController()
 	serverSettingsController := controllers.NewServerSettingsController()
+	webmailController := controllers.NewWebmailController()
 	varnishService := services.NewVarnishService()
 
 	authMiddleware := middleware.NewAuthMiddleware()
@@ -95,28 +93,6 @@ func Web() {
 	facades.Route().Get("/security", serveSPA)
 	facades.Route().Get("/firewall", serveSPA)
 
-	// Direct Webmail launcher (Redirects to Roundcube on standard port or host)
-	facades.Route().Get("/webmail", func(ctx http.Context) http.Response {
-		host := ctx.Request().Header("X-Forwarded-Host", "")
-		if host == "" {
-			host = ctx.Request().Header("x-forwarded-host", "")
-		}
-		if host == "" {
-			host = ctx.Request().Header("Host", "")
-		}
-		if host == "" {
-			host = ctx.Request().Header("host", "")
-		}
-		if host == "" {
-			host = ctx.Request().Ip()
-		}
-		hostname := strings.Split(host, ":")[0]
-		if hostname == "" || hostname == "localhost" || hostname == "127.0.0.1" {
-			hostname = services.NewDNSService().GetSystemIP()
-		}
-		return ctx.Response().Redirect(302, fmt.Sprintf("http://%s/webmail/", hostname))
-	})
-
 	// Auth APIs
 	facades.Route().Post("/api/auth/login", authController.Login)
 	facades.Route().Post("/api/auth/logout", authController.Logout)
@@ -140,6 +116,8 @@ func Web() {
 	facades.Route().Get("/api/settings/server", serverSettingsController.GetSettings)
 	facades.Route().Post("/api/settings/server", serverSettingsController.SaveSettings)
 	facades.Route().Post("/api/settings/hostname-ssl", serverSettingsController.IssueHostnameSSL)
+	facades.Route().Post("/api/settings/hostname-ssl/issue", serverSettingsController.IssueHostnameSSL)
+	facades.Route().Post("/api/settings/hostname-ssl/custom", serverSettingsController.SaveCustomHostnameSSL)
 
 	// Multi-Tenant User Accounts Management API
 	facades.Route().Get("/api/users", usersController.Index)
@@ -217,6 +195,10 @@ func Web() {
 	facades.Route().Any("/url.php", phpMyAdminController.Proxy)
 	facades.Route().Any("/themes/*path", phpMyAdminController.Proxy)
 	facades.Route().Any("/js/*path", phpMyAdminController.Proxy)
+
+	// Roundcube Webmail Web GUI Reverse Proxy (Forwarding transparently to port 8086)
+	facades.Route().Any("/roundcube/*path", webmailController.Proxy)
+	facades.Route().Any("/webmail/*path", webmailController.Proxy)
 
 	// Static Assets (Vite build output in public/build)
 	facades.Route().Static("public", "./public")

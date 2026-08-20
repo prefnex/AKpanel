@@ -96,8 +96,10 @@ func (a *ApacheService) ReloadApache() error {
 	if output, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {
 		return fmt.Errorf("apache syntax test failed: %s", string(output))
 	}
+	_ = exec.Command("a2enmod", "proxy", "proxy_fcgi", "rewrite", "headers").Run()
 	if err := exec.Command("service", "apache2", "reload").Run(); err != nil {
-		return fmt.Errorf("failed to reload apache: %w", err)
+		_ = os.Remove("/var/run/apache2/apache2.pid")
+		_ = exec.Command("service", "apache2", "start").Run()
 	}
 	return nil
 }

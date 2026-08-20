@@ -1578,14 +1578,33 @@ func (s *DNSService) exportZoneFileDirect(zone *DNSZone, settings DNSSettings) s
 		}
 
 		switch r.Type {
-		case "MX":
-			sb.WriteString(fmt.Sprintf("%-24s %s IN MX %-4d %s\n", name, ttlStr, r.Priority, r.Value))
-		case "TXT":
+		case "CNAME":
 			val := r.Value
-			if !strings.HasPrefix(val, "\"") {
-				val = fmt.Sprintf("\"%s\"", val)
+			if !strings.HasSuffix(val, ".") {
+				val += "."
 			}
-			sb.WriteString(fmt.Sprintf("%-24s %s IN TXT %s\n", name, ttlStr, val))
+			sb.WriteString(fmt.Sprintf("%-24s %s IN CNAME  %s\n", name, ttlStr, val))
+		case "MX":
+			val := r.Value
+			if !strings.HasSuffix(val, ".") {
+				val += "."
+			}
+			sb.WriteString(fmt.Sprintf("%-24s %s IN MX %-4d %s\n", name, ttlStr, r.Priority, val))
+		case "TXT":
+			val := strings.Trim(r.Value, "\"")
+			if len(val) <= 200 {
+				sb.WriteString(fmt.Sprintf("%-24s %s IN TXT \"%s\"\n", name, ttlStr, val))
+			} else {
+				var chunks []string
+				for len(val) > 200 {
+					chunks = append(chunks, fmt.Sprintf("\"%s\"", val[:200]))
+					val = val[200:]
+				}
+				if len(val) > 0 {
+					chunks = append(chunks, fmt.Sprintf("\"%s\"", val))
+				}
+				sb.WriteString(fmt.Sprintf("%-24s %s IN TXT ( %s )\n", name, ttlStr, strings.Join(chunks, " ")))
+			}
 		case "CAA":
 			sb.WriteString(fmt.Sprintf("%-24s %s IN CAA %s\n", name, ttlStr, r.Value))
 		case "SRV":

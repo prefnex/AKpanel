@@ -1,28 +1,28 @@
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/goravel/framework/contracts/http"
 
+	"goravel/app/domain"
 	"goravel/app/facades"
 	"goravel/app/models"
-	"goravel/app/paths"
 	"goravel/app/services"
+	"goravel/app/services/provisioning"
 )
 
 type WebsitesController struct {
-	nginxService    *services.NginxService
+	orchestrator    *provisioning.ProvisioningOrchestrator
 	templateService *services.TemplateService
-	dnsService      *services.DNSService
 }
 
 func NewWebsitesController() *WebsitesController {
 	return &WebsitesController{
-		nginxService:    services.NewNginxService(),
+		orchestrator:    provisioning.GetOrchestrator(),
 		templateService: services.NewTemplateService(),
-		dnsService:      services.NewDNSService(),
 	}
 }
 
@@ -50,92 +50,58 @@ func (r *WebsitesController) Index(ctx http.Context) http.Response {
 	})
 }
 
-// Store creates a new website with virtual host and template
+// Store creates a new website via the Provisioning Orchestrator
 func (r *WebsitesController) Store(ctx http.Context) http.Response {
-	domain := strings.ToLower(strings.TrimSpace(ctx.Request().Input("domain")))
+	domainName := strings.ToLower(strings.TrimSpace(ctx.Request().Input("domain")))
 	serverEngine := ctx.Request().Input("server_engine", "nginx")
 	templateID := ctx.Request().Input("template_id", "laravel")
 	phpVersion := ctx.Request().Input("php_version", "8.2")
 	siteType := ctx.Request().Input("site_type", "php")
 	proxyPort := ctx.Request().InputInt("proxy_port", 3000)
 
-	if domain == "" {
+	if domainName == "" {
 		return ctx.Response().Status(422).Json(http.Json{
 			"status":  "error",
 			"message": "Domain name is required",
 		})
 	}
 
-	// Check if already exists in DB
-	count, _ := facades.Orm().Query().Model(&models.Website{}).Where("domain = ?", domain).Count()
-	if count > 0 {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": fmt.Sprintf("Website '%s' already exists", domain),
-		})
+	engine, _ := domain.NormalizeEngine(serverEngine)
+
+	plan := &provisioning.ProvisionPlan{
+		Domain:        domainName,
+		OwnerUsername: "root",
+		PackageID:     "default",
+		Engine:        engine,
+		PHPVersion:    phpVersion,
+		TemplateID:    templateID,
+		SiteType:      siteType,
+		ProxyPort:     proxyPort,
+		CreateDNS:     true,
+		CreateSSL:     false,
 	}
 
-	cfg := services.WebsiteConfig{
-		Domain:       domain,
-		ServerEngine: serverEngine,
-		TemplateID:   templateID,
-		PHPVersion:   phpVersion,
-		SiteType:     siteType,
-		ProxyPort:    proxyPort,
-	}
-
-	// 1. Create Web Server Virtual Host & Directories
-	if err := r.nginxService.CreateWebsite(cfg); err != nil {
+	website, err := r.orchestrator.ProvisionWebsite(context.Background(), plan)
+	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
-			"message": "Failed to configure Web Server: " + err.Error(),
-		})
-	}
-
-	// A root-created website must receive the same DNS provisioning as a
-	// tenant-created website. Without this, the vhost exists locally but the
-	// domain has no A/www records in AKpanel's authoritative BIND zone.
-	if _, err := r.dnsService.CreateZone(domain, r.dnsService.GetSystemIP(), "root", "default"); err != nil {
-		_ = r.nginxService.DeleteWebsite(domain)
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": "Website vhost was created but DNS provisioning failed: " + err.Error(),
-		})
-	}
-
-	// 2. Save record to DB
-	website := models.Website{
-		Domain:       domain,
-		ServerEngine: serverEngine,
-		TemplateID:   templateID,
-		PHPVersion:   phpVersion,
-		SiteType:     siteType,
-		ProxyPort:    proxyPort,
-		RootPath:     paths.RootSiteRoot(domain),
-		SSLActive:    false,
-	}
-
-	if err := facades.Orm().Query().Create(&website); err != nil {
-		_ = r.nginxService.DeleteWebsite(domain)
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": "Failed to save website to database: " + err.Error(),
+			"message": "Provisioning failed: " + err.Error(),
 		})
 	}
 
 	return ctx.Response().Status(201).Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("Website '%s' created successfully using %s (%s)", domain, strings.ToUpper(serverEngine), templateID),
+		"message": fmt.Sprintf("Website '%s' created successfully using %s (%s)", domainName, strings.ToUpper(string(engine)), templateID),
 		"data":    website,
 	})
 }
 
 // SwitchEngine dynamically switches a website between Nginx, Apache, and Hybrid
 func (r *WebsitesController) SwitchEngine(ctx http.Context) http.Response {
-	domain := ctx.Request().Input("domain")
-	newEngine := ctx.Request().Input("server_engine") // "nginx", "apache", "hybrid"
+	domainName := ctx.Request().Input("domain")
+	newEngine := ctx.Request().Input("server_engine")
 
-	if domain == "" || newEngine == "" {
+	if domainName == "" || newEngine == "" {
 		return ctx.Response().Status(422).Json(http.Json{
 			"status":  "error",
 			"message": "Domain and server_engine are required",
@@ -143,16 +109,22 @@ func (r *WebsitesController) SwitchEngine(ctx http.Context) http.Response {
 	}
 
 	var website models.Website
-	if err := facades.Orm().Query().Where("domain = ?", domain).First(&website); err != nil || website.ID == 0 {
+	if err := facades.Orm().Query().Where("domain = ?", domainName).First(&website); err != nil {
 		return ctx.Response().Status(404).Json(http.Json{
 			"status":  "error",
-			"message": "Website not found",
+			"message": "Website not found in database",
 		})
 	}
 
+	engine, err := domain.NormalizeEngine(newEngine)
+	if err != nil {
+		engine = domain.EngineNginx
+	}
+
+	nginxSvc := services.NewNginxService()
 	cfg := services.WebsiteConfig{
 		Domain:       website.Domain,
-		ServerEngine: newEngine,
+		ServerEngine: string(engine),
 		TemplateID:   website.TemplateID,
 		PHPVersion:   website.PHPVersion,
 		SiteType:     website.SiteType,
@@ -160,36 +132,34 @@ func (r *WebsitesController) SwitchEngine(ctx http.Context) http.Response {
 		RootPath:     website.RootPath,
 	}
 
-	if err := r.nginxService.CreateWebsite(cfg); err != nil {
+	if err := nginxSvc.CreateWebsite(cfg); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
 			"message": "Failed to switch web engine: " + err.Error(),
 		})
 	}
 
-	website.ServerEngine = newEngine
+	website.ServerEngine = string(engine)
 	_ = facades.Orm().Query().Save(&website)
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("Engine for '%s' switched to %s successfully", domain, strings.ToUpper(newEngine)),
+		"message": fmt.Sprintf("Engine for '%s' switched to %s successfully", domainName, strings.ToUpper(string(engine))),
 		"data":    website,
 	})
 }
 
-// Destroy deletes a website
+// Destroy deletes a website via the Provisioning Orchestrator
 func (r *WebsitesController) Destroy(ctx http.Context) http.Response {
-	domain := ctx.Request().Input("domain")
-	if domain == "" {
+	domainName := ctx.Request().Input("domain")
+	if domainName == "" {
 		return ctx.Response().Status(422).Json(http.Json{
 			"status":  "error",
 			"message": "Domain name is required",
 		})
 	}
 
-	_ = r.nginxService.DeleteWebsite(domain)
-
-	if _, err := facades.Orm().Query().Where("domain = ?", domain).Delete(&models.Website{}); err != nil {
+	if err := r.orchestrator.DeprovisionWebsite(context.Background(), domainName); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
 			"message": "Failed to delete website: " + err.Error(),
@@ -198,6 +168,6 @@ func (r *WebsitesController) Destroy(ctx http.Context) http.Response {
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("Website '%s' deleted successfully", domain),
+		"message": fmt.Sprintf("Website '%s' deleted successfully", domainName),
 	})
 }

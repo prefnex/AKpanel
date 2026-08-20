@@ -1,10 +1,14 @@
 package services
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -206,13 +210,17 @@ func (s *ServerSettingsService) GetHostnameSSL() (*HostnameSSLInfo, error) {
 		hostname = s.dnsService.GetSystemHostname()
 	}
 
-	certPath := fmt.Sprintf("/etc/akpanel/ssl/%s/fullchain.pem", hostname)
-	keyPath := fmt.Sprintf("/etc/akpanel/ssl/%s/privkey.pem", hostname)
+	certPath := "/etc/akpanel/ssl/server/fullchain.pem"
+	keyPath := "/etc/akpanel/ssl/server/privkey.pem"
 
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
-		// Check global host cert
-		certPath = "/etc/akpanel/ssl/server/fullchain.pem"
-		keyPath = "/etc/akpanel/ssl/server/privkey.pem"
+		// Check hostname-specific dir
+		hCert := fmt.Sprintf("/etc/akpanel/ssl/%s/fullchain.pem", hostname)
+		hKey := fmt.Sprintf("/etc/akpanel/ssl/%s/privkey.pem", hostname)
+		if _, errH := os.Stat(hCert); errH == nil {
+			certPath = hCert
+			keyPath = hKey
+		}
 	}
 
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
@@ -222,20 +230,36 @@ func (s *ServerSettingsService) GetHostnameSSL() (*HostnameSSLInfo, error) {
 		keyPath = k
 	}
 
-	// Inspect certificate with openssl
 	issuer := "Self-Signed Fallback"
 	status := "Self-Signed (Pending DNS / Let's Encrypt Retry)"
 	isSelfSigned := true
 	expiryDate := time.Now().AddDate(1, 0, 0).Format("2006-01-02")
 	daysLeft := 365
 
-	cmd := exec.Command("openssl", "x509", "-in", certPath, "-noout", "-issuer", "-enddate")
-	if out, err := cmd.Output(); err == nil {
-		outStr := string(out)
-		if strings.Contains(outStr, "Let's Encrypt") || strings.Contains(outStr, "ZeroSSL") {
-			issuer = "Let's Encrypt / ZeroSSL (acme.sh)"
-			status = "Active (Trusted)"
-			isSelfSigned = false
+	// Parse PEM certificate directly in Go
+	if certData, err := os.ReadFile(certPath); err == nil {
+		block, _ := pem.Decode(certData)
+		if block != nil {
+			if cert, errParse := x509.ParseCertificate(block.Bytes); errParse == nil {
+				expiryDate = cert.NotAfter.Format("2006-01-02")
+				daysLeft = int(time.Until(cert.NotAfter).Hours() / 24)
+				if daysLeft < 0 {
+					daysLeft = 0
+				}
+				org := cert.Issuer.Organization
+				commonName := cert.Issuer.CommonName
+				if len(org) > 0 && (strings.Contains(org[0], "Let's Encrypt") || strings.Contains(org[0], "ZeroSSL") || strings.Contains(org[0], "Google Trust Services") || strings.Contains(org[0], "DigiCert") || strings.Contains(org[0], "Sectigo")) {
+					issuer = org[0]
+					status = "Active (Trusted)"
+					isSelfSigned = false
+				} else if commonName != "" {
+					issuer = commonName
+					if !strings.Contains(strings.ToLower(commonName), "self") && !strings.Contains(strings.ToLower(commonName), "akpanel") && !strings.Contains(strings.ToLower(commonName), "localhost") {
+						status = "Active (Trusted)"
+						isSelfSigned = false
+					}
+				}
+			}
 		}
 	}
 
@@ -250,6 +274,53 @@ func (s *ServerSettingsService) GetHostnameSSL() (*HostnameSSLInfo, error) {
 		IsSelfSigned: isSelfSigned,
 		Message:      "Hostname SSL certificate configured.",
 	}, nil
+}
+
+// SaveCustomHostnameSSL validates and installs a custom PEM certificate and private key
+func (s *ServerSettingsService) SaveCustomHostnameSSL(certPEM, keyPEM string) (*HostnameSSLInfo, error) {
+	certPEM = strings.TrimSpace(certPEM)
+	keyPEM = strings.TrimSpace(keyPEM)
+
+	if certPEM == "" || keyPEM == "" {
+		return nil, fmt.Errorf("certificate and private key contents cannot be empty")
+	}
+
+	// Validate TLS key pair
+	_, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("invalid certificate or private key pair: %w", err)
+	}
+
+	settings, _ := s.GetSettings()
+	hostname := settings.Hostname
+	if hostname == "" {
+		hostname = s.dnsService.GetSystemHostname()
+	}
+
+	serverDir := "/etc/akpanel/ssl/server"
+	_ = os.MkdirAll(serverDir, 0755)
+
+	certPath := filepath.Join(serverDir, "fullchain.pem")
+	keyPath := filepath.Join(serverDir, "privkey.pem")
+
+	if err := os.WriteFile(certPath, []byte(certPEM), 0644); err != nil {
+		return nil, fmt.Errorf("failed to save certificate: %w", err)
+	}
+	if err := os.WriteFile(keyPath, []byte(keyPEM), 0600); err != nil {
+		return nil, fmt.Errorf("failed to save private key: %w", err)
+	}
+
+	// Also mirror to /etc/akpanel/ssl/{hostname}/
+	if hostname != "" && hostname != "localhost" {
+		hostDir := fmt.Sprintf("/etc/akpanel/ssl/%s", hostname)
+		_ = os.MkdirAll(hostDir, 0755)
+		_ = os.WriteFile(filepath.Join(hostDir, "fullchain.pem"), []byte(certPEM), 0644)
+		_ = os.WriteFile(filepath.Join(hostDir, "privkey.pem"), []byte(keyPEM), 0600)
+	}
+
+	s.installHostnameCertToServices(hostname, certPath, keyPath)
+
+	return s.GetHostnameSSL()
 }
 
 // IssueHostnameSSL requests Let's Encrypt via acme.sh with self-signed fallback
@@ -272,17 +343,7 @@ func (s *ServerSettingsService) IssueHostnameSSL(email string) (*HostnameSSLInfo
 	// Link certs to Services (Postfix, Dovecot, Pure-FTPd, Nginx)
 	s.installHostnameCertToServices(hostname, res.CertPath, res.KeyPath)
 
-	return &HostnameSSLInfo{
-		Hostname:     hostname,
-		Issuer:       res.Issuer,
-		Status:       res.Status,
-		CertPath:     res.CertPath,
-		KeyPath:      res.KeyPath,
-		ExpiryDate:   time.Now().AddDate(0, 3, 0).Format("2006-01-02"),
-		DaysLeft:     90,
-		IsSelfSigned: res.IsSelfSigned,
-		Message:      res.Message,
-	}, nil
+	return s.GetHostnameSSL()
 }
 
 func (s *ServerSettingsService) installHostnameCertToServices(hostname, certPath, keyPath string) {

@@ -15,7 +15,10 @@ import {
   Zap,
   Save,
   Radio,
-  ExternalLink
+  ExternalLink,
+  Upload,
+  Key,
+  X
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
 import { Button } from './ui/button';
@@ -41,21 +44,31 @@ export default function ServerSettingsManager({ showToast }) {
 
   const [availableIps, setAvailableIps] = useState([]);
   const [hostnameSSL, setHostnameSSL] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [sslLoading, setSslLoading] = useState(false);
   const [syncNsLoading, setSyncNsLoading] = useState(false);
+  const [customSslModal, setCustomSslModal] = useState(false);
+  const [customCert, setCustomCert] = useState('');
+  const [customKey, setCustomKey] = useState('');
+  const [customSslLoading, setCustomSslLoading] = useState(false);
+
+  useEffect(() => {
+    fetchSettings();
+    fetchIps();
+  }, []);
 
   const fetchSettings = async () => {
     setLoading(true);
     try {
       const res = await fetch('/api/settings/server');
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) setSettings(prev => ({ ...prev, ...json.data }));
-        if (json.hostname_ssl) setHostnameSSL(json.hostname_ssl);
+      const json = await res.json();
+      if (json.status === 'success') {
+        setSettings(json.data || {});
+        setHostnameSSL(json.hostname_ssl || null);
       }
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      showToast('Failed to load server settings', 'error');
     } finally {
       setLoading(false);
     }
@@ -78,13 +91,9 @@ export default function ServerSettingsManager({ showToast }) {
     }
   };
 
-  useEffect(() => {
-    fetchSettings();
-    fetchIps();
-  }, []);
-
   const handleSaveSettings = async (e) => {
     e.preventDefault();
+    setSaving(true);
     try {
       const res = await fetch('/api/settings/server', {
         method: 'POST',
@@ -94,29 +103,32 @@ export default function ServerSettingsManager({ showToast }) {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
 
-      showToast(json.message || 'Server settings saved successfully');
+      showToast('Server settings updated successfully');
       fetchSettings();
     } catch (err) {
       showToast(err.message, 'error');
+    } finally {
+      setSaving(false);
     }
   };
 
-  const handleSyncNameserversToBind = async () => {
+  const handleSyncNameservers = async () => {
     setSyncNsLoading(true);
     try {
-      // Save through the server settings endpoint. It merges the NS defaults
-      // into the existing BIND settings, rather than replacing DNS-only data
-      // (TTL, DNSSEC and Cloudflare configuration) with this partial form.
-      const res = await fetch('/api/settings/server', {
+      const res = await fetch('/api/dns/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings)
+        body: JSON.stringify({
+          primary_ns: settings.primary_ns,
+          secondary_ns: settings.secondary_ns,
+          primary_ip: settings.shared_ip,
+          secondary_ip: settings.shared_ip
+        })
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
 
-      showToast('Nameservers synced to BIND 9 without replacing DNS-only settings.');
-      fetchSettings();
+      showToast('Nameservers synced to BIND 9 cluster successfully');
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
@@ -141,6 +153,34 @@ export default function ServerSettingsManager({ showToast }) {
       showToast(err.message, 'error');
     } finally {
       setSslLoading(false);
+    }
+  };
+
+  const handleUploadCustomSSL = async (e) => {
+    e.preventDefault();
+    if (!customCert.trim() || !customKey.trim()) {
+      showToast('Both Certificate and Private Key are required', 'error');
+      return;
+    }
+    setCustomSslLoading(true);
+    try {
+      const res = await fetch('/api/settings/hostname-ssl/custom', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ certificate: customCert, private_key: customKey })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message);
+
+      showToast(json.message || 'Custom Hostname SSL installed successfully');
+      setCustomSslModal(false);
+      setCustomCert('');
+      setCustomKey('');
+      fetchSettings();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setCustomSslLoading(false);
     }
   };
 
@@ -186,12 +226,12 @@ export default function ServerSettingsManager({ showToast }) {
                 ) : (
                   <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30 text-xs">
                     <CheckCircle2 className="w-3 h-3 mr-1" />
-                    Trusted (Let's Encrypt / acme.sh)
+                    Trusted ({hostnameSSL?.issuer || "Let's Encrypt / Custom"})
                   </Badge>
                 )}
               </div>
               <p className="text-xs text-zinc-300 mt-1">
-                Secures Root WHM (<span className="text-indigo-300 font-mono">:2087</span>), Client Portal (<span className="text-indigo-300 font-mono">:2083</span>), Mail (<span className="text-indigo-300 font-mono">IMAP/SMTP SSL</span>), and Pure-FTPd.
+                Secures Root WHM (<span className="text-indigo-300 font-mono">:2087 HTTPS</span>), Client Portal (<span className="text-indigo-300 font-mono">:2083 HTTPS</span>), Mail (<span className="text-indigo-300 font-mono">IMAP/SMTP SSL</span>), and FTP.
               </p>
 
               <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-zinc-400">
@@ -204,16 +244,91 @@ export default function ServerSettingsManager({ showToast }) {
 
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full md:w-auto">
             <Button
+              onClick={() => setCustomSslModal(true)}
+              variant="outline"
+              className="rounded-xl border-indigo-500/30 bg-indigo-950/40 text-indigo-300 hover:text-white hover:bg-indigo-900/60 text-xs font-bold gap-2 py-2.5 px-4"
+            >
+              <Upload className="w-4 h-4" />
+              <span>Install Custom SSL</span>
+            </Button>
+            <Button
               onClick={handleIssueHostnameSSL}
               disabled={sslLoading}
               className="rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold gap-2 shadow-lg shadow-indigo-900/40 py-2.5 px-5"
             >
               <Zap className={`w-4 h-4 ${sslLoading ? 'animate-spin' : ''}`} />
-              <span>{sslLoading ? 'Issuing via acme.sh...' : 'Issue / Renew Hostname SSL'}</span>
+              <span>{sslLoading ? 'Issuing via acme.sh...' : 'Issue / Renew via Let\'s Encrypt'}</span>
             </Button>
           </div>
         </div>
       </Card>
+
+      {/* Custom SSL Upload Modal */}
+      {customSslModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+          <Card className="bg-[#121215] border-zinc-800 rounded-2xl w-full max-w-xl shadow-2xl p-6 relative">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-4 mb-4">
+              <div className="flex items-center gap-2">
+                <Key className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-base font-bold text-white">Install Custom Hostname SSL Certificate</h3>
+              </div>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                onClick={() => setCustomSslModal(false)}
+                className="text-zinc-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            <form onSubmit={handleUploadCustomSSL} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-zinc-300 mb-1">SSL Certificate (PEM / Fullchain) *</label>
+                <textarea
+                  required
+                  rows={6}
+                  placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                  value={customCert}
+                  onChange={(e) => setCustomCert(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 font-mono text-zinc-300 text-xs focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-zinc-300 mb-1">Private Key (PEM) *</label>
+                <textarea
+                  required
+                  rows={5}
+                  placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;...&#10;-----END RSA PRIVATE KEY-----"
+                  value={customKey}
+                  onChange={(e) => setCustomKey(e.target.value)}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3 font-mono text-zinc-300 text-xs focus:border-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setCustomSslModal(false)}
+                  className="rounded-xl border-zinc-800 bg-zinc-900 text-zinc-300 text-xs"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={customSslLoading}
+                  className="rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs gap-2"
+                >
+                  <Save className={`w-4 h-4 ${customSslLoading ? 'animate-spin' : ''}`} />
+                  <span>{customSslLoading ? 'Validating & Installing...' : 'Install & Apply SSL'}</span>
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      )}
 
       {/* Main Settings Form */}
       <form onSubmit={handleSaveSettings}>
@@ -296,7 +411,7 @@ export default function ServerSettingsManager({ showToast }) {
                     <label className="block font-semibold text-zinc-300">Primary NS (NS1)</label>
                     <button
                       type="button"
-                      onClick={handleSyncNameserversToBind}
+                      onClick={handleSyncNameservers}
                       disabled={syncNsLoading}
                       className="text-[10px] text-cyan-400 hover:text-cyan-300 font-bold"
                     >

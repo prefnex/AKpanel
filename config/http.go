@@ -22,10 +22,10 @@ func init() {
 		},
 		// HTTP URL
 		"url": config.Env("APP_URL", "http://localhost:2087"),
-		// HTTP Host
-		"host": config.Env("APP_HOST", "0.0.0.0"),
-		// HTTP Port
-		"port": config.Env("APP_PORT", "2087"),
+		// HTTP Host (internal backend listener)
+		"host": config.Env("APP_INTERNAL_HOST", "127.0.0.1"),
+		// HTTP Port (internal backend listener)
+		"port": config.Env("APP_INTERNAL_PORT", "2088"),
 		// HTTP Timeout, default is 3 seconds
 		"request_timeout": 3,
 		// HTTPS Configuration

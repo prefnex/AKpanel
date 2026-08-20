@@ -75,3 +75,30 @@ func (r *ServerSettingsController) IssueHostnameSSL(ctx http.Context) http.Respo
 		"data":    sslInfo,
 	})
 }
+
+// SaveCustomHostnameSSL installs a custom SSL certificate and private key for the panel hostname
+func (r *ServerSettingsController) SaveCustomHostnameSSL(ctx http.Context) http.Response {
+	cert := ctx.Request().Input("certificate")
+	key := ctx.Request().Input("private_key")
+
+	if cert == "" || key == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "Both certificate and private key are required",
+		})
+	}
+
+	sslInfo, err := r.settingsService.SaveCustomHostnameSSL(cert, key)
+	if err != nil {
+		return ctx.Response().Status(400).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": "Custom Hostname SSL certificate installed successfully",
+		"data":    sslInfo,
+	})
+}
