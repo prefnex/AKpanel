@@ -47,7 +47,6 @@ export default function UsersManager({ showToast }) {
   const [selectedUser, setSelectedUser] = useState(null);
   const [newPassword, setNewPassword] = useState('');
   const [targetPackage, setTargetPackage] = useState('');
-  const [availableIps, setAvailableIps] = useState([]);
 
   // Create Form State (Matching Screenshot 3)
   const [formData, setFormData] = useState({
@@ -73,7 +72,10 @@ export default function UsersManager({ showToast }) {
   const [provisionLogs, setProvisionLogs] = useState([]);
   const [provisionProgress, setProvisionProgress] = useState(0);
   const [provisionStep, setProvisionStep] = useState('');
+  const [provisionStatus, setProvisionStatus] = useState('idle'); // idle | running | completed | failed
+  const [provisionError, setProvisionError] = useState('');
   const [isProvisioning, setIsProvisioning] = useState(false);
+  const [availableIpOptions, setAvailableIpOptions] = useState([]);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -116,20 +118,24 @@ export default function UsersManager({ showToast }) {
           primaryIp = sJson.data.system_info.server_ip;
         }
       }
-      const list = [`${primaryIp} (Shared)`];
+      const options = [{ value: primaryIp, label: `${primaryIp} (Shared)` }];
       if (res.ok) {
         const json = await res.json();
         if (json.data && Array.isArray(json.data)) {
           json.data.forEach(ip => {
-            const label = `${ip.ip_address || ip.ip} (${ip.type || 'Dedicated'})`;
-            if (!list.includes(label)) list.push(label);
+            const ipVal = ip.ip_address || ip.ip;
+            if (!ipVal) return;
+            const label = `${ipVal} (${ip.type || 'Dedicated'})`;
+            if (!options.some(o => o.value === ipVal)) {
+              options.push({ value: ipVal, label });
+            }
           });
         }
       }
-      setAvailableIps(list);
-      setFormData(prev => ({ ...prev, server_ip: prev.server_ip || list[0] }));
+      setAvailableIpOptions(options);
+      setFormData(prev => ({ ...prev, server_ip: prev.server_ip || options[0]?.value || primaryIp }));
     } catch (e) {
-      setAvailableIps(['Dynamic Shared IP']);
+      setAvailableIpOptions([{ value: '127.0.0.1', label: 'Dynamic Shared IP' }]);
     }
   };
 
@@ -154,14 +160,21 @@ export default function UsersManager({ showToast }) {
         setProvisionStep(task.current_step || '');
         if (task.status === 'completed') {
           setIsProvisioning(false);
+          setProvisionStatus('completed');
+          setProvisionError('');
           localStorage.removeItem('akpanel_user_provision_task');
           setProvisionTaskId('');
           showToast(`User provisioned: ${task.subject}`);
           fetchUsers();
         } else if (task.status === 'failed') {
           setIsProvisioning(false);
+          setProvisionStatus('failed');
+          setProvisionError(task.error || 'Provisioning failed');
           localStorage.removeItem('akpanel_user_provision_task');
-          showToast(task.error || 'Provisioning failed', 'error');
+          const shortErr = (task.error || 'Provisioning failed').split('\n')[0];
+          showToast(shortErr, 'error');
+        } else if (task.status === 'running') {
+          setProvisionStatus('running');
         }
       } catch (e) {
         console.error(e);
@@ -177,16 +190,26 @@ export default function UsersManager({ showToast }) {
 
   useEffect(() => {
     const recover = async () => {
-      if (provisionTaskId) return;
+      const storedId = provisionTaskId || localStorage.getItem('akpanel_user_provision_task');
+      if (!storedId) return;
       try {
-        const res = await fetch('/api/tasks/active?kind=user_provision');
+        const res = await fetch(`/api/users/provision/status?task_id=${storedId}`);
         if (!res.ok) return;
         const json = await res.json();
-        const active = (json.data || []).find(t => t.status === 'running');
-        if (active) {
-          setProvisionTaskId(active.id);
-          localStorage.setItem('akpanel_user_provision_task', active.id);
+        const task = json.data;
+        if (!task) return;
+        setProvisionLogs(task.logs || []);
+        setProvisionProgress(task.progress || 0);
+        setProvisionStep(task.current_step || '');
+        if (task.status === 'running') {
+          setProvisionTaskId(storedId);
+          localStorage.setItem('akpanel_user_provision_task', storedId);
           setIsProvisioning(true);
+          setProvisionStatus('running');
+        } else if (task.status === 'failed') {
+          setProvisionStatus('failed');
+          setProvisionError(task.error || 'Provisioning failed');
+          localStorage.removeItem('akpanel_user_provision_task');
         }
       } catch (e) {
         console.error(e);
@@ -218,7 +241,11 @@ export default function UsersManager({ showToast }) {
   const handleCreateUser = async (e) => {
     e.preventDefault();
     setIsProvisioning(true);
+    setProvisionStatus('running');
+    setProvisionError('');
     setProvisionLogs([]);
+    setProvisionProgress(0);
+    setProvisionStep('');
     try {
       const res = await fetch('/api/users/provision', {
         method: 'POST',
@@ -239,8 +266,20 @@ export default function UsersManager({ showToast }) {
       }
     } catch (err) {
       setIsProvisioning(false);
+      setProvisionStatus('failed');
+      setProvisionError(err.message);
       showToast(err.message, 'error');
     }
+  };
+
+  const resetProvisionUI = () => {
+    setProvisionStatus('idle');
+    setProvisionError('');
+    setProvisionLogs([]);
+    setProvisionProgress(0);
+    setProvisionStep('');
+    setProvisionTaskId('');
+    setIsProvisioning(false);
   };
 
   const handleToggleActive = async (user) => {
@@ -539,7 +578,7 @@ export default function UsersManager({ showToast }) {
 
                       {/* IP Address */}
                       <td className="py-3 px-3 font-mono text-zinc-400 text-[11px]">
-                        {u.ip_address || availableIps[0] || 'Shared IP'}
+                        {u.ip_address || availableIpOptions[0]?.value || 'Shared IP'}
                       </td>
 
                       {/* Email */}
@@ -763,8 +802,8 @@ export default function UsersManager({ showToast }) {
                   onChange={(e) => setFormData(prev => ({ ...prev, server_ip: e.target.value }))}
                   className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-white px-3 focus:outline-none"
                 >
-                  {availableIps.map((ipLabel, idx) => (
-                    <option key={idx} value={ipLabel}>{ipLabel}</option>
+                  {availableIpOptions.map((opt, idx) => (
+                    <option key={idx} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
               </div>
@@ -896,20 +935,50 @@ export default function UsersManager({ showToast }) {
               </div>
             </div>
 
-            {(isProvisioning || provisionTaskId) && (
-              <div className="mt-4 p-3 rounded-xl bg-zinc-950 border border-zinc-800 space-y-2">
-                <div className="flex justify-between text-xs text-zinc-400">
-                  <span>Provisioning{provisionStep ? `: ${provisionStep}` : '...'}</span>
+            {(isProvisioning || provisionStatus === 'failed' || provisionTaskId) && (
+              <div className={`mt-4 p-3 rounded-xl space-y-2 border ${
+                provisionStatus === 'failed'
+                  ? 'bg-red-950/30 border-red-800'
+                  : 'bg-zinc-950 border-zinc-800'
+              }`}>
+                <div className={`flex justify-between text-xs ${
+                  provisionStatus === 'failed' ? 'text-red-400' : 'text-zinc-400'
+                }`}>
+                  <span className="flex items-center gap-1.5">
+                    {provisionStatus === 'failed' && <AlertTriangle className="w-3.5 h-3.5" />}
+                    {provisionStatus === 'failed'
+                      ? `Provisioning failed${provisionStep ? ` at ${provisionStep}` : ''}`
+                      : `Provisioning${provisionStep ? `: ${provisionStep}` : '...'}`}
+                  </span>
                   <span>{provisionProgress}%</span>
                 </div>
                 <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-                  <div className="h-full bg-blue-600 transition-all" style={{ width: `${provisionProgress}%` }} />
+                  <div
+                    className={`h-full transition-all ${
+                      provisionStatus === 'failed' ? 'bg-red-600' : 'bg-blue-600'
+                    }`}
+                    style={{ width: `${provisionProgress}%` }}
+                  />
                 </div>
+                {provisionStatus === 'failed' && provisionError && (
+                  <div className="text-[10px] font-mono text-red-300/90 bg-red-950/40 border border-red-900/50 rounded-lg p-2 max-h-24 overflow-y-auto whitespace-pre-wrap">
+                    {provisionError.split('\n').slice(0, 6).join('\n')}
+                  </div>
+                )}
                 <div className="max-h-28 overflow-y-auto text-[10px] font-mono text-zinc-500 space-y-0.5">
                   {(provisionLogs || []).slice(-8).map((line, i) => (
-                    <div key={i}>{line}</div>
+                    <div key={i} className={line.startsWith('Failed:') ? 'text-red-400' : ''}>{line}</div>
                   ))}
                 </div>
+                {provisionStatus === 'failed' && (
+                  <button
+                    type="button"
+                    onClick={resetProvisionUI}
+                    className="text-[10px] text-zinc-400 hover:text-white underline"
+                  >
+                    Dismiss
+                  </button>
+                )}
               </div>
             )}
 
@@ -927,7 +996,7 @@ export default function UsersManager({ showToast }) {
                 disabled={isProvisioning}
                 className="rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md shadow-blue-600/20 px-6 disabled:opacity-50"
               >
-                {isProvisioning ? 'Provisioning...' : 'Create'}
+                {isProvisioning ? 'Provisioning...' : provisionStatus === 'failed' ? 'Retry Create' : 'Create'}
               </Button>
             </DialogFooter>
           </form>

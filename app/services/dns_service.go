@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -1232,7 +1233,7 @@ func (s *DNSService) initDefaultZones() {
 		hostname := s.GetSystemHostname()
 		serverIP := s.GetSystemIP()
 		
-		rootZone := s.generateDefaultZone(hostname, serverIP, "root")
+		rootZone := s.generateDefaultZone(hostname, serverIP, "root", s.PanelUsesTrustedCA())
 		defaults := []DNSZone{rootZone}
 
 		bytes, _ := json.MarshalIndent(defaults, "", "  ")
@@ -1299,7 +1300,8 @@ func (s *DNSService) GenerateDKIM(domain string) (string, error) {
 	return pubB64, nil
 }
 
-func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string) DNSZone {
+func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string, includeLetsEncryptCAA bool) DNSZone {
+	serverIP = NormalizeIPAddress(serverIP)
 	if serverIP == "" {
 		serverIP = s.GetSystemIP()
 	}
@@ -1345,7 +1347,11 @@ func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string) DNS
 		{Name: "@", Type: "TXT", Value: spf, TTL: 3600, Comment: "Sender Policy Framework"},
 		{Name: "_dmarc", Type: "TXT", Value: dmarc, TTL: 3600, Comment: "DMARC Alignment Policy"},
 		{Name: "default._domainkey", Type: "TXT", Value: dkim, TTL: 3600, Comment: "DKIM 2048-bit RSA Key"},
-		{Name: "@", Type: "CAA", Value: `0 issue "letsencrypt.org"`, TTL: 86400, Comment: "SSL Certificate Authority Authorization"},
+	}
+	if includeLetsEncryptCAA {
+		records = append(records, DNSRecord{
+			Name: "@", Type: "CAA", Value: `0 issue "letsencrypt.org"`, TTL: 86400, Comment: "SSL Certificate Authority Authorization",
+		})
 	}
 
 	return DNSZone{
@@ -1396,8 +1402,44 @@ func (s *DNSService) GetZone(domain string) (*DNSZone, error) {
 	return nil, fmt.Errorf("zone not found for domain: %s", domain)
 }
 
-// CreateZone initializes a new zone for a specific user
-func (s *DNSService) CreateZone(domain, serverIP, ownerUser, templateID string) (*DNSZone, error) {
+// PanelUsesTrustedCA reports whether the panel hostname SSL is issued by a public CA (not self-signed).
+func (s *DNSService) PanelUsesTrustedCA() bool {
+	candidates := []string{"/etc/akpanel/ssl/server/fullchain.pem"}
+	if hostname := s.GetSystemHostname(); hostname != "" {
+		candidates = append(candidates, fmt.Sprintf("/etc/akpanel/ssl/%s/fullchain.pem", hostname))
+	}
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		block, _ := pem.Decode(data)
+		if block == nil {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			continue
+		}
+		for _, org := range cert.Issuer.Organization {
+			lower := strings.ToLower(org)
+			if strings.Contains(lower, "let's encrypt") || strings.Contains(lower, "zerossl") ||
+				strings.Contains(lower, "google trust") || strings.Contains(lower, "digicert") ||
+				strings.Contains(lower, "sectigo") {
+				return true
+			}
+		}
+		cn := strings.ToLower(cert.Issuer.CommonName)
+		if cn != "" && !strings.Contains(cn, "self") && !strings.Contains(cn, "akpanel") && !strings.Contains(cn, "localhost") {
+			return true
+		}
+	}
+	return false
+}
+
+// CreateZone initializes a new zone for a specific user.
+// includeLetsEncryptCAA controls whether a Let's Encrypt CAA record is added (only when AutoSSL + trusted CA).
+func (s *DNSService) CreateZone(domain, serverIP, ownerUser, templateID string, includeLetsEncryptCAA ...bool) (*DNSZone, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1408,6 +1450,7 @@ func (s *DNSService) CreateZone(domain, serverIP, ownerUser, templateID string) 
 	if ownerUser == "" {
 		ownerUser = "root"
 	}
+	serverIP = NormalizeIPAddress(serverIP)
 
 	list, _ := s.readZones()
 	for _, z := range list {
@@ -1416,7 +1459,8 @@ func (s *DNSService) CreateZone(domain, serverIP, ownerUser, templateID string) 
 		}
 	}
 
-	zone := s.generateDefaultZone(domain, serverIP, ownerUser)
+	includeCAA := len(includeLetsEncryptCAA) > 0 && includeLetsEncryptCAA[0]
+	zone := s.generateDefaultZone(domain, serverIP, ownerUser, includeCAA)
 	if templateID != "" {
 		zone.TemplateID = templateID
 	}
@@ -1457,7 +1501,7 @@ func (s *DNSService) AddRecord(domain string, record DNSRecord) error {
 	}
 
 	if !found {
-		zone := s.generateDefaultZone(domain, s.GetSystemIP(), "root")
+		zone := s.generateDefaultZone(domain, s.GetSystemIP(), "root", false)
 		zone.Records = append(zone.Records, record)
 		list = append(list, zone)
 		targetZone = &zone
@@ -1503,7 +1547,7 @@ func (s *DNSService) ResetZone(domain string) (*DNSZone, error) {
 
 	for _, z := range list {
 		if z.Domain == domain {
-			newZone = s.generateDefaultZone(domain, z.ServerIP, z.OwnerUser)
+			newZone = s.generateDefaultZone(domain, z.ServerIP, z.OwnerUser, s.PanelUsesTrustedCA())
 			updated = append(updated, newZone)
 		} else {
 			updated = append(updated, z)

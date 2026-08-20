@@ -11,6 +11,24 @@ import (
 	"time"
 )
 
+// NormalizeIPAddress strips UI labels like "(Shared)" and returns a bare IPv4/IPv6 address.
+func NormalizeIPAddress(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if idx := strings.Index(raw, " ("); idx > 0 {
+		raw = strings.TrimSpace(raw[:idx])
+	}
+	if fields := strings.Fields(raw); len(fields) > 0 {
+		raw = fields[0]
+	}
+	if ip := net.ParseIP(raw); ip != nil {
+		return ip.String()
+	}
+	return raw
+}
+
 type IPAddressItem struct {
 	ID          string `json:"id"`
 	IP          string `json:"ip"`           // e.g. "167.233.222.45" or "2a01:4f8:..."
@@ -215,7 +233,7 @@ func (s *IPService) GetIPs() ([]IPAddressItem, error) {
 		var users []UserAccount
 		if json.Unmarshal(uData, &users) == nil {
 			for _, u := range users {
-				cleanIP := strings.TrimSpace(strings.Split(u.IPAddress, " ")[0])
+				cleanIP := NormalizeIPAddress(u.IPAddress)
 				if cleanIP != "" {
 					usersCountByIP[cleanIP]++
 				}

@@ -20,9 +20,11 @@ func NewPHPController() *PHPController {
 // Index returns all supported PHP versions details and installed extension matrix
 func (r *PHPController) Index(ctx http.Context) http.Response {
 	details := r.phpService.GetAllVersionsDetails()
+	overview := r.phpService.GetCLIOverview()
 	return ctx.Response().Success().Json(http.Json{
-		"status": "success",
-		"data":   details,
+		"status":  "success",
+		"data":    details,
+		"cli":     overview,
 	})
 }
 
@@ -249,5 +251,29 @@ func (r *PHPController) RestartFPM(ctx http.Context) http.Response {
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
 		"message": fmt.Sprintf("PHP %s FPM service restarted successfully", version),
+	})
+}
+
+// SetDefaultCLI sets the system-wide default PHP CLI binary via update-alternatives.
+func (r *PHPController) SetDefaultCLI(ctx http.Context) http.Response {
+	version := ctx.Request().Input("version")
+	if version == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "version is required",
+		})
+	}
+
+	if err := r.phpService.SetDefaultCLI(version); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": fmt.Sprintf("System default PHP CLI set to %s", version),
+		"cli":     r.phpService.GetCLIOverview(),
 	})
 }

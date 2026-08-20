@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -12,6 +13,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"goravel/app/facades"
+	"goravel/app/services/tasks"
 )
 
 type ServerSettings struct {
@@ -323,7 +327,7 @@ func (s *ServerSettingsService) SaveCustomHostnameSSL(certPEM, keyPEM string) (*
 	return s.GetHostnameSSL()
 }
 
-// IssueHostnameSSL requests Let's Encrypt via acme.sh with self-signed fallback
+// IssueHostnameSSL requests Let's Encrypt via acme.sh with self-signed fallback (synchronous).
 func (s *ServerSettingsService) IssueHostnameSSL(email string) (*HostnameSSLInfo, error) {
 	settings, _ := s.GetSettings()
 	hostname := settings.Hostname
@@ -340,16 +344,146 @@ func (s *ServerSettingsService) IssueHostnameSSL(email string) (*HostnameSSLInfo
 		return nil, err
 	}
 
-	// Link certs to Services (Postfix, Dovecot, Pure-FTPd, Nginx)
 	s.installHostnameCertToServices(hostname, res.CertPath, res.KeyPath)
 
 	return s.GetHostnameSSL()
+}
+
+// StartAsyncIssueHostnameSSL starts background certificate issuance with task progress tracking.
+func (s *ServerSettingsService) StartAsyncIssueHostnameSSL(email string) (string, error) {
+	settings, _ := s.GetSettings()
+	hostname := strings.ToLower(strings.TrimSpace(settings.Hostname))
+	if hostname == "" {
+		hostname = strings.ToLower(strings.TrimSpace(s.dnsService.GetSystemHostname()))
+	}
+	if hostname == "" || hostname == "localhost" {
+		return "", fmt.Errorf("set a valid server hostname before issuing SSL")
+	}
+
+	if email == "" {
+		email = settings.AdminEmail
+	}
+	if email == "" {
+		email = "admin@" + hostname
+	}
+
+	title := fmt.Sprintf("Issue Hostname SSL for %s", hostname)
+	task, err := tasks.GetRegistry().Create("hostname_ssl", hostname, title)
+	if err != nil {
+		return "", err
+	}
+
+	go s.runHostnameSSLTask(task.ID, hostname, email)
+
+	return task.ID, nil
+}
+
+func (s *ServerSettingsService) runHostnameSSLTask(taskID, hostname, email string) {
+	ctx := context.Background()
+	steps := []struct {
+		name string
+		pct  int
+		fn   func() (string, error)
+	}{
+		{
+			name: "ValidateHostname",
+			pct:  10,
+			fn: func() (string, error) {
+				if hostname == "" || hostname == "localhost" {
+					return "", fmt.Errorf("invalid hostname: %q", hostname)
+				}
+				return fmt.Sprintf("Hostname validated: %s", hostname), nil
+			},
+		},
+		{
+			name: "PrepareAcmeChallenge",
+			pct:  20,
+			fn: func() (string, error) {
+				_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0777)
+				_ = exec.Command("chmod", "-R", "777", "/var/www/html/.well-known").Run()
+				if err := s.acmeService.EnsureAcmeInstalled(); err != nil {
+					return "", err
+				}
+				return "ACME webroot prepared", nil
+			},
+		},
+		{
+			name: "IssueCertificate",
+			pct:  55,
+			fn: func() (string, error) {
+				res, err := s.acmeService.IssueSSL(hostname, "/var/www/html", email)
+				if err != nil {
+					return "", err
+				}
+				s.installHostnameCertToServices(hostname, res.CertPath, res.KeyPath)
+				if res.IsSelfSigned {
+					return fmt.Sprintf("Self-signed fallback activated: %s", res.Message), nil
+				}
+				return fmt.Sprintf("Trusted certificate issued: %s", res.Issuer), nil
+			},
+		},
+		{
+			name: "ConfigureNginx",
+			pct:  80,
+			fn: func() (string, error) {
+				nginx := NewNginxService()
+				if err := nginx.EnsurePanelHostnameVhost(hostname); err != nil {
+					return "", fmt.Errorf("nginx panel vhost: %w", err)
+				}
+				nginx.EnsureDefaultNginxConfig()
+				return "Nginx panel vhost updated for port 443", nil
+			},
+		},
+		{
+			name: "VerifySSL",
+			pct:  95,
+			fn: func() (string, error) {
+				info, err := s.GetHostnameSSL()
+				if err != nil {
+					return "", err
+				}
+				if info.IsSelfSigned {
+					return "Verification complete (self-signed — retry when DNS is ready)", nil
+				}
+				return fmt.Sprintf("Verification complete — issuer: %s", info.Issuer), nil
+			},
+		},
+	}
+
+	for _, step := range steps {
+		_ = tasks.GetRegistry().UpdateProgress(taskID, step.name, step.pct, fmt.Sprintf("Running step: %s", step.name))
+		logLine, err := step.fn()
+		if err != nil {
+			_ = tasks.GetRegistry().Fail(taskID, fmt.Sprintf("step '%s' failed: %v", step.name, err), fmt.Sprintf("Failed: step '%s': %v", step.name, err))
+			if facades.Log() != nil {
+				facades.Log().Error(fmt.Sprintf("[hostname-ssl] %v", err))
+			}
+			return
+		}
+		if logLine != "" {
+			_ = tasks.GetRegistry().UpdateProgress(taskID, step.name, step.pct, logLine)
+		}
+	}
+
+	_ = tasks.GetRegistry().Complete(taskID, fmt.Sprintf("Hostname SSL configured for %s", hostname))
+	_ = ctx
 }
 
 func (s *ServerSettingsService) installHostnameCertToServices(hostname, certPath, keyPath string) {
 	_ = os.MkdirAll("/etc/akpanel/ssl/server", 0755)
 	_ = exec.Command("cp", "-f", certPath, "/etc/akpanel/ssl/server/fullchain.pem").Run()
 	_ = exec.Command("cp", "-f", keyPath, "/etc/akpanel/ssl/server/privkey.pem").Run()
+
+	if hostname != "" && hostname != "localhost" {
+		hostDir := fmt.Sprintf("/etc/akpanel/ssl/%s", hostname)
+		_ = os.MkdirAll(hostDir, 0755)
+		_ = exec.Command("cp", "-f", certPath, filepath.Join(hostDir, "fullchain.pem")).Run()
+		_ = exec.Command("cp", "-f", keyPath, filepath.Join(hostDir, "privkey.pem")).Run()
+	}
+
+	nginx := NewNginxService()
+	_ = nginx.EnsurePanelHostnameVhost(hostname)
+	nginx.EnsureDefaultNginxConfig()
 
 	// Update Dovecot & Postfix
 	_ = exec.Command("postconf", "-e", fmt.Sprintf("smtpd_tls_cert_file = %s", certPath)).Run()

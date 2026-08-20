@@ -327,7 +327,22 @@ func (n *NginxService) createStarterFiles(cfg WebsiteConfig) {
 	}
 }
 
+func (n *NginxService) panelServerSSLPaths() (string, string, bool) {
+	certPath := "/etc/akpanel/ssl/server/fullchain.pem"
+	keyPath := "/etc/akpanel/ssl/server/privkey.pem"
+	if _, err := os.Stat(certPath); err == nil {
+		if _, errKey := os.Stat(keyPath); errKey == nil {
+			return certPath, keyPath, true
+		}
+	}
+	return "", "", false
+}
+
 func (n *NginxService) ensureFallbackSSL() (string, string) {
+	if cert, key, ok := n.panelServerSSLPaths(); ok {
+		return cert, key
+	}
+
 	certPath := "/etc/ssl/certs/akpanel-selfsigned.crt"
 	keyPath := "/etc/ssl/private/akpanel-selfsigned.key"
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
@@ -583,6 +598,65 @@ func (n *NginxService) writeAndEnableVhost(domain, content string) error {
 	if err := os.Symlink(availableFile, enabledFile); err != nil {
 		return err
 	}
+	if err := n.TestConfig(); err != nil {
+		return err
+	}
+	return n.ReloadNginx()
+}
+
+// EnsurePanelHostnameVhost creates/updates nginx :443 vhost for the panel hostname using the server SSL cert.
+func (n *NginxService) EnsurePanelHostnameVhost(hostname string) error {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	if hostname == "" || hostname == "localhost" {
+		return nil
+	}
+
+	certPath, keyPath, ok := n.panelServerSSLPaths()
+	if !ok {
+		certPath, keyPath = n.getSSLCertAndKey(hostname)
+	}
+
+	conf := fmt.Sprintf(`# AKpanel Panel Hostname — auto-managed, do not edit manually
+server {
+    listen 80;
+    listen [::]:80;
+    server_name %s;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name %s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        allow all;
+    }
+
+    location / {
+        return 302 https://$host:2087$request_uri;
+    }
+}
+`, hostname, hostname, certPath, keyPath)
+
+	safeName := strings.ReplaceAll(hostname, ".", "_")
+	availablePath := filepath.Join(n.sitesAvailablePath, "akpanel-hostname-"+safeName+".conf")
+	if err := os.WriteFile(availablePath, []byte(conf), 0644); err != nil {
+		return err
+	}
+
+	enabledPath := filepath.Join(n.sitesEnabledPath, "akpanel-hostname-"+safeName+".conf")
+	_ = os.Remove(enabledPath)
+	if err := os.Symlink(availablePath, enabledPath); err != nil {
+		return err
+	}
+
 	if err := n.TestConfig(); err != nil {
 		return err
 	}

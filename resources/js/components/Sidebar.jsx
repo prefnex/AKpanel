@@ -571,7 +571,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                   >
                     <div className="flex items-center gap-2">
                       <PackageCheck className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>Versions & php.ini</span>
+                      <span>Versions & CLI Manager</span>
                     </div>
                     <Badge variant="secondary" className="bg-indigo-500/10 text-indigo-400 text-[9px] px-1 py-0">7.4-8.4</Badge>
                   </button>

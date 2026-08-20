@@ -35,7 +35,7 @@ func (a *ApacheService) CreateApacheVhost(cfg WebsiteConfig, isHybrid bool) erro
 	port := 80
 	if isHybrid {
 		port = a.internalPort
-		if err := a.ensureInternalBackend(); err != nil {
+		if err := a.EnsureInternalBackend(); err != nil {
 			return err
 		}
 	}
@@ -104,10 +104,10 @@ func (a *ApacheService) ReloadApache() error {
 	return nil
 }
 
-// ensureInternalBackend makes Apache an internal backend for Nginx. Letting
+// EnsureInternalBackend makes Apache an internal backend for Nginx. Letting
 // Apache bind port 80 while Nginx is active causes a port collision and makes
 // sites selected as "Apache" appear created but unreachable.
-func (a *ApacheService) ensureInternalBackend() error {
+func (a *ApacheService) EnsureInternalBackend() error {
 	portsPath := "/etc/apache2/ports.conf"
 	content, err := os.ReadFile(portsPath)
 	if err != nil && !os.IsNotExist(err) {

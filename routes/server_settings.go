@@ -11,5 +11,6 @@ func registerServerSettingsRoutes(serverSettingsController *controllers.ServerSe
 	facades.Route().Post("/api/settings/server", serverSettingsController.SaveSettings)
 	facades.Route().Post("/api/settings/hostname-ssl", serverSettingsController.IssueHostnameSSL)
 	facades.Route().Post("/api/settings/hostname-ssl/issue", serverSettingsController.IssueHostnameSSL)
+	facades.Route().Get("/api/settings/hostname-ssl/status", serverSettingsController.HostnameSSLStatus)
 	facades.Route().Post("/api/settings/hostname-ssl/custom", serverSettingsController.SaveCustomHostnameSSL)
 }

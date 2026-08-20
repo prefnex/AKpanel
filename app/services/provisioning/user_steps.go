@@ -82,6 +82,9 @@ func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionP
 	if plan.Language == "" {
 		plan.Language = "en"
 	}
+	if plan.ServerIP != "" {
+		plan.ServerIP = services.NormalizeIPAddress(plan.ServerIP)
+	}
 	if plan.ServerIP == "" {
 		plan.ServerIP = "127.0.0.1"
 		if out, err := exec.Command("bash", "-c", "hostname -I 2>/dev/null | awk '{print $1}'").Output(); err == nil {
@@ -381,7 +384,8 @@ func (s *CreateUserDNSZoneStep) Execute(ctx context.Context, plan *UserProvision
 	}
 	s.domain = plan.MainDomain
 	dns := services.NewDNSService()
-	_, err := dns.CreateZone(plan.MainDomain, plan.ServerIP, plan.Username, plan.PackageID)
+	includeCAA := plan.AutoSSL && dns.PanelUsesTrustedCA()
+	_, err := dns.CreateZone(plan.MainDomain, plan.ServerIP, plan.Username, plan.PackageID, includeCAA)
 	if err != nil {
 		return err
 	}

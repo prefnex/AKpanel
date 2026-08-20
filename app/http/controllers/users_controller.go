@@ -45,7 +45,7 @@ func (c *UsersController) buildPlan(req CreateUserRequest) *provisioning.UserPro
 		Email:          req.Email,
 		MainDomain:     req.MainDomain,
 		PackageID:      req.PackageID,
-		ServerIP:       req.ServerIP,
+		ServerIP:       services.NormalizeIPAddress(req.ServerIP),
 		Language:       req.Language,
 		ShellAccess:    req.ShellAccess,
 		IsReseller:     req.IsReseller,

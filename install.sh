@@ -117,11 +117,148 @@ if [ "$REBUILD" = true ]; then
     echo -e "${GREEN}✓ Clean state ready. Proceeding with fresh installation...${NC}\n"
 fi
 
+# Optional server identity (all skippable — press Enter to skip)
+AKPANEL_HOSTNAME=""
+AKPANEL_NS1=""
+AKPANEL_NS2=""
+AKPANEL_ADMIN_EMAIL=""
+
+if [ "$AUTO_CONFIRM" = false ]; then
+    echo -e "\n${CYAN}${BOLD}Optional Server Identity${NC} ${DIM}(press Enter to skip any field)${NC}"
+    echo -e "${DIM}If provided, AKpanel configures hostname, nameservers, and issues Hostname SSL (LE → ZeroSSL fallback).${NC}\n"
+    read -r -p "  Panel Hostname (FQDN, e.g. server.akpanel.site): " AKPANEL_HOSTNAME
+    read -r -p "  Primary Nameserver (e.g. ns1.akpanel.site): " AKPANEL_NS1
+    read -r -p "  Secondary Nameserver (e.g. ns2.akpanel.site): " AKPANEL_NS2
+    read -r -p "  Admin Email (for SSL notifications): " AKPANEL_ADMIN_EMAIL
+    AKPANEL_HOSTNAME=$(echo "$AKPANEL_HOSTNAME" | tr '[:upper:]' '[:lower:]' | xargs)
+    AKPANEL_NS1=$(echo "$AKPANEL_NS1" | tr '[:upper:]' '[:lower:]' | xargs)
+    AKPANEL_NS2=$(echo "$AKPANEL_NS2" | tr '[:upper:]' '[:lower:]' | xargs)
+    AKPANEL_ADMIN_EMAIL=$(echo "$AKPANEL_ADMIN_EMAIL" | xargs)
+    echo ""
+fi
+
+# Web server stack profile (default: nginx + php-fpm)
+AKPANEL_WEB_PROFILE="nginx_phpfpm"
+
+# PHP versions — 8.3 always installed as primary
+AKPANEL_PHP_VERSIONS="8.3"
+
+if [ "$AUTO_CONFIRM" = false ]; then
+    echo -e "${CYAN}${BOLD}Web Server Stack${NC}"
+    echo -e "  ${GREEN}1)${NC} Nginx + PHP-FPM ${DIM}(default — fastest)${NC}"
+    echo -e "  ${GREEN}2)${NC} Apache + PHP ${DIM}(.htaccess via Apache backend)${NC}"
+    echo -e "  ${GREEN}3)${NC} Nginx + Apache Hybrid ${DIM}(static Nginx, dynamic Apache)${NC}"
+    echo -e "  ${GREEN}4)${NC} Nginx + Varnish + Apache ${DIM}(cached hybrid)${NC}"
+    echo -e "  ${GREEN}5)${NC} Nginx + Varnish + PHP-FPM ${DIM}(cached pure FPM)${NC}"
+    read -r -p "  Choose stack [1-5] (default 1): " WS_CHOICE
+    case "${WS_CHOICE:-1}" in
+        2) AKPANEL_WEB_PROFILE="apache_phpfpm" ;;
+        3) AKPANEL_WEB_PROFILE="hybrid_nginx_apache" ;;
+        4) AKPANEL_WEB_PROFILE="varnish_nginx_apache" ;;
+        5) AKPANEL_WEB_PROFILE="varnish_nginx_phpfpm" ;;
+        *) AKPANEL_WEB_PROFILE="nginx_phpfpm" ;;
+    esac
+    echo ""
+
+    echo -e "${CYAN}${BOLD}PHP Versions${NC}"
+    echo -e "  Primary version ${GREEN}8.3${NC} will always be installed."
+    read -r -p "  Install additional PHP versions? [y/N]: " INSTALL_EXTRA_PHP
+    if [[ "$INSTALL_EXTRA_PHP" =~ ^[Yy]$ ]]; then
+        echo -e "  Available: ${DIM}7.4  8.0  8.1  8.2  8.4${NC}"
+        read -r -p "  Enter extra versions (space-separated, e.g. 8.1 8.2): " AKPANEL_PHP_EXTRA
+        for ver in $AKPANEL_PHP_EXTRA; do
+            ver=$(echo "$ver" | tr -d '[:alpha:]' | xargs)
+            [ -z "$ver" ] && continue
+            [ "$ver" = "8.3" ] && continue
+            case " $AKPANEL_PHP_VERSIONS " in
+                *" $ver "*) ;;
+                *) AKPANEL_PHP_VERSIONS="$AKPANEL_PHP_VERSIONS $ver" ;;
+            esac
+        done
+    fi
+    echo -e "  ${DIM}Will install PHP:${NC} ${GREEN}${AKPANEL_PHP_VERSIONS}${NC}\n"
+fi
+
 if [ "$VERBOSE" = true ]; then
     echo -e "${YELLOW}🔍 Running in Detailed Verbose Mode (--verbose)... All command outputs visible.${NC}\n"
 else
     echo -e "${BOLD}🚀 Starting Clean Automated Installation...${NC} ${DIM}(Logs: ${LOG_FILE} | Run with --verbose for raw logs)${NC}\n"
 fi
+
+build_php_package_list() {
+    local PKG_LIST=""
+    for ver in $AKPANEL_PHP_VERSIONS; do
+        PKG_LIST="$PKG_LIST php${ver}-cli php${ver}-fpm php${ver}-common php${ver}-mysql php${ver}-curl php${ver}-mbstring php${ver}-xml php${ver}-zip php${ver}-gd"
+    done
+    echo "$PKG_LIST"
+}
+
+write_install_metadata() {
+    mkdir -p /etc/akpanel
+    echo "$AKPANEL_WEB_PROFILE" > /etc/akpanel/server_profile.conf
+
+    local PHP_JSON="["
+    local first=true
+    for ver in $AKPANEL_PHP_VERSIONS; do
+        $first || PHP_JSON="${PHP_JSON},"
+        first=false
+        PHP_JSON="${PHP_JSON}\"${ver}\""
+    done
+    PHP_JSON="${PHP_JSON}]"
+
+    cat << EOF > /etc/akpanel/install.conf
+{
+  "hostname": "${AKPANEL_HOSTNAME:-}",
+  "admin_email": "${AKPANEL_ADMIN_EMAIL:-admin@localhost}",
+  "panel": {
+    "admin_port": 2087,
+    "client_port": 2083,
+    "admin_username": "root",
+    "ssl_enabled": false
+  },
+  "components": {
+    "webserver_profile": "${AKPANEL_WEB_PROFILE}",
+    "php_versions": ${PHP_JSON},
+    "mariadb": true,
+    "postgresql": false,
+    "redis": true,
+    "bind_dns": true,
+    "mail_stack": true,
+    "varnish": $([ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_apache" ] || [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_phpfpm" ] && echo "true" || echo "false")
+  },
+  "paths": {
+    "sites_root": "/var/www/sites",
+    "user_homes": "/home"
+  }
+}
+EOF
+    chmod 644 /etc/akpanel/install.conf /etc/akpanel/server_profile.conf 2>/dev/null || true
+}
+
+apply_webserver_profile() {
+    case "$AKPANEL_WEB_PROFILE" in
+        nginx_phpfpm)
+            service apache2 stop >> "$LOG_FILE" 2>&1 || true
+            service varnish stop >> "$LOG_FILE" 2>&1 || true
+            service nginx restart >> "$LOG_FILE" 2>&1 || true
+            ;;
+        apache_phpfpm|hybrid_nginx_apache)
+            service varnish stop >> "$LOG_FILE" 2>&1 || true
+            service apache2 start >> "$LOG_FILE" 2>&1 || true
+            service nginx restart >> "$LOG_FILE" 2>&1 || true
+            ;;
+        varnish_nginx_apache)
+            service apache2 start >> "$LOG_FILE" 2>&1 || true
+            service varnish restart >> "$LOG_FILE" 2>&1 || true
+            service nginx restart >> "$LOG_FILE" 2>&1 || true
+            ;;
+        varnish_nginx_phpfpm)
+            service apache2 stop >> "$LOG_FILE" 2>&1 || true
+            service varnish restart >> "$LOG_FILE" 2>&1 || true
+            service nginx restart >> "$LOG_FILE" 2>&1 || true
+            ;;
+    esac
+}
 
 # Animated task runner
 run_task() {
@@ -186,6 +323,127 @@ run_task() {
     return 0
 }
 
+# Configure optional hostname, nameservers, and SSL after panel is online
+configure_panel_identity() {
+    [ -z "$AKPANEL_HOSTNAME" ] && return 0
+
+    echo "=== Configuring panel identity: ${AKPANEL_HOSTNAME} ===" >> "$LOG_FILE"
+
+    hostnamectl set-hostname "$AKPANEL_HOSTNAME" 2>> "$LOG_FILE" || echo "$AKPANEL_HOSTNAME" > /etc/hostname
+
+    local ADMIN_EMAIL="${AKPANEL_ADMIN_EMAIL:-admin@${AKPANEL_HOSTNAME}}"
+    local NS1="${AKPANEL_NS1:-}"
+    local NS2="${AKPANEL_NS2:-}"
+    local ROOT_DOMAIN
+    ROOT_DOMAIN=$(echo "$AKPANEL_HOSTNAME" | awk -F. '{if (NF>=2) print $(NF-1)"."$NF; else print $0}')
+    [ -z "$NS1" ] && NS1="ns1.${ROOT_DOMAIN}"
+    [ -z "$NS2" ] && NS2="ns2.${ROOT_DOMAIN}"
+
+    cat << EOF > /etc/akpanel/server_settings.json
+{
+  "hostname": "${AKPANEL_HOSTNAME}",
+  "admin_email": "${ADMIN_EMAIL}",
+  "panel_port": 2087,
+  "client_port": 2083,
+  "primary_ns": "${NS1}",
+  "secondary_ns": "${NS2}",
+  "shared_ip": "${SERVER_IP}",
+  "ip_stack_mode": "dual",
+  "timezone": "UTC",
+  "language": "en",
+  "auto_renew_ssl": true,
+  "force_https": false,
+  "session_timeout_mins": 60,
+  "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+}
+EOF
+
+    cat << EOF > /etc/akpanel/dns_settings.json
+{
+  "server_hostname": "${AKPANEL_HOSTNAME}",
+  "primary_ns": "${NS1}",
+  "secondary_ns": "${NS2}",
+  "primary_ip": "${SERVER_IP}",
+  "secondary_ip": "${SERVER_IP}",
+  "default_ttl": 14400,
+  "bind_enabled": true,
+  "dnssec_enabled": false
+}
+EOF
+
+    mkdir -p /var/www/html/.well-known/acme-challenge
+    chmod -R 777 /var/www/html/.well-known 2>/dev/null || true
+
+    if [ ! -f /root/.acme.sh/acme.sh ]; then
+        curl -fsSL https://get.acme.sh | sh -s "email=${ADMIN_EMAIL}" >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    local ACME_BIN="/root/.acme.sh/acme.sh"
+    local SSL_OK=false
+    if [ -f "$ACME_BIN" ]; then
+        if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server letsencrypt --force >> "$LOG_FILE" 2>&1; then
+            SSL_OK=true
+        elif "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server zerossl --force >> "$LOG_FILE" 2>&1; then
+            SSL_OK=true
+        fi
+    fi
+
+    mkdir -p /etc/akpanel/ssl/server "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}"
+
+    if [ "$SSL_OK" = true ] && [ -f "$ACME_BIN" ]; then
+        "$ACME_BIN" --install-cert -d "$AKPANEL_HOSTNAME" \
+            --key-file /etc/akpanel/ssl/server/privkey.pem \
+            --fullchain-file /etc/akpanel/ssl/server/fullchain.pem \
+            --reloadcmd "service nginx reload 2>/dev/null || true" >> "$LOG_FILE" 2>&1 || SSL_OK=false
+    fi
+
+    if [ "$SSL_OK" = false ]; then
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /etc/akpanel/ssl/server/privkey.pem \
+            -out /etc/akpanel/ssl/server/fullchain.pem \
+            -subj "/C=US/ST=Cloud/L=Server/O=AKpanel/CN=${AKPANEL_HOSTNAME}" >> "$LOG_FILE" 2>&1 || true
+    fi
+
+    cp -f /etc/akpanel/ssl/server/fullchain.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/fullchain.pem" 2>/dev/null || true
+    cp -f /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
+    chmod 600 /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
+
+    local SAFE_NAME
+    SAFE_NAME=$(echo "$AKPANEL_HOSTNAME" | tr '.' '_')
+    cat << NGINX_EOF > "/etc/nginx/sites-available/akpanel-hostname-${SAFE_NAME}.conf"
+# AKpanel Panel Hostname — auto-managed by install.sh
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${AKPANEL_HOSTNAME};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name ${AKPANEL_HOSTNAME};
+
+    ssl_certificate /etc/akpanel/ssl/server/fullchain.pem;
+    ssl_certificate_key /etc/akpanel/ssl/server/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        allow all;
+    }
+
+    location / {
+        return 302 https://\$host:2087\$request_uri;
+    }
+}
+NGINX_EOF
+    ln -sfn "/etc/nginx/sites-available/akpanel-hostname-${SAFE_NAME}.conf" "/etc/nginx/sites-enabled/akpanel-hostname-${SAFE_NAME}.conf"
+    nginx -t >> "$LOG_FILE" 2>&1 && systemctl reload nginx >> "$LOG_FILE" 2>&1 || service nginx reload >> "$LOG_FILE" 2>&1 || true
+
+    systemctl restart akpanel >> "$LOG_FILE" 2>&1 || true
+}
+
 # ------------------------------------------------------------------------------
 # STEP 1: Pre-Flight Checks & Architecture (15%)
 # ------------------------------------------------------------------------------
@@ -248,10 +506,7 @@ task_step3() {
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
             dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers
-        apt-get install $APT_OPTS \
-            php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
-            php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
-            php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
+        apt-get install $APT_OPTS $(build_php_package_list) \
             roundcube roundcube-core roundcube-mysql phpmyadmin || apt-get install $APT_OPTS php-cli php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin
     else
         apt-get update -y >> "$LOG_FILE" 2>&1 || true
@@ -259,10 +514,7 @@ task_step3() {
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
             dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd >> "$LOG_FILE" 2>&1 || true
         a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
-        apt-get install $APT_OPTS \
-            php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
-            php8.3-cli php8.3-fpm php8.3-common php8.3-mysql php8.3-curl php8.3-mbstring php8.3-xml php8.3-zip php8.3-gd \
-            php8.1-cli php8.1-fpm php8.1-common php8.1-mysql php8.1-curl php8.1-mbstring php8.1-xml php8.1-zip php8.1-gd \
+        apt-get install $APT_OPTS $(build_php_package_list) \
             roundcube roundcube-core roundcube-mysql phpmyadmin >> "$LOG_FILE" 2>&1 || \
         apt-get install $APT_OPTS \
             php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin >> "$LOG_FILE" 2>&1 || true
@@ -658,9 +910,12 @@ EOF
     service varnish start >> "$LOG_FILE" 2>&1 || systemctl start varnish >> "$LOG_FILE" 2>&1 || true
     service redis-server start >> "$LOG_FILE" 2>&1 || systemctl start redis-server >> "$LOG_FILE" 2>&1 || true
 
-    for v in 8.1 8.2 8.3; do
+    for v in $AKPANEL_PHP_VERSIONS; do
         service "php${v}-fpm" start >> "$LOG_FILE" 2>&1 || systemctl start "php${v}-fpm" >> "$LOG_FILE" 2>&1 || true
     done
+
+    write_install_metadata
+    apply_webserver_profile
 
     # Setup Systemd Service
     if [ -d "/etc/systemd/system" ]; then
@@ -792,6 +1047,9 @@ MOTD_EOF
         systemctl restart akpanel >> "$LOG_FILE" 2>&1 || true
         sleep 2
     fi
+
+    configure_panel_identity
+    write_install_metadata
 }
 run_task "Firewall, SSH MOTD & Health Verification" 90 100 task_step6
 
@@ -809,11 +1067,16 @@ else
 fi
 echo -e "${GREEN}==============================================================================${NC}"
 echo -e "  🌐 Root WHM Panel  : ${YELLOW}http://${SERVER_IP}:2087${NC}"
+if [ -n "$AKPANEL_HOSTNAME" ]; then
+    echo -e "  🔒 Hostname Panel  : ${YELLOW}https://${AKPANEL_HOSTNAME}:2087${NC} ${DIM}(or https://${AKPANEL_HOSTNAME})${NC}"
+fi
 echo -e "  🌐 Client User URL : ${YELLOW}http://${SERVER_IP}:2083${NC}"
 echo -e "  👤 Admin Username  : ${YELLOW}root${NC}"
 echo -e "  🔑 Generated Pass  : ${BOLD}${RED}${ROOT_ADMIN_PASS}${NC} ${GREEN}(Randomly Generated)${NC}"
 echo -e "  💾 Credentials File: ${CYAN}/etc/akpanel/credentials.txt${NC}"
 echo -e "  📁 Websites Root   : ${CYAN}/var/www/sites${NC}"
+echo -e "  ⚙️ Web Stack       : ${CYAN}${AKPANEL_WEB_PROFILE}${NC}"
+echo -e "  🐘 PHP Versions    : ${CYAN}${AKPANEL_PHP_VERSIONS}${NC}"
 echo -e "  ⚙️ Config Dir      : ${CYAN}/etc/akpanel${NC}"
 echo -e "  📄 Installation Log: ${CYAN}${LOG_FILE}${NC}"
 echo -e "${GREEN}==============================================================================${NC}\n"

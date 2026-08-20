@@ -37,6 +37,52 @@ func (v *VarnishService) Reload() error {
 	return cmd.Run()
 }
 
+// EnsureDefaultVCL writes a profile-appropriate VCL and reloads Varnish.
+func (v *VarnishService) EnsureDefaultVCL(profileID string) error {
+	if profileID != "varnish_nginx_apache" && profileID != "varnish_nginx_phpfpm" {
+		return nil
+	}
+
+	backendHost := "127.0.0.1"
+	backendPort := "8081"
+	if profileID == "varnish_nginx_phpfpm" {
+		backendPort = "8080"
+	}
+
+	vcl := fmt.Sprintf(`vcl 4.1;
+
+backend default {
+    .host = "%s";
+    .port = "%s";
+}
+
+sub vcl_recv {
+    if (req.method == "PURGE") {
+        return (purge);
+    }
+    if (req.url ~ "^/\\.well-known/acme-challenge/") {
+        return (pass);
+    }
+    return (hash);
+}
+
+sub vcl_backend_response {
+    set beresp.ttl = 2h;
+    set beresp.grace = 1h;
+}
+
+sub vcl_deliver {
+    if (obj.hits > 0) {
+        set resp.http.X-Cache = "HIT";
+    } else {
+        set resp.http.X-Cache = "MISS";
+    }
+}
+`, backendHost, backendPort)
+
+	return v.SaveCustomVCL(vcl)
+}
+
 // SaveCustomVCL writes custom VCL and reloads Varnish
 func (v *VarnishService) SaveCustomVCL(vclContent string) error {
 	_ = os.MkdirAll("/etc/varnish", 0755)

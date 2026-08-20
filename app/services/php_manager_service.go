@@ -1,6 +1,7 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"goravel/app/paths"
 )
 
 type PHPExtensionInfo struct {
@@ -23,6 +26,9 @@ type PHPVersionDetail struct {
 	IsInstalled  bool               `json:"is_installed"`
 	IsFPMRunning bool               `json:"is_fpm_running"`
 	IsDefaultCLI bool               `json:"is_default_cli"`
+	CLIPath      string             `json:"cli_path"`
+	CLIVersion   string             `json:"cli_version"`
+	CLIniPath    string             `json:"cli_ini_path"`
 	SocketPath   string             `json:"socket_path"`
 	IniPath      string             `json:"ini_path"`
 	MemoryLimit  string             `json:"memory_limit"`
@@ -118,18 +124,24 @@ func NewPHPManagerService() *PHPManagerService {
 func (p *PHPManagerService) GetAllVersionsDetails() []PHPVersionDetail {
 	var details []PHPVersionDetail
 	defaultCLI := p.getDefaultCLIVersion()
+	versions := p.getSupportedVersions()
 
-	for _, ver := range p.supportedVersions {
+	for _, ver := range versions {
 		detail := PHPVersionDetail{
 			Version:      ver,
+			CLIPath:      fmt.Sprintf("/usr/bin/php%s", ver),
+			CLIniPath:    fmt.Sprintf("/etc/php/%s/cli/php.ini", ver),
 			SocketPath:   fmt.Sprintf("/run/php/php%s-fpm.sock", ver),
 			IniPath:      fmt.Sprintf("/etc/php/%s/fpm/php.ini", ver),
 			IsDefaultCLI: (ver == defaultCLI),
 		}
 
-		binaryPath := fmt.Sprintf("/usr/bin/php%s", ver)
-		if _, err := os.Stat(binaryPath); err == nil {
+		if _, err := os.Stat(detail.CLIPath); err == nil {
 			detail.IsInstalled = true
+			if out, err := exec.Command(detail.CLIPath, "-v").Output(); err == nil {
+				line := strings.Split(string(out), "\n")[0]
+				detail.CLIVersion = strings.TrimSpace(line)
+			}
 		}
 
 		cmdFpm := exec.Command("service", fmt.Sprintf("php%s-fpm", ver), "status")
@@ -155,6 +167,34 @@ func (p *PHPManagerService) GetAllVersionsDetails() []PHPVersionDetail {
 	}
 
 	return details
+}
+
+func (p *PHPManagerService) getSupportedVersions() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range p.supportedVersions {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	if data, err := os.ReadFile(paths.InstallConf()); err == nil {
+		var conf struct {
+			Components struct {
+				PHPVersions []string `json:"php_versions"`
+			} `json:"components"`
+		}
+		if json.Unmarshal(data, &conf) == nil {
+			for _, v := range conf.Components.PHPVersions {
+				v = strings.TrimSpace(v)
+				if v != "" && !seen[v] {
+					seen[v] = true
+					out = append(out, v)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // GetPHPInfo parses php -i output into structured JSON
@@ -467,6 +507,50 @@ func (p *PHPManagerService) RestartFPM(version string) error {
 	return cmd.Run()
 }
 
+// SetDefaultCLI switches the system `php` binary via update-alternatives.
+func (p *PHPManagerService) SetDefaultCLI(version string) error {
+	version = strings.TrimSpace(version)
+	cliPath := fmt.Sprintf("/usr/bin/php%s", version)
+	if _, err := os.Stat(cliPath); err != nil {
+		return fmt.Errorf("PHP %s CLI is not installed (%s)", version, cliPath)
+	}
+
+	// Register and select php alternative
+	_ = exec.Command("update-alternatives", "--install", "/usr/bin/php", "php", cliPath, "100").Run()
+	if out, err := exec.Command("update-alternatives", "--set", "php", cliPath).CombinedOutput(); err != nil {
+		return fmt.Errorf("update-alternatives failed: %s — %v", strings.TrimSpace(string(out)), err)
+	}
+
+	// Companion binaries (best-effort)
+	companions := []string{"phpize", "php-config", "phar", "phar.phar"}
+	for _, name := range companions {
+		path := fmt.Sprintf("/usr/bin/%s%s", name, version)
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		_ = exec.Command("update-alternatives", "--install", fmt.Sprintf("/usr/bin/%s", name), name, path, "100").Run()
+		_ = exec.Command("update-alternatives", "--set", name, path).Run()
+	}
+
+	_ = os.WriteFile("/etc/akpanel/php_default_cli.conf", []byte(version+"\n"), 0644)
+	return nil
+}
+
+// GetCLIOverview returns current system `php -v` output and default version.
+func (p *PHPManagerService) GetCLIOverview() map[string]string {
+	out, err := exec.Command("php", "-v").CombinedOutput()
+	versionLine := strings.TrimSpace(strings.Split(string(out), "\n")[0])
+	if err != nil {
+		versionLine = "php CLI unavailable"
+	}
+	which, _ := exec.Command("bash", "-c", "command -v php").Output()
+	return map[string]string{
+		"default_version": p.getDefaultCLIVersion(),
+		"binary_path":     strings.TrimSpace(string(which)),
+		"version_line":    versionLine,
+	}
+}
+
 func (p *PHPManagerService) getLoadedModules(version string) map[string]bool {
 	modules := make(map[string]bool)
 	binaryPath := fmt.Sprintf("/usr/bin/php%s", version)
@@ -513,9 +597,15 @@ func (p *PHPManagerService) extractDirective(content, directive, fallback string
 }
 
 func (p *PHPManagerService) getDefaultCLIVersion() string {
+	if data, err := os.ReadFile("/etc/akpanel/php_default_cli.conf"); err == nil {
+		v := strings.TrimSpace(string(data))
+		if v != "" {
+			return v
+		}
+	}
 	out, err := exec.Command("php", "-v").Output()
 	if err != nil {
-		return "8.2"
+		return "8.3"
 	}
 	str := string(out)
 	for _, ver := range p.supportedVersions {
@@ -523,5 +613,5 @@ func (p *PHPManagerService) getDefaultCLIVersion() string {
 			return ver
 		}
 	}
-	return "8.2"
+	return "8.3"
 }

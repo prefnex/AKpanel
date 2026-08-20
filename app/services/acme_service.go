@@ -155,8 +155,8 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 		out, err := cmdIssue.CombinedOutput()
 		acmeOutput = string(out)
 
-		// 2. If Rate-Limited (429 too many certificates), automatically fallback to ZeroSSL
-		if err != nil && (strings.Contains(acmeOutput, "rateLimited") || strings.Contains(acmeOutput, "429")) {
+		// If Let's Encrypt fails (rate limits, staging blocks, etc.), try ZeroSSL automatically
+		if err != nil {
 			cmdZero := exec.Command(a.acmeBin,
 				"--issue",
 				"-d", domain,

@@ -47,6 +47,12 @@ export default function ServerSettingsManager({ showToast }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [sslLoading, setSslLoading] = useState(false);
+  const [sslTaskId, setSslTaskId] = useState(localStorage.getItem('akpanel_hostname_ssl_task') || '');
+  const [sslLogs, setSslLogs] = useState([]);
+  const [sslProgress, setSslProgress] = useState(0);
+  const [sslStep, setSslStep] = useState('');
+  const [sslStatus, setSslStatus] = useState('idle'); // idle | running | completed | failed
+  const [sslError, setSslError] = useState('');
   const [syncNsLoading, setSyncNsLoading] = useState(false);
   const [customSslModal, setCustomSslModal] = useState(false);
   const [customCert, setCustomCert] = useState('');
@@ -56,6 +62,76 @@ export default function ServerSettingsManager({ showToast }) {
   useEffect(() => {
     fetchSettings();
     fetchIps();
+  }, []);
+
+  useEffect(() => {
+    if (!sslTaskId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/settings/hostname-ssl/status?task_id=${sslTaskId}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const task = json.data;
+        if (!task || cancelled) return;
+        setSslLogs(task.logs || []);
+        setSslProgress(task.progress || 0);
+        setSslStep(task.current_step || '');
+        if (task.status === 'completed') {
+          setSslLoading(false);
+          setSslStatus('completed');
+          setSslError('');
+          localStorage.removeItem('akpanel_hostname_ssl_task');
+          setSslTaskId('');
+          showToast('Hostname SSL configured successfully');
+          fetchSettings();
+        } else if (task.status === 'failed') {
+          setSslLoading(false);
+          setSslStatus('failed');
+          setSslError(task.error || 'SSL issuance failed');
+          localStorage.removeItem('akpanel_hostname_ssl_task');
+          showToast((task.error || 'SSL issuance failed').split('\n')[0], 'error');
+        } else if (task.status === 'running') {
+          setSslStatus('running');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [sslTaskId]);
+
+  useEffect(() => {
+    const recover = async () => {
+      const storedId = sslTaskId || localStorage.getItem('akpanel_hostname_ssl_task');
+      if (!storedId) return;
+      try {
+        const res = await fetch(`/api/settings/hostname-ssl/status?task_id=${storedId}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const task = json.data;
+        if (!task) return;
+        setSslLogs(task.logs || []);
+        setSslProgress(task.progress || 0);
+        setSslStep(task.current_step || '');
+        if (task.status === 'running') {
+          setSslTaskId(storedId);
+          setSslLoading(true);
+          setSslStatus('running');
+        } else if (task.status === 'failed') {
+          setSslStatus('failed');
+          setSslError(task.error || 'SSL issuance failed');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    recover();
   }, []);
 
   const fetchSettings = async () => {
@@ -138,6 +214,11 @@ export default function ServerSettingsManager({ showToast }) {
 
   const handleIssueHostnameSSL = async () => {
     setSslLoading(true);
+    setSslStatus('running');
+    setSslError('');
+    setSslLogs([]);
+    setSslProgress(0);
+    setSslStep('');
     try {
       const res = await fetch('/api/settings/hostname-ssl', {
         method: 'POST',
@@ -147,13 +228,31 @@ export default function ServerSettingsManager({ showToast }) {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
 
-      showToast(json.message || 'Hostname SSL updated successfully');
-      fetchSettings();
+      if (json.task_id) {
+        setSslTaskId(json.task_id);
+        localStorage.setItem('akpanel_hostname_ssl_task', json.task_id);
+        showToast(json.message || 'SSL issuance started — track progress below');
+      } else {
+        showToast(json.message || 'Hostname SSL updated successfully');
+        fetchSettings();
+        setSslLoading(false);
+      }
     } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
       setSslLoading(false);
+      setSslStatus('failed');
+      setSslError(err.message);
+      showToast(err.message, 'error');
     }
+  };
+
+  const resetSslUI = () => {
+    setSslStatus('idle');
+    setSslError('');
+    setSslLogs([]);
+    setSslProgress(0);
+    setSslStep('');
+    setSslTaskId('');
+    setSslLoading(false);
   };
 
   const handleUploadCustomSSL = async (e) => {
@@ -257,10 +356,47 @@ export default function ServerSettingsManager({ showToast }) {
               className="rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold gap-2 shadow-lg shadow-indigo-900/40 py-2.5 px-5"
             >
               <Zap className={`w-4 h-4 ${sslLoading ? 'animate-spin' : ''}`} />
-              <span>{sslLoading ? 'Issuing via acme.sh...' : 'Issue / Renew via Let\'s Encrypt'}</span>
+              <span>{sslLoading ? 'Issuing SSL...' : sslStatus === 'failed' ? 'Retry SSL Issue' : 'Issue / Renew via Let\'s Encrypt'}</span>
             </Button>
           </div>
         </div>
+
+        {(sslLoading || sslStatus === 'failed' || sslTaskId) && (
+          <div className={`mt-4 p-3 rounded-xl space-y-2 border ${
+            sslStatus === 'failed' ? 'bg-red-950/30 border-red-800' : 'bg-zinc-950/60 border-indigo-900/40'
+          }`}>
+            <div className={`flex justify-between text-xs ${sslStatus === 'failed' ? 'text-red-400' : 'text-indigo-300'}`}>
+              <span className="flex items-center gap-1.5">
+                {sslStatus === 'failed' && <AlertTriangle className="w-3.5 h-3.5" />}
+                {sslStatus === 'failed'
+                  ? `SSL failed${sslStep ? ` at ${sslStep}` : ''}`
+                  : `SSL issuance${sslStep ? `: ${sslStep}` : '...'}`}
+              </span>
+              <span>{sslProgress}%</span>
+            </div>
+            <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className={`h-full transition-all ${sslStatus === 'failed' ? 'bg-red-600' : 'bg-indigo-600'}`}
+                style={{ width: `${sslProgress}%` }}
+              />
+            </div>
+            {sslStatus === 'failed' && sslError && (
+              <div className="text-[10px] font-mono text-red-300/90 bg-red-950/40 border border-red-900/50 rounded-lg p-2 max-h-24 overflow-y-auto whitespace-pre-wrap">
+                {sslError.split('\n').slice(0, 6).join('\n')}
+              </div>
+            )}
+            <div className="max-h-24 overflow-y-auto text-[10px] font-mono text-zinc-500 space-y-0.5">
+              {(sslLogs || []).slice(-8).map((line, i) => (
+                <div key={i} className={line.startsWith('Failed:') ? 'text-red-400' : ''}>{line}</div>
+              ))}
+            </div>
+            {sslStatus === 'failed' && (
+              <button type="button" onClick={resetSslUI} className="text-[10px] text-zinc-400 hover:text-white underline">
+                Dismiss
+              </button>
+            )}
+          </div>
+        )}
       </Card>
 
       {/* Custom SSL Upload Modal */}

@@ -46,10 +46,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Progress } from './ui/progress';
 
 export default function PHPManager({ showToast }) {
-  const [activeTab, setActiveTab] = useState('switcher');
+  const [activeTab, setActiveTab] = useState('cli-versions');
   const [phpDetails, setPhpDetails] = useState([]);
+  const [cliOverview, setCliOverview] = useState({ default_version: '', binary_path: '', version_line: '' });
   const [selectedVer, setSelectedVer] = useState('');
   const [loading, setLoading] = useState(false);
+  const [settingDefaultCLI, setSettingDefaultCLI] = useState(false);
 
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -98,6 +100,7 @@ export default function PHPManager({ showToast }) {
         const json = await res.json();
         const versions = json.data || [];
         setPhpDetails(versions);
+        if (json.cli) setCliOverview(json.cli);
 
         // Auto-select real installed default version if not yet set
         if (!selectedVer) {
@@ -269,6 +272,28 @@ export default function PHPManager({ showToast }) {
     }
   };
 
+  const handleSetDefaultCLI = async (version) => {
+    const ver = version || selectedVer;
+    if (!ver) return;
+    setSettingDefaultCLI(true);
+    try {
+      const res = await fetch('/api/php/cli/default', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: ver }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message);
+      if (json.cli) setCliOverview(json.cli);
+      showToast(json.message || `Default CLI set to PHP ${ver}`);
+      fetchPHPDetails();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setSettingDefaultCLI(false);
+    }
+  };
+
   const handleRestartFPM = async () => {
     try {
       const res = await fetch('/api/php/fpm/restart', {
@@ -318,13 +343,13 @@ export default function PHPManager({ showToast }) {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-lg font-bold text-white tracking-tight">PHP Multi-Runtime Engine</h2>
+              <h2 className="text-lg font-bold text-white tracking-tight">PHP CLI & Runtime Manager</h2>
               <Badge variant="outline" className="text-[10px] border-indigo-500/30 text-indigo-400 bg-indigo-500/10 font-mono">
                 {installedVersions.length} Installed
               </Badge>
             </div>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Live daemon controller, socket allocator, PECL extension matrix, and real-time installer.
+              Install PHP versions, set system CLI default, manage FPM pools, extensions, and php.ini.
             </p>
           </div>
         </div>
@@ -429,9 +454,13 @@ export default function PHPManager({ showToast }) {
       {/* 3. Modern Segmented Tab Navigation */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
         <TabsList className="bg-zinc-900/90 border border-zinc-800/80 p-1 rounded-2xl flex flex-wrap gap-1">
+          <TabsTrigger value="cli-versions" className="rounded-xl text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-white font-semibold">
+            <Terminal className="w-3.5 h-3.5 mr-1.5 text-indigo-400" />
+            CLI Versions
+          </TabsTrigger>
           <TabsTrigger value="switcher" className="rounded-xl text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-white font-semibold">
-            <PackageCheck className="w-3.5 h-3.5 mr-1.5 text-indigo-400" />
-            Version Switcher
+            <PackageCheck className="w-3.5 h-3.5 mr-1.5 text-violet-400" />
+            All Versions
           </TabsTrigger>
           <TabsTrigger value="short-info" className="rounded-xl text-xs data-[state=active]:bg-zinc-800 data-[state=active]:text-white font-semibold">
             <Activity className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />
@@ -463,7 +492,131 @@ export default function PHPManager({ showToast }) {
           </TabsTrigger>
         </TabsList>
 
-        {/* Tab 1: Version Switcher */}
+        {/* Tab: CLI Versions — primary management view */}
+        <TabsContent value="cli-versions" className="space-y-6">
+          <Card className="bg-gradient-to-r from-indigo-950/40 to-[#121215] border-indigo-900/40 rounded-3xl p-5">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-xs font-bold text-indigo-300 uppercase tracking-wider">
+                  <Terminal className="w-4 h-4" />
+                  <span>System PHP CLI (current)</span>
+                </div>
+                <div className="text-sm font-mono text-white mt-2">{cliOverview.version_line || 'Loading...'}</div>
+                <div className="text-[11px] text-zinc-500 mt-1 font-mono">
+                  Binary: {cliOverview.binary_path || '/usr/bin/php'}
+                  {cliOverview.default_version && (
+                    <span className="ml-2 text-indigo-400">• Default: PHP {cliOverview.default_version}</span>
+                  )}
+                </div>
+              </div>
+              {currentDetail.is_installed && !currentDetail.is_default_cli && (
+                <Button
+                  onClick={() => handleSetDefaultCLI(selectedVer)}
+                  disabled={settingDefaultCLI}
+                  className="rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold gap-2 h-10 px-5"
+                >
+                  <CheckCircle2 className={`w-4 h-4 ${settingDefaultCLI ? 'animate-spin' : ''}`} />
+                  <span>Set PHP {selectedVer} as System CLI</span>
+                </Button>
+              )}
+            </div>
+          </Card>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {phpDetails.map(ver => (
+              <Card
+                key={ver.version}
+                onClick={() => setSelectedVer(ver.version)}
+                className={`bg-[#121215] border rounded-3xl p-5 relative transition-all duration-200 cursor-pointer shadow-sm ${
+                  ver.version === selectedVer
+                    ? 'border-indigo-500/80 bg-indigo-950/10 ring-2 ring-indigo-500/30'
+                    : 'border-zinc-800/80 hover:border-zinc-700'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xl font-black text-white font-mono">PHP {ver.version}</span>
+                    {ver.is_default_cli && (
+                      <Badge className="bg-indigo-500/20 text-indigo-300 text-[9px] font-mono border-indigo-500/30">
+                        CLI Default
+                      </Badge>
+                    )}
+                  </div>
+                  {ver.is_installed ? (
+                    <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px] shrink-0">
+                      Installed
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-zinc-500 border-zinc-800 text-[10px] shrink-0">
+                      Not Installed
+                    </Badge>
+                  )}
+                </div>
+
+                {ver.is_installed ? (
+                  <div className="mt-3 space-y-1.5 text-[11px]">
+                    <div className="font-mono text-zinc-400 truncate" title={ver.cli_version}>
+                      {ver.cli_version || `php${ver.version} ready`}
+                    </div>
+                    <div className="flex justify-between text-zinc-500">
+                      <span>CLI binary</span>
+                      <span className="font-mono text-zinc-300 truncate max-w-[55%]">{ver.cli_path}</span>
+                    </div>
+                    <div className="flex justify-between text-zinc-500">
+                      <span>FPM</span>
+                      <span className={ver.is_fpm_running ? 'text-emerald-400' : 'text-zinc-500'}>
+                        {ver.is_fpm_running ? 'Running' : 'Stopped'}
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-xs text-zinc-500 mt-3">Not installed — click Install to add CLI + FPM.</p>
+                )}
+
+                <div className="mt-4 pt-3 border-t border-zinc-800/80 flex flex-wrap gap-2">
+                  {ver.is_installed && !ver.is_default_cli && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={(e) => { e.stopPropagation(); handleSetDefaultCLI(ver.version); }}
+                      disabled={settingDefaultCLI}
+                      className="rounded-xl border-indigo-800/60 text-indigo-300 text-[10px] h-8"
+                    >
+                      Set CLI Default
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (ver.is_installed) {
+                        handleSetDefaultCLI(ver.version);
+                      } else {
+                        setPreviewItem({ type: 'version', version: ver.version, name: `PHP ${ver.version}` });
+                      }
+                    }}
+                    className={`rounded-xl text-[10px] font-bold h-8 ${
+                      ver.is_installed
+                        ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
+                        : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                    }`}
+                  >
+                    {ver.is_installed ? (
+                      ver.is_default_cli ? '✓ CLI Active' : 'Use as CLI'
+                    ) : (
+                      <>
+                        <DownloadCloud className="w-3 h-3 mr-1 inline" />
+                        Install
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </Card>
+            ))}
+          </div>
+        </TabsContent>
+
+        {/* Tab: All Versions (legacy switcher) */}
         <TabsContent value="switcher" className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {phpDetails.map(ver => (

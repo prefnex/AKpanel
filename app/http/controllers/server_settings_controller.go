@@ -3,6 +3,7 @@ package controllers
 import (
 	"github.com/goravel/framework/contracts/http"
 	"goravel/app/services"
+	"goravel/app/services/tasks"
 )
 
 type ServerSettingsController struct {
@@ -58,21 +59,45 @@ func (r *ServerSettingsController) SaveSettings(ctx http.Context) http.Response 
 	})
 }
 
-// IssueHostnameSSL triggers Hostname SSL certificate issuance/renewal
+// IssueHostnameSSL starts async Hostname SSL certificate issuance and returns a task_id immediately.
 func (r *ServerSettingsController) IssueHostnameSSL(ctx http.Context) http.Response {
 	email := ctx.Request().Input("email")
-	sslInfo, err := r.settingsService.IssueHostnameSSL(email)
+	taskID, err := r.settingsService.StartAsyncIssueHostnameSSL(email)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
-			"message": "Failed to configure Hostname SSL: " + err.Error(),
+			"message": "Failed to start Hostname SSL issuance: " + err.Error(),
 		})
 	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": sslInfo.Message,
-		"data":    sslInfo,
+		"task_id": taskID,
+		"message": "Hostname SSL issuance started — track progress below",
+	})
+}
+
+// HostnameSSLStatus returns progress for an async hostname SSL task.
+func (r *ServerSettingsController) HostnameSSLStatus(ctx http.Context) http.Response {
+	taskID := ctx.Request().Input("task_id")
+	if taskID == "" {
+		return ctx.Response().Status(400).Json(http.Json{
+			"status":  "error",
+			"message": "task_id is required",
+		})
+	}
+
+	task, err := tasks.GetRegistry().Get(taskID)
+	if err != nil {
+		return ctx.Response().Status(404).Json(http.Json{
+			"status":  "error",
+			"message": "Task not found",
+		})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status": "success",
+		"data":   task,
 	})
 }
 

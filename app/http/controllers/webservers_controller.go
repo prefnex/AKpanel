@@ -44,7 +44,7 @@ func (r *WebServersController) SwitchProfile(ctx http.Context) http.Response {
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("Server profile switched to '%s' successfully", profileID),
+		"message": fmt.Sprintf("Server profile switched to '%s' — all vhosts rebuilt and services reloaded", profileID),
 	})
 }
 

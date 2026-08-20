@@ -151,7 +151,7 @@ func PackagesJSON() string {
 // PHPSocket returns the unix socket path for a given PHP version (e.g. "8.2").
 func PHPSocket(version string) string {
 	if version == "" {
-		version = "8.2"
+		version = "8.3"
 	}
 	return filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm.sock", version))
 }
@@ -159,7 +159,7 @@ func PHPSocket(version string) string {
 // PHPSocketForUser returns the per-user PHP-FPM socket path.
 func PHPSocketForUser(version, username string) string {
 	if version == "" {
-		version = "8.2"
+		version = "8.3"
 	}
 	return filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm-%s.sock", version, username))
 }

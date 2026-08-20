@@ -1,12 +1,18 @@
 package services
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"goravel/app/domain"
+	"goravel/app/facades"
+	"goravel/app/models"
+	"goravel/app/paths"
 )
 
 type ServerProfile struct {
@@ -35,7 +41,7 @@ type WebServerManagerService struct {
 
 func NewWebServerManagerService() *WebServerManagerService {
 	s := &WebServerManagerService{
-		currentProfile: "hybrid_nginx_apache",
+		currentProfile: "nginx_phpfpm",
 		profileFile:    "/etc/akpanel/server_profile.conf",
 		templatesDir:   "app/templates",
 	}
@@ -57,11 +63,11 @@ func (w *WebServerManagerService) GetProfiles() []ServerProfile {
 		},
 		{
 			ID:           "apache_phpfpm",
-			Name:         "Apache + PHP-FPM",
+			Name:         "Apache + PHP",
 			Badge:        "Full .htaccess",
-			Description:  "Pure Apache HTTP server running with event MPM and proxy_fcgi.",
-			BestFor:      "Legacy CMS, complex .htaccess rewrite rules per folder, and custom Apache modules.",
-			Architecture: "Internet -> Apache (80/443) -> PHP-FPM Socket",
+			Description:  "Apache handles PHP via mod_proxy_fcgi with full .htaccess rewrite support on every request.",
+			BestFor:      "Legacy CMS, WordPress plugins, and apps that rely heavily on per-folder .htaccess rules.",
+			Architecture: "Internet -> Nginx (80/443 SSL) -> Apache (8081) -> PHP-FPM",
 			IsActive:     (w.currentProfile == "apache_phpfpm"),
 		},
 		{
@@ -134,30 +140,223 @@ func (w *WebServerManagerService) ControlService(serviceName, action string) err
 }
 
 func (w *WebServerManagerService) SwitchGlobalProfile(profileID string) error {
+	if err := domain.ValidateProfile(profileID); err != nil {
+		return err
+	}
+
 	w.currentProfile = profileID
 	_ = os.MkdirAll("/etc/akpanel", 0755)
-	_ = os.WriteFile(w.profileFile, []byte(profileID), 0644)
+	if err := os.WriteFile(w.profileFile, []byte(profileID), 0644); err != nil {
+		return err
+	}
+	w.syncInstallConfProfile(profileID)
 
-	// Apply configuration & restart relevant services
+	if err := w.applyProfileInfrastructure(profileID); err != nil {
+		return fmt.Errorf("apply profile infrastructure: %w", err)
+	}
+
+	rebuilt, err := w.rebuildAllVhostsForProfile(profileID)
+	if err != nil {
+		return fmt.Errorf("rebuild vhosts: %w", err)
+	}
+
+	if err := w.reloadServicesForProfile(profileID); err != nil {
+		return fmt.Errorf("reload services: %w", err)
+	}
+
+	if facades.Log() != nil {
+		facades.Log().Info(fmt.Sprintf("[webserver] profile switched to %s — rebuilt %d vhost(s)", profileID, rebuilt))
+	}
+	return nil
+}
+
+func (w *WebServerManagerService) syncInstallConfProfile(profileID string) {
+	confPath := paths.InstallConf()
+	var conf map[string]any
+	if data, err := os.ReadFile(confPath); err == nil {
+		_ = json.Unmarshal(data, &conf)
+	}
+	if conf == nil {
+		conf = map[string]any{}
+	}
+	components, _ := conf["components"].(map[string]any)
+	if components == nil {
+		components = map[string]any{}
+	}
+	components["webserver_profile"] = profileID
+	if profileID == domain.ProfileVarnishNginxApache || profileID == domain.ProfileVarnishNginxPHPFPM {
+		components["varnish"] = true
+	} else {
+		components["varnish"] = false
+	}
+	conf["components"] = components
+	if bytes, err := json.MarshalIndent(conf, "", "  "); err == nil {
+		_ = os.WriteFile(confPath, bytes, 0644)
+	}
+}
+
+func (w *WebServerManagerService) applyProfileInfrastructure(profileID string) error {
+	apache := NewApacheService()
+
+	if domain.ProfileNeedsApache(profileID) {
+		if err := apache.EnsureInternalBackend(); err != nil {
+			return err
+		}
+	}
+
+	varnish := NewVarnishService()
+	if domain.ProfileNeedsVarnish(profileID) {
+		if err := varnish.EnsureDefaultVCL(profileID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (w *WebServerManagerService) rebuildAllVhostsForProfile(profileID string) (int, error) {
+	siteEngine := domain.ProfileToSiteEngine(profileID)
+	nginx := NewNginxService()
+	rebuilt := 0
+	seen := map[string]bool{}
+
+	type siteEntry struct {
+		domain, root, owner, phpVer, siteType, templateID string
+		proxyPort                                         int
+	}
+
+	var entries []siteEntry
+
+	if facades.Orm() != nil {
+		var websites []models.Website
+		if err := facades.Orm().Query().Where("status != ?", "deleted").Find(&websites); err == nil {
+			for _, site := range websites {
+				if site.Domain == "" || seen[site.Domain] {
+					continue
+				}
+				seen[site.Domain] = true
+				entries = append(entries, siteEntry{
+					domain: site.Domain, root: site.RootPath, owner: site.OwnerUsername,
+					phpVer: site.PHPVersion, siteType: site.SiteType, templateID: site.TemplateID,
+					proxyPort: site.ProxyPort,
+				})
+			}
+		}
+	}
+
+	if data, err := os.ReadFile(paths.UsersJSON()); err == nil {
+		var users []UserAccount
+		if json.Unmarshal(data, &users) == nil {
+			for _, u := range users {
+				if u.MainDomain == "" || seen[u.MainDomain] {
+					continue
+				}
+				seen[u.MainDomain] = true
+				root := paths.UserDomainRoot(u.Username, u.MainDomain)
+				phpVer := u.PHPVersion
+				if phpVer == "" {
+					phpVer = "8.3"
+				}
+				entries = append(entries, siteEntry{
+					domain: u.MainDomain, root: root, owner: u.Username,
+					phpVer: phpVer, siteType: "php", templateID: "custom",
+				})
+			}
+		}
+	}
+
+	enabledDir := "/etc/nginx/sites-enabled"
+	if files, err := os.ReadDir(enabledDir); err == nil {
+		for _, f := range files {
+			name := f.Name()
+			if strings.HasPrefix(name, "akpanel-hostname-") || name == "default" {
+				continue
+			}
+			domain := strings.TrimSuffix(strings.TrimSuffix(name, ".conf"), ".conf")
+			if domain == "" || seen[domain] {
+				continue
+			}
+			seen[domain] = true
+			entries = append(entries, siteEntry{
+				domain: domain, root: fmt.Sprintf("%s/%s/public", paths.SitesRoot, domain),
+				owner: "root", phpVer: "8.3", siteType: "php", templateID: "custom",
+			})
+		}
+	}
+
+	for _, e := range entries {
+		if e.phpVer == "" {
+			e.phpVer = "8.3"
+		}
+		if e.siteType == "" {
+			e.siteType = "php"
+		}
+		if e.root == "" {
+			e.root = fmt.Sprintf("%s/%s/public", paths.SitesRoot, e.domain)
+		}
+
+		cfg := WebsiteConfig{
+			Domain:           e.domain,
+			RootPath:         e.root,
+			ServerEngine:     siteEngine,
+			PHPVersion:       e.phpVer,
+			SiteType:         e.siteType,
+			TemplateID:       e.templateID,
+			ProxyPort:        e.proxyPort,
+			SkipOwnershipFix: true,
+		}
+		if e.owner != "" && e.owner != "root" {
+			cfg.PHPSocket = paths.PHPSocketForUser(e.phpVer, e.owner)
+		}
+
+		if err := nginx.CreateWebsite(cfg); err != nil {
+			return rebuilt, fmt.Errorf("domain %s: %w", e.domain, err)
+		}
+
+		if facades.Orm() != nil {
+			engine, _ := domain.NormalizeEngine(siteEngine)
+			_, _ = facades.Orm().Query().Model(&models.Website{}).Where("domain = ?", e.domain).Update(map[string]any{
+				"server_engine": string(engine),
+			})
+		}
+		rebuilt++
+	}
+
+	return rebuilt, nil
+}
+
+func (w *WebServerManagerService) reloadServicesForProfile(profileID string) error {
 	switch profileID {
-	case "nginx_phpfpm":
+	case domain.ProfileNginxPHPFPM:
 		_ = exec.Command("service", "apache2", "stop").Run()
 		_ = exec.Command("service", "varnish", "stop").Run()
-		_ = exec.Command("service", "nginx", "restart").Run()
-	case "apache_phpfpm":
+	case domain.ProfileApachePHPFPM, domain.ProfileHybridNginxApache:
 		_ = exec.Command("service", "varnish", "stop").Run()
-		_ = exec.Command("service", "apache2", "restart").Run()
-	case "hybrid_nginx_apache":
 		_ = exec.Command("service", "apache2", "start").Run()
-		_ = exec.Command("service", "nginx", "restart").Run()
-	case "varnish_nginx_apache":
+	case domain.ProfileVarnishNginxApache:
 		_ = exec.Command("service", "apache2", "start").Run()
 		_ = exec.Command("service", "varnish", "restart").Run()
-		_ = exec.Command("service", "nginx", "restart").Run()
-	case "varnish_nginx_phpfpm":
+	case domain.ProfileVarnishNginxPHPFPM:
 		_ = exec.Command("service", "apache2", "stop").Run()
 		_ = exec.Command("service", "varnish", "restart").Run()
-		_ = exec.Command("service", "nginx", "restart").Run()
+	}
+
+	if out, err := exec.Command("nginx", "-t").CombinedOutput(); err != nil {
+		return fmt.Errorf("nginx -t failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	if domain.ProfileNeedsApache(profileID) {
+		if out, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {
+			return fmt.Errorf("apache configtest failed: %s", strings.TrimSpace(string(out)))
+		}
+	}
+
+	_ = exec.Command("service", "nginx", "reload").Run()
+	if domain.ProfileNeedsApache(profileID) {
+		_ = exec.Command("service", "apache2", "reload").Run()
+	}
+	if domain.ProfileNeedsVarnish(profileID) {
+		_ = exec.Command("service", "varnish", "reload").Run()
 	}
 
 	return nil
@@ -326,13 +525,17 @@ func (w *WebServerManagerService) SaveDomainVhost(domain, nginxConf, apacheConf 
 	return nil
 }
 
-// RebuildAllVhosts reloads and recompiles all web server virtual hosts
+// RebuildAllVhosts reloads and recompiles all web server virtual hosts for the active profile.
 func (w *WebServerManagerService) RebuildAllVhosts() (string, error) {
-	_ = exec.Command("service", "nginx", "reload").Run()
-	_ = exec.Command("service", "apache2", "reload").Run()
-	_ = exec.Command("service", "varnish", "reload").Run()
-
-	return "All virtual hosts, Nginx proxies, and Apache vhosts reloaded and rebuilt successfully.", nil
+	w.loadCurrentProfile()
+	count, err := w.rebuildAllVhostsForProfile(w.currentProfile)
+	if err != nil {
+		return "", err
+	}
+	if err := w.reloadServicesForProfile(w.currentProfile); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Rebuilt %d virtual host(s) for profile %s successfully.", count, w.currentProfile), nil
 }
 
 // EnsureDefaultLandingPage creates an ultra-sleek AKpanel default landing page at /var/www/html/index.html
