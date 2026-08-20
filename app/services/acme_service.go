@@ -139,10 +139,12 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 	// Try acme.sh issuance with detailed log recording
 	var issueSuccess bool
 	var acmeOutput string
+	var caUsed string = "Let's Encrypt"
 	logPath := "/var/log/akpanel/acme.log"
 	_ = os.MkdirAll("/var/log/akpanel", 0755)
 
 	if a.isAcmeAvailable() {
+		// 1. Try Let's Encrypt
 		cmdIssue := exec.Command(a.acmeBin,
 			"--issue",
 			"-d", domain,
@@ -152,6 +154,23 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 		)
 		out, err := cmdIssue.CombinedOutput()
 		acmeOutput = string(out)
+
+		// 2. If Rate-Limited (429 too many certificates), automatically fallback to ZeroSSL
+		if err != nil && (strings.Contains(acmeOutput, "rateLimited") || strings.Contains(acmeOutput, "429")) {
+			cmdZero := exec.Command(a.acmeBin,
+				"--issue",
+				"-d", domain,
+				"-w", webroot,
+				"--server", "zerossl",
+				"--force",
+			)
+			outZero, errZero := cmdZero.CombinedOutput()
+			acmeOutput += "\n[Automatic Fallback to ZeroSSL]:\n" + string(outZero)
+			if errZero == nil {
+				err = nil
+				caUsed = "ZeroSSL"
+			}
+		}
 
 		// Append to persistent log file
 		logEntry := fmt.Sprintf("\n=== ACME Issue [%s] %s ===\n%s\n", time.Now().Format(time.RFC3339), domain, acmeOutput)
@@ -178,12 +197,12 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 	if issueSuccess {
 		return &SSLStatus{
 			Domain:       domain,
-			Issuer:       "Let's Encrypt (acme.sh)",
-			Status:       "Active (Let's Encrypt)",
+			Issuer:       fmt.Sprintf("%s (acme.sh)", caUsed),
+			Status:       fmt.Sprintf("Active (%s)", caUsed),
 			CertPath:     certPath,
 			KeyPath:      keyPath,
 			IsSelfSigned: false,
-			Message:      "Trusted Let's Encrypt SSL certificate issued and activated successfully.",
+			Message:      fmt.Sprintf("Trusted %s SSL certificate issued and activated successfully.", caUsed),
 		}, nil
 	}
 
@@ -257,8 +276,12 @@ func (a *ACMEService) GetAllCertificates() []CertificateDetail {
 		cmd := exec.Command("openssl", "x509", "-in", certPath, "-noout", "-issuer", "-enddate")
 		if out, err := cmd.Output(); err == nil {
 			outStr := string(out)
-			if strings.Contains(outStr, "Let's Encrypt") || strings.Contains(outStr, "ZeroSSL") || strings.Contains(outStr, "R3") || strings.Contains(outStr, "E1") {
+			if strings.Contains(outStr, "Let's Encrypt") || strings.Contains(outStr, "R3") || strings.Contains(outStr, "E1") {
 				issuer = "Let's Encrypt (acme.sh)"
+				status = "Active (Trusted)"
+				isSelfSigned = false
+			} else if strings.Contains(outStr, "ZeroSSL") {
+				issuer = "ZeroSSL (acme.sh)"
 				status = "Active (Trusted)"
 				isSelfSigned = false
 			}
