@@ -12,13 +12,16 @@ import (
 )
 
 type WebsiteConfig struct {
-	Domain      string `json:"domain"`
-	ServerEngine string `json:"server_engine"` // "nginx", "apache", "hybrid"
-	TemplateID  string `json:"template_id"`   // e.g. "laravel", "wordpress", "nodejs"
-	PHPVersion  string `json:"php_version"`   // e.g. "8.2", "8.3", "none"
-	SiteType    string `json:"site_type"`     // "php", "static", "proxy"
-	ProxyPort   int    `json:"proxy_port"`    // for reverse proxy
-	RootPath    string `json:"root_path"`
+	Domain           string `json:"domain"`
+	ServerEngine     string `json:"server_engine"` // "nginx", "apache", "hybrid"
+	TemplateID       string `json:"template_id"`   // e.g. "laravel", "wordpress", "nodejs"
+	PHPVersion       string `json:"php_version"`   // e.g. "8.2", "8.3", "none"
+	SiteType         string `json:"site_type"`     // "php", "static", "proxy"
+	ProxyPort        int    `json:"proxy_port"`    // for reverse proxy
+	RootPath         string `json:"root_path"`
+	OwnerUsername    string `json:"owner_username"`
+	PHPSocket        string `json:"php_socket"`         // optional per-user FPM socket
+	SkipOwnershipFix bool   `json:"skip_ownership_fix"` // skip www-data chown for client sites
 }
 
 type NginxService struct {
@@ -159,8 +162,10 @@ func (n *NginxService) CreateWebsite(cfg WebsiteConfig) error {
 	// 2. Populate starter index file
 	n.createStarterFiles(cfg)
 
-	// 3. Set www-data ownership
-	exec.Command("chown", "-R", "www-data:www-data", filepath.Dir(cfg.RootPath)).Run()
+	// 3. Set ownership (skip for client-owned sites — they use user:user + FPM pool)
+	if !cfg.SkipOwnershipFix {
+		exec.Command("chown", "-R", "www-data:www-data", filepath.Dir(cfg.RootPath)).Run()
+	}
 
 	// 4. Handle Server Engines — normalize first to avoid string mismatches
 	engine := domain.EngineFromPackage(cfg.ServerEngine)
@@ -211,6 +216,19 @@ func (n *NginxService) createNginxVhost(cfg WebsiteConfig, isHybrid bool) error 
 	}
 
 	return n.ReloadNginx()
+}
+
+// UpdateWebsiteRoot regenerates vhost configs with a new document root.
+func (n *NginxService) UpdateWebsiteRoot(domain, rootPath string) error {
+	cfg := WebsiteConfig{
+		Domain:           domain,
+		RootPath:         rootPath,
+		ServerEngine:     "nginx",
+		PHPVersion:       "8.2",
+		SiteType:         "php",
+		SkipOwnershipFix: true,
+	}
+	return n.CreateWebsite(cfg)
 }
 
 func (n *NginxService) DeleteWebsite(domain string) error {
@@ -349,6 +367,12 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
 	}
 
 	phpSocket := fmt.Sprintf("unix:/run/php/php%s-fpm.sock", cfg.PHPVersion)
+	if cfg.PHPSocket != "" {
+		phpSocket = cfg.PHPSocket
+		if !strings.HasPrefix(phpSocket, "unix:") {
+			phpSocket = "unix:" + phpSocket
+		}
+	}
 	sslCert, sslKey := n.getSSLCertAndKey(cfg.Domain)
 
 	// Hybrid Mode: Nginx caches static assets and proxies PHP requests to Apache on port 8081
@@ -490,4 +514,77 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
     }
 }
 `, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, phpSocket)
+}
+
+// CreateProxyVhost writes an nginx vhost that reverse-proxies to a local port with optional extra headers.
+func (n *NginxService) CreateProxyVhost(domain string, port int, extraHeaders map[string]string) error {
+	sslCert, sslKey := n.getSSLCertAndKey(domain)
+	headerLines := ""
+	for k, v := range extraHeaders {
+		headerLines += fmt.Sprintf("        proxy_set_header %s %s;\n", k, v)
+	}
+	vhost := fmt.Sprintf(`server {
+    listen 80;
+    listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name %s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    access_log /var/log/nginx/%s.access.log;
+    error_log /var/log/nginx/%s.error.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:%d;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+%s        proxy_cache_bypass $http_upgrade;
+    }
+}
+`, domain, sslCert, sslKey, domain, domain, port, headerLines)
+	return n.writeAndEnableVhost(domain, vhost)
+}
+
+// CreateStaticInfoVhost serves a simple informational page for service subdomains (ftp/imap/pop).
+func (n *NginxService) CreateStaticInfoVhost(domain, title, bodyHTML string) error {
+	sslCert, sslKey := n.getSSLCertAndKey(domain)
+	root := fmt.Sprintf("/var/www/sites/_service/%s", domain)
+	_ = os.MkdirAll(root, 0755)
+	_ = os.WriteFile(filepath.Join(root, "index.html"), []byte(fmt.Sprintf(`<!DOCTYPE html><html><head><title>%s</title></head><body>%s</body></html>`, title, bodyHTML)), 0644)
+	vhost := fmt.Sprintf(`server {
+    listen 80;
+    listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name %s;
+    root %s;
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    index index.html;
+    location / { try_files $uri $uri/ =404; }
+}
+`, domain, root, sslCert, sslKey)
+	return n.writeAndEnableVhost(domain, vhost)
+}
+
+func (n *NginxService) writeAndEnableVhost(domain, content string) error {
+	availableFile := filepath.Join(n.sitesAvailablePath, fmt.Sprintf("%s.conf", domain))
+	enabledFile := filepath.Join(n.sitesEnabledPath, fmt.Sprintf("%s.conf", domain))
+	if err := os.WriteFile(availableFile, []byte(content), 0644); err != nil {
+		return err
+	}
+	_ = os.Remove(enabledFile)
+	if err := os.Symlink(availableFile, enabledFile); err != nil {
+		return err
+	}
+	if err := n.TestConfig(); err != nil {
+		return err
+	}
+	return n.ReloadNginx()
 }

@@ -33,7 +33,18 @@ func (c *ClientController) getUsername(ctx http.Context) string {
 			return s
 		}
 	}
-	return "root"
+	return ""
+}
+
+func (c *ClientController) requireUsername(ctx http.Context) (string, http.Response) {
+	username := c.getUsername(ctx)
+	if username == "" {
+		return "", ctx.Response().Status(401).Json(http.Json{
+			"status":  false,
+			"message": "Unauthorized: client session required.",
+		})
+	}
+	return username, nil
 }
 
 // POST /api/client/auth/login
@@ -183,9 +194,40 @@ func (c *ClientController) StoreWebsite(ctx http.Context) http.Response {
 	})
 }
 
+// POST /api/client/websites/docroot
+func (c *ClientController) UpdateWebsiteDocroot(ctx http.Context) http.Response {
+	username, errResp := c.requireUsername(ctx)
+	if errResp != nil {
+		return errResp
+	}
+
+	var req struct {
+		Domain       string `json:"domain"`
+		DocumentRoot string `json:"document_root"`
+	}
+	if err := ctx.Request().Bind(&req); err != nil || req.Domain == "" || req.DocumentRoot == "" {
+		return ctx.Response().Status(400).Json(http.Json{
+			"status":  false,
+			"message": "Domain and document_root are required.",
+		})
+	}
+
+	if err := c.clientService.SetWebsiteDocroot(username, req.Domain, req.DocumentRoot); err != nil {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": err.Error()})
+	}
+
+	return ctx.Response().Success().Json(http.Json{
+		"status":  true,
+		"message": "Document root updated successfully.",
+	})
+}
+
 // POST /api/client/websites/delete
 func (c *ClientController) DeleteWebsite(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
+	username, errResp := c.requireUsername(ctx)
+	if errResp != nil {
+		return errResp
+	}
 	var req struct {
 		Domain string `json:"domain"`
 	}
@@ -205,7 +247,10 @@ func (c *ClientController) DeleteWebsite(ctx http.Context) http.Response {
 
 // GET /api/client/dns/zones
 func (c *ClientController) DNSZones(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
+	username, errResp := c.requireUsername(ctx)
+	if errResp != nil {
+		return errResp
+	}
 	zones, err := c.clientService.GetDNSZones(username)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})

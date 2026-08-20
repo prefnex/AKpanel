@@ -519,7 +519,7 @@ func (s *EmailService) ChangePassword(email, newPassword string) error {
 		return fmt.Errorf("email account not found")
 	}
 
-	return nil
+	return GetMailAuthService().SetMailboxPassword(email, newPassword)
 }
 
 // DeleteAccount removes virtual mailbox

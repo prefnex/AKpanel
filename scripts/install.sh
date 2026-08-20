@@ -246,7 +246,7 @@ task_step3() {
         apt-get update -y
         apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server
+            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers
         apt-get install $APT_OPTS \
             php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \
@@ -257,7 +257,7 @@ task_step3() {
         apt-get update -y >> "$LOG_FILE" 2>&1 || true
         apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server >> "$LOG_FILE" 2>&1 || true
+            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd >> "$LOG_FILE" 2>&1 || true
         a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
         apt-get install $APT_OPTS \
             php8.2-cli php8.2-fpm php8.2-common php8.2-mysql php8.2-curl php8.2-mbstring php8.2-xml php8.2-zip php8.2-gd \

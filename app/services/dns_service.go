@@ -1331,10 +1331,12 @@ func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string) DNS
 		{Name: "@", Type: "A", Value: serverIP, TTL: 14400, Comment: "Root Domain Pointer"},
 		{Name: "www", Type: "CNAME", Value: domain, TTL: 14400, Comment: "Web Alias"},
 		{Name: "ftp", Type: "A", Value: serverIP, TTL: 14400, Comment: "FTP Server"},
+		{Name: "imap", Type: "A", Value: serverIP, TTL: 14400, Comment: "IMAP Server"},
+		{Name: "pop", Type: "A", Value: serverIP, TTL: 14400, Comment: "POP3 Server"},
 		{Name: "mail", Type: "A", Value: serverIP, TTL: 14400, Comment: "Mail Server Pointer"},
-		{Name: "cpanel", Type: "CNAME", Value: domain, TTL: 14400, Comment: "Panel Web Alias"},
+		{Name: "cpanel", Type: "A", Value: serverIP, TTL: 14400, Comment: "Client Panel"},
 		{Name: "whm", Type: "CNAME", Value: domain, TTL: 14400, Comment: "Admin Web Alias"},
-		{Name: "webmail", Type: "CNAME", Value: domain, TTL: 14400, Comment: "Webmail Web Alias"},
+		{Name: "webmail", Type: "A", Value: serverIP, TTL: 14400, Comment: "Webmail"},
 		{Name: "@", Type: "NS", Value: pNS, TTL: 86400, Comment: "Primary Nameserver"},
 		{Name: "@", Type: "NS", Value: sNS, TTL: 86400, Comment: "Secondary Nameserver"},
 		{Name: "ns1", Type: "A", Value: settings.PrimaryIP, TTL: 14400, Comment: "Nameserver 1 Glue Record"},
@@ -1715,6 +1717,7 @@ func (s *DNSService) syncBindZone(zone *DNSZone) error {
     type master;
     file "%s";
     allow-transfer { none; };
+    allow-update { key "akpanel-acme"; };
     allow-query { any; };
 };
 `, zone.Domain, zoneFilePath)

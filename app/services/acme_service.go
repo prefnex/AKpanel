@@ -362,3 +362,128 @@ func (a *ACMEService) RenewAll() (string, error) {
 	return string(out), nil
 }
 
+// IssueWildcard requests a wildcard cert for domain and *.domain using DNS-01 (BIND nsupdate).
+func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if domain == "" {
+		return nil, fmt.Errorf("domain cannot be empty")
+	}
+
+	_ = a.EnsureAcmeInstalled()
+	a.ensureBindACMETSIG()
+
+	domainDir := filepath.Join(a.sslBaseDir, domain)
+	_ = os.MkdirAll(domainDir, 0755)
+	certPath := filepath.Join(domainDir, "fullchain.pem")
+	keyPath := filepath.Join(domainDir, "privkey.pem")
+
+	wildcard := "*." + domain
+	var acmeOutput string
+	issueSuccess := false
+
+	if a.isAcmeAvailable() {
+		env := os.Environ()
+		env = append(env, "NSUPDATE_SERVER=127.0.0.1")
+		keyConf := "/etc/bind/keys/akpanel-acme.conf"
+		if _, err := os.Stat(keyConf); err == nil {
+			env = append(env, "NSUPDATE_KEY="+keyConf)
+		}
+
+		cmd := exec.Command(a.acmeBin,
+			"--issue",
+			"--dns", "dns_nsupdate",
+			"-d", domain,
+			"-d", wildcard,
+			"--server", "letsencrypt",
+			"--force",
+		)
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		acmeOutput = string(out)
+
+		if err != nil {
+			// Fallback: multi-domain HTTP-01 for service hostnames
+			webroot = paths.ResolveWebsiteRoot("", domain)
+			if webroot == "" {
+				webroot = "/var/www/html"
+			}
+			cmdHTTP := exec.Command(a.acmeBin, "--issue",
+				"-d", domain, "-d", "www."+domain,
+				"-d", "webmail."+domain, "-d", "cpanel."+domain,
+				"-d", "ftp."+domain, "-d", "imap."+domain, "-d", "pop."+domain,
+				"-w", webroot, "--server", "letsencrypt", "--force")
+			out2, err2 := cmdHTTP.CombinedOutput()
+			acmeOutput += "\n[HTTP-01 fallback]\n" + string(out2)
+			if err2 == nil {
+				err = nil
+			}
+		}
+
+		if err == nil {
+			cmdInstall := exec.Command(a.acmeBin, "--install-cert", "-d", domain,
+				"--key-file", keyPath, "--fullchain-file", certPath,
+				"--reloadcmd", "service nginx reload 2>/dev/null || true; service apache2 reload 2>/dev/null || true")
+			if cmdInstall.Run() == nil {
+				issueSuccess = true
+			}
+		}
+	}
+
+	logPath := "/var/log/akpanel/acme.log"
+	_ = os.MkdirAll("/var/log/akpanel", 0755)
+	logEntry := fmt.Sprintf("\n=== ACME Wildcard [%s] %s ===\n%s\n", time.Now().Format(time.RFC3339), domain, acmeOutput)
+	f, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if f != nil {
+		_, _ = f.WriteString(logEntry)
+		f.Close()
+	}
+
+	if issueSuccess {
+		return &SSLStatus{
+			Domain: domain, Issuer: "Let's Encrypt (wildcard)", Status: "Active",
+			CertPath: certPath, KeyPath: keyPath, IsSelfSigned: false,
+			Message: "Wildcard SSL certificate issued via DNS-01",
+		}, nil
+	}
+
+	_, _, err := a.GenerateSelfSigned(domain)
+	if err != nil {
+		return nil, err
+	}
+	return &SSLStatus{
+		Domain: domain, Issuer: "Self-Signed", Status: "Self-Signed Fallback",
+		CertPath: certPath, KeyPath: keyPath, IsSelfSigned: true,
+		Message: "Wildcard issuance failed; self-signed fallback installed",
+	}, nil
+}
+
+func (a *ACMEService) ensureBindACMETSIG() {
+	keyConf := "/etc/bind/keys/akpanel-acme.conf"
+	_ = os.MkdirAll(paths.EtcAKpanelSecrets, 0700)
+	_ = os.MkdirAll("/etc/bind/keys", 0755)
+
+	if _, err := os.Stat(keyConf); os.IsNotExist(err) {
+		out, _ := exec.Command("tsig-keygen", "-a", "hmac-sha256", "akpanel-acme").CombinedOutput()
+		if len(out) > 0 {
+			_ = os.WriteFile(keyConf, out, 0640)
+		}
+	}
+
+	optsPath := "/etc/bind/named.conf.options"
+	content, err := os.ReadFile(optsPath)
+	if err == nil && !strings.Contains(string(content), "akpanel-acme") {
+		includeLine := `include "/etc/bind/keys/akpanel-acme.conf";` + "\n"
+		_ = os.WriteFile(optsPath, append([]byte(includeLine), content...), 0644)
+	}
+
+	localPath := "/etc/bind/named.conf.local"
+	if localContent, err := os.ReadFile(localPath); err == nil {
+		if !strings.Contains(string(localContent), "akpanel-acme") && strings.Contains(string(localContent), "allow-update") == false {
+			// allow-update added per-zone in upsertZoneToBind
+		}
+	}
+}
+

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	webdomain "goravel/app/domain"
+	"goravel/app/paths"
 )
 
 type ClientDashboardStats struct {
@@ -287,7 +288,7 @@ func (c *ClientService) GetWebsites(username string) ([]ClientWebsite, error) {
 	// 1. Check user main domain from UserAccount
 	user := c.findUser(username)
 	if user != nil && user.MainDomain != "" {
-		docRoot := filepath.Join(userHome, "public_html")
+		docRoot := paths.UserDomainRoot(username, user.MainDomain)
 		mySites = append(mySites, ClientWebsite{
 			Domain:       user.MainDomain,
 			DocumentRoot: docRoot,
@@ -298,7 +299,37 @@ func (c *ClientService) GetWebsites(username string) ([]ClientWebsite, error) {
 		})
 	}
 
-	// 2. Scan subdirectories in /home/<username>
+	// 2. Scan /home/<username>/domains/
+	domainsDir := filepath.Join(userHome, "domains")
+	if entries, err := os.ReadDir(domainsDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			pubHtml := paths.UserDomainRoot(username, e.Name())
+			if _, err2 := os.Stat(pubHtml); err2 == nil {
+				exists := false
+				for _, s := range mySites {
+					if s.Domain == e.Name() {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					mySites = append(mySites, ClientWebsite{
+						Domain:       e.Name(),
+						DocumentRoot: pubHtml,
+						PHPVersion:   "8.2",
+						SSLEnabled:   true,
+						ForceHTTPS:   false,
+						CreatedAt:    time.Now().Format("2006-01-02 15:04:05"),
+					})
+				}
+			}
+		}
+	}
+
+	// Legacy: scan subdirectories directly under home
 	if entries, err := os.ReadDir(userHome); err == nil {
 		for _, e := range entries {
 			if e.IsDir() && e.Name() != "public_html" && e.Name() != "logs" && e.Name() != "ssl" && e.Name() != "backups" && e.Name() != "tmp" && e.Name() != "mail" {
@@ -443,6 +474,42 @@ func (c *ClientService) DeleteWebsite(username, domain string) error {
 	}
 
 	return c.nginxService.DeleteWebsite(domain)
+}
+
+// SetWebsiteDocroot updates the document root for a client-owned domain and reloads the vhost.
+func (c *ClientService) SetWebsiteDocroot(username, domain, docroot string) error {
+	if strings.TrimSpace(username) == "" {
+		return fmt.Errorf("unauthorized")
+	}
+	domain = strings.TrimSpace(strings.ToLower(domain))
+	docroot = strings.TrimSpace(docroot)
+	if domain == "" || docroot == "" {
+		return fmt.Errorf("domain and document_root are required")
+	}
+
+	userSites, _ := c.GetWebsites(username)
+	owned := false
+	for _, s := range userSites {
+		if s.Domain == domain {
+			owned = true
+			break
+		}
+	}
+	if !owned && username != "root" && username != "admin" {
+		return fmt.Errorf("domain '%s' does not belong to your account", domain)
+	}
+
+	home := paths.UserHome(username)
+	if !strings.HasPrefix(docroot, home+"/") && username != "root" && username != "admin" {
+		return fmt.Errorf("document root must be under %s", home)
+	}
+
+	if err := os.MkdirAll(docroot, 0755); err != nil {
+		return err
+	}
+	_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", username, username), docroot).Run()
+
+	return c.nginxService.UpdateWebsiteRoot(domain, docroot)
 }
 
 // GetDNSZones returns DNS zones owned by client
@@ -994,6 +1061,9 @@ func (c *ClientService) CreateFTPUser(username, ftpUser, ftpPass, subDir string,
 	})
 
 	_ = c.writeFTPUsers(stored)
+	if err := GetFTPService().CreateSubAccount(fullFTPUser, ftpPass, username, homeDir); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1006,6 +1076,8 @@ func (c *ClientService) DeleteFTPUser(username, ftpUser string) error {
 	for _, u := range stored {
 		if u.Username != ftpUser || (u.OwnerUser != username && username != "root" && username != "admin") {
 			updated = append(updated, u)
+		} else {
+			_ = GetFTPService().DeleteSubAccount(u.Username)
 		}
 	}
 	return c.writeFTPUsers(updated)
@@ -1234,24 +1306,7 @@ func (c *ClientService) CreateEmail(username, emailAddr, password string, quotaM
 		return fmt.Errorf("domain '%s' does not belong to your account", domain)
 	}
 
-	emailsPath := "/etc/akpanel/emails.json"
-	_ = os.MkdirAll("/etc/akpanel", 0755)
-
-	var allEmails []map[string]any
-	if bytes, err := os.ReadFile(emailsPath); err == nil {
-		_ = json.Unmarshal(bytes, &allEmails)
-	}
-
-	allEmails = append(allEmails, map[string]any{
-		"email":      emailAddr,
-		"domain":     domain,
-		"quota_mb":   quotaMB,
-		"used_mb":    1,
-		"created_at": time.Now().Format("2006-01-02 15:04:05"),
-	})
-
-	updated, _ := json.MarshalIndent(allEmails, "", "  ")
-	return os.WriteFile(emailsPath, updated, 0644)
+	return NewEmailService().CreateAccount(emailAddr, password, quotaMB)
 }
 
 func (c *ClientService) GenerateBackup(username string) (string, error) {

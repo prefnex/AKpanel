@@ -155,3 +155,11 @@ func PHPSocket(version string) string {
 	}
 	return filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm.sock", version))
 }
+
+// PHPSocketForUser returns the per-user PHP-FPM socket path.
+func PHPSocketForUser(version, username string) string {
+	if version == "" {
+		version = "8.2"
+	}
+	return filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm-%s.sock", version, username))
+}

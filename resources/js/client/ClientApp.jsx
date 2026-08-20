@@ -63,6 +63,30 @@ export default function ClientApp() {
     }
   }, [token]);
 
+  useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      if (url.startsWith('/api/client/') && !url.includes('/api/client/auth/login')) {
+        const currentToken =
+          localStorage.getItem('akpanel_client_token') ||
+          localStorage.getItem('ak_client_token') ||
+          token;
+        if (currentToken) {
+          const headers = new Headers(init.headers || {});
+          if (!headers.has('Authorization')) {
+            headers.set('Authorization', `Bearer ${currentToken}`);
+          }
+          init = { ...init, headers };
+        }
+      }
+      return originalFetch(input, init);
+    };
+    return () => {
+      window.fetch = originalFetch;
+    };
+  }, [token]);
+
   const handleLoginSuccess = (userData, userToken) => {
     setUser(userData);
     setToken(userToken);

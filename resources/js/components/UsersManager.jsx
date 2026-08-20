@@ -69,6 +69,12 @@ export default function UsersManager({ showToast }) {
     create_mysql: true,
   });
 
+  const [provisionTaskId, setProvisionTaskId] = useState(localStorage.getItem('akpanel_user_provision_task') || '');
+  const [provisionLogs, setProvisionLogs] = useState([]);
+  const [provisionProgress, setProvisionProgress] = useState(0);
+  const [provisionStep, setProvisionStep] = useState('');
+  const [isProvisioning, setIsProvisioning] = useState(false);
+
   const fetchUsers = async () => {
     setLoading(true);
     try {
@@ -133,6 +139,62 @@ export default function UsersManager({ showToast }) {
     fetchIps();
   }, []);
 
+  useEffect(() => {
+    if (!provisionTaskId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/users/provision/status?task_id=${provisionTaskId}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const task = json.data;
+        if (!task || cancelled) return;
+        setProvisionLogs(task.logs || []);
+        setProvisionProgress(task.progress || 0);
+        setProvisionStep(task.current_step || '');
+        if (task.status === 'completed') {
+          setIsProvisioning(false);
+          localStorage.removeItem('akpanel_user_provision_task');
+          setProvisionTaskId('');
+          showToast(`User provisioned: ${task.subject}`);
+          fetchUsers();
+        } else if (task.status === 'failed') {
+          setIsProvisioning(false);
+          localStorage.removeItem('akpanel_user_provision_task');
+          showToast(task.error || 'Provisioning failed', 'error');
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    poll();
+    const id = setInterval(poll, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [provisionTaskId]);
+
+  useEffect(() => {
+    const recover = async () => {
+      if (provisionTaskId) return;
+      try {
+        const res = await fetch('/api/tasks/active?kind=user_provision');
+        if (!res.ok) return;
+        const json = await res.json();
+        const active = (json.data || []).find(t => t.status === 'running');
+        if (active) {
+          setProvisionTaskId(active.id);
+          localStorage.setItem('akpanel_user_provision_task', active.id);
+          setIsProvisioning(true);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    recover();
+  }, []);
+
   const generateRandomPassword = () => {
     const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%&*';
     let pass = '';
@@ -155,8 +217,10 @@ export default function UsersManager({ showToast }) {
 
   const handleCreateUser = async (e) => {
     e.preventDefault();
+    setIsProvisioning(true);
+    setProvisionLogs([]);
     try {
-      const res = await fetch('/api/users', {
+      const res = await fetch('/api/users/provision', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData),
@@ -164,10 +228,17 @@ export default function UsersManager({ showToast }) {
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
 
-      showToast(json.message);
-      setIsCreateOpen(false);
-      fetchUsers();
+      if (json.task_id) {
+        setProvisionTaskId(json.task_id);
+        localStorage.setItem('akpanel_user_provision_task', json.task_id);
+        showToast('User provisioning started — track progress below');
+      } else {
+        showToast(json.message);
+        setIsCreateOpen(false);
+        fetchUsers();
+      }
     } catch (err) {
+      setIsProvisioning(false);
       showToast(err.message, 'error');
     }
   };
@@ -825,6 +896,23 @@ export default function UsersManager({ showToast }) {
               </div>
             </div>
 
+            {(isProvisioning || provisionTaskId) && (
+              <div className="mt-4 p-3 rounded-xl bg-zinc-950 border border-zinc-800 space-y-2">
+                <div className="flex justify-between text-xs text-zinc-400">
+                  <span>Provisioning{provisionStep ? `: ${provisionStep}` : '...'}</span>
+                  <span>{provisionProgress}%</span>
+                </div>
+                <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-600 transition-all" style={{ width: `${provisionProgress}%` }} />
+                </div>
+                <div className="max-h-28 overflow-y-auto text-[10px] font-mono text-zinc-500 space-y-0.5">
+                  {(provisionLogs || []).slice(-8).map((line, i) => (
+                    <div key={i}>{line}</div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <DialogFooter className="pt-3 border-t border-zinc-800">
               <Button
                 type="button"
@@ -836,9 +924,10 @@ export default function UsersManager({ showToast }) {
               </Button>
               <Button
                 type="submit"
-                className="rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md shadow-blue-600/20 px-6"
+                disabled={isProvisioning}
+                className="rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md shadow-blue-600/20 px-6 disabled:opacity-50"
               >
-                Create
+                {isProvisioning ? 'Provisioning...' : 'Create'}
               </Button>
             </DialogFooter>
           </form>

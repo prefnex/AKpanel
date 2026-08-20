@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"goravel/app/facades"
+	"goravel/app/paths"
 )
 
 type DatabaseEngineInfo struct {
@@ -112,13 +115,22 @@ func (d *DatabaseService) CreatePmaSsoSession(username, password string) (string
 	return fmt.Sprintf("/phpmyadmin/signon.php?token=%s", token), nil
 }
 
-// ExecMySQL runs a SQL statement against local MariaDB using root/ak_admin credentials or socket
+// ExecMySQL runs a SQL statement against local MariaDB using configured credentials.
 func ExecMySQL(sqlStr string) error {
-	cmd := exec.Command("mysql", "-u", "root", "-pakpanel123", "-e", sqlStr)
-	if err := cmd.Run(); err == nil {
-		return nil
+	rootPass := ""
+	if b, err := os.ReadFile(paths.EtcAKpanelSecrets + "/mysql_root"); err == nil {
+		rootPass = strings.TrimSpace(string(b))
 	}
-	cmd2 := exec.Command("mysql", "-u", "ak_admin", "-pakpanel123", "-e", sqlStr)
+	if rootPass == "" {
+		rootPass = facades.Config().GetString("akpanel.mysql_root_password")
+	}
+	if rootPass != "" {
+		cmd := exec.Command("mysql", "-u", "root", "-p"+rootPass, "-e", sqlStr)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+	cmd2 := exec.Command("mysql", "-u", "ak_admin", "-e", sqlStr)
 	if err := cmd2.Run(); err == nil {
 		return nil
 	}
