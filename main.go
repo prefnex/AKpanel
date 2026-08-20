@@ -62,32 +62,39 @@ func (b *bufferedConn) Read(p []byte) (int, error) {
 }
 
 func (l *cmuxListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
 
-	buf := make([]byte, 1)
-	n, err := conn.Read(buf)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
+		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		buf := make([]byte, 1)
+		n, err := conn.Read(buf)
+		_ = conn.SetReadDeadline(time.Time{})
 
-	combinedReader := io.MultiReader(bytes.NewReader(buf[:n]), conn)
-	bConn := &bufferedConn{
-		Conn: conn,
-		r:    combinedReader,
-	}
+		if err != nil {
+			// Client disconnected before sending bytes (e.g. port scan, TCP probe, aborted conn).
+			// Safely close this single connection and loop to accept the next one without killing the listener.
+			conn.Close()
+			continue
+		}
 
-	// 0x16 is the first byte of a TLS Handshake (Record Type: Handshake)
-	if buf[0] == 0x16 && l.tlsConfig != nil {
-		tlsConn := tls.Server(bConn, l.tlsConfig)
-		return tlsConn, nil
-	}
+		combinedReader := io.MultiReader(bytes.NewReader(buf[:n]), conn)
+		bConn := &bufferedConn{
+			Conn: conn,
+			r:    combinedReader,
+		}
 
-	// Plain HTTP connection
-	return bConn, nil
+		// 0x16 is the first byte of a TLS Handshake (Record Type: Handshake)
+		if buf[0] == 0x16 && l.tlsConfig != nil {
+			tlsConn := tls.Server(bConn, l.tlsConfig)
+			return tlsConn, nil
+		}
+
+		// Plain HTTP connection
+		return bConn, nil
+	}
 }
 
 // createPanelHandler creates an HTTP/HTTPS handler with reverse proxy to internal Goravel backend and automatic HTTP->HTTPS redirect
@@ -124,29 +131,35 @@ func createPanelHandler(targetURL string, port string, scope string) nethttp.Han
 }
 
 func startPanelListener(addr string, port string, scope string, targetURL string, tlsConfig *tls.Config) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Printf("❌ Failed to bind %s on %s: %v", scope, addr, err)
-		return
-	}
+	for {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Printf("❌ Failed to bind %s on %s: %v", scope, addr, err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-	muxLn := &cmuxListener{
-		Listener:  ln,
-		tlsConfig: tlsConfig,
-	}
+		muxLn := &cmuxListener{
+			Listener:  ln,
+			tlsConfig: tlsConfig,
+		}
 
-	handler := createPanelHandler(targetURL, port, scope)
-	server := &nethttp.Server{
-		Handler:      handler,
-		ReadTimeout:  120 * time.Second,
-		WriteTimeout: 120 * time.Second,
-		IdleTimeout:  120 * time.Second,
-		TLSConfig:    tlsConfig,
-	}
+		handler := createPanelHandler(targetURL, port, scope)
+		server := &nethttp.Server{
+			Handler:      handler,
+			ReadTimeout:  120 * time.Second,
+			WriteTimeout: 120 * time.Second,
+			IdleTimeout:  120 * time.Second,
+			TLSConfig:    tlsConfig,
+		}
 
-	log.Printf("🌟 [AKpanel] %s Panel listening on https://%s (HTTP auto-redirect enabled)", strings.Title(scope), addr)
-	if err := server.Serve(muxLn); err != nil && err != nethttp.ErrServerClosed {
-		log.Printf("❌ %s server error: %v", scope, err)
+		log.Printf("🌟 [AKpanel] %s Panel listening on https://%s (HTTP auto-redirect enabled)", strings.Title(scope), addr)
+		if err := server.Serve(muxLn); err != nil && err != nethttp.ErrServerClosed {
+			log.Printf("⚠️ [AKpanel] %s server restarted after error: %v", scope, err)
+			time.Sleep(1 * time.Second)
+		} else {
+			break
+		}
 	}
 }
 
