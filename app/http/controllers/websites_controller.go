@@ -5,8 +5,10 @@ import (
 	"strings"
 
 	"github.com/goravel/framework/contracts/http"
+
 	"goravel/app/facades"
 	"goravel/app/models"
+	"goravel/app/paths"
 	"goravel/app/services"
 )
 
@@ -109,7 +111,7 @@ func (r *WebsitesController) Store(ctx http.Context) http.Response {
 		PHPVersion:   phpVersion,
 		SiteType:     siteType,
 		ProxyPort:    proxyPort,
-		RootPath:     fmt.Sprintf("/var/www/sites/%s/public", domain),
+		RootPath:     paths.RootSiteRoot(domain),
 		SSLActive:    false,
 	}
 

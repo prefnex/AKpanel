@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"goravel/app/paths"
 )
 
 type ApacheService struct {
@@ -17,9 +19,9 @@ type ApacheService struct {
 
 func NewApacheService() *ApacheService {
 	return &ApacheService{
-		sitesAvailablePath: "/etc/apache2/sites-available",
-		sitesEnabledPath:   "/etc/apache2/sites-enabled",
-		sitesRootPath:      "/var/www/sites",
+		sitesAvailablePath: paths.ApacheAvailableDir,
+		sitesEnabledPath:   paths.ApacheEnabledDir,
+		sitesRootPath:      paths.SitesRoot,
 		internalPort:       8081, // Apache internal port in Hybrid mode
 	}
 }

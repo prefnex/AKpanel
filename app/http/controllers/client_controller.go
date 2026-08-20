@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -52,32 +53,42 @@ func (c *ClientController) Login(ctx http.Context) http.Response {
 	var authenticatedUser *services.UserAccount
 	role := "client"
 
-	if req.Username == "admin" && req.Password == "admin123456" {
-		authenticatedUser = &services.UserAccount{
-			Username:    "admin",
-			Email:       "admin@akpanel.local",
-			MainDomain:  "default.local",
-			PackageName: "Unlimited Admin",
-			Status:      "active",
-		}
-		role = "admin"
-	} else {
-		users := c.userService.ListUsers()
-		for _, u := range users {
-			if u.Username == req.Username {
-				hash := sha256.Sum256([]byte(req.Password))
-				hashStr := hex.EncodeToString(hash[:])
-				if hashStr == u.PasswordHash || req.Password == "admin123456" {
-					if u.Status == "suspended" {
-						return ctx.Response().Status(403).Json(http.Json{
-							"status":  false,
-							"message": "This hosting account is suspended: " + u.SuspendedReason,
-						})
+	users := c.userService.ListUsers()
+	for _, u := range users {
+		if strings.EqualFold(u.Username, req.Username) {
+			valid := false
+
+			// 1. Try modern bcrypt check
+			if facades.Hash() != nil && u.PasswordHash != "" {
+				valid = facades.Hash().Check(req.Password, u.PasswordHash)
+			}
+
+			// 2. Fallback to legacy SHA256 check and re-hash to bcrypt on success
+			if !valid && u.PasswordHash != "" {
+				legacyHash := sha256.Sum256([]byte(req.Password))
+				legacyHashStr := hex.EncodeToString(legacyHash[:])
+				if legacyHashStr == u.PasswordHash {
+					valid = true
+					// Seamless migration: upgrade legacy hash to bcrypt
+					if facades.Hash() != nil {
+						if newBcryptHash, err := facades.Hash().Make(req.Password); err == nil {
+							u.PasswordHash = newBcryptHash
+							_ = c.userService.SaveUser(u)
+						}
 					}
-					userCopy := u
-					authenticatedUser = &userCopy
-					break
 				}
+			}
+
+			if valid {
+				if u.Status == "suspended" {
+					return ctx.Response().Status(403).Json(http.Json{
+						"status":  false,
+						"message": "This hosting account is suspended: " + u.SuspendedReason,
+					})
+				}
+				userCopy := u
+				authenticatedUser = &userCopy
+				break
 			}
 		}
 	}

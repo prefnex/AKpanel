@@ -3,9 +3,31 @@ TAG ?= v$(VERSION)
 BUILD_DIR ?= dist
 RELEASE_DIR ?= release-assets
 
-.PHONY: all build build-frontend build-backend package release-tag clean dev
+.PHONY: all build build-frontend build-backend package release-tag clean dev \
+        dev-docker docker-shell docker-logs docker-build docker-stop
 
 all: build
+
+## 🐳 Build & start Docker dev environment (runs everything inside container)
+dev-docker:
+	docker compose up --build
+
+## 🐳 Start Docker in background
+docker-build:
+	docker compose up --build -d
+	@echo "⏳ Waiting for AKpanel to start... (check: make docker-logs)"
+
+## 🐚 Open shell inside the running container
+docker-shell:
+	docker exec -it akpanel_vps bash
+
+## 📋 Follow container logs
+docker-logs:
+	docker compose logs -f
+
+## ⏹ Stop the container
+docker-stop:
+	docker compose down
 
 ## 🎨 Build React Vite frontend
 build-frontend:

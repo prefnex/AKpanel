@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	webdomain "goravel/app/domain"
 )
 
 type ClientDashboardStats struct {
@@ -397,10 +399,16 @@ func (c *ClientService) CreateWebsite(username, domain, phpVersion string) error
 		phpVersion = "8.2"
 	}
 
+	// Use the user's package engine, not hardcoded "nginx" (fixes AP-07)
+	engineStr := "nginx" // safe default
+	if pkg, err := NewPackagesService().GetPackage("default"); err == nil {
+		engineStr = webdomain.EngineFromPackage(pkg.DefaultWebEngine).String()
+	}
+
 	err := c.nginxService.CreateWebsite(WebsiteConfig{
 		Domain:       domain,
 		RootPath:     siteRoot,
-		ServerEngine: "nginx",
+		ServerEngine: engineStr,
 		PHPVersion:   phpVersion,
 		SiteType:     "php",
 	})

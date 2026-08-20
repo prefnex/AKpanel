@@ -11,6 +11,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"goravel/app/facades"
+	"goravel/app/models"
+	"goravel/app/paths"
 )
 
 type UserAccount struct {
@@ -66,10 +70,10 @@ var (
 
 func NewUserAccountService() *UserAccountService {
 	userAccountOnce.Do(func() {
-		_ = os.MkdirAll("/etc/akpanel", 0755)
+		_ = os.MkdirAll(paths.EtcAKpanel, 0755)
 		_ = os.MkdirAll("/var/www/vhosts", 0755)
 		s := &UserAccountService{
-			filePath:        "/etc/akpanel/users.json",
+			filePath:        paths.UsersJSON(),
 			packagesService: NewPackagesService(),
 			nginxService:    NewNginxService(),
 		}
@@ -330,6 +334,29 @@ func (s *UserAccountService) CreateUser(username, password, email, mainDomain, p
 			PHPVersion:   pkg.DefaultPHPVersion,
 			SiteType:     "php",
 		})
+
+		// Register in SQLite websites table if Orm is available (fixes U-03)
+		if facades.Orm() != nil {
+			count, _ := facades.Orm().Query().Model(&models.Website{}).Where("domain = ?", mainDomain).Count()
+			if count == 0 {
+				website := models.Website{
+					Domain:       mainDomain,
+					ServerEngine: pkg.DefaultWebEngine,
+					TemplateID:   "custom",
+					PHPVersion:   pkg.DefaultPHPVersion,
+					SiteType:     "php",
+					RootPath:     publicHtml,
+					SSLActive:    false,
+				}
+				_ = facades.Orm().Query().Create(&website)
+			}
+		}
+
+		// Create authoritative DNS zone for domain (fixes DNS-01)
+		dnsSvc := NewDNSService()
+		if dnsSvc != nil {
+			_, _ = dnsSvc.CreateZone(mainDomain, s.getSystemIP(), username, pkg.ID)
+		}
 	}
 
 	// 5. Create Scoped MySQL User with permissions strictly confined to <username>_%
@@ -359,12 +386,20 @@ func (s *UserAccountService) CreateUser(username, password, email, mainDomain, p
 		databasesCount = 1
 	}
 
-	hash := sha256.Sum256([]byte(password))
-	passHash := hex.EncodeToString(hash[:])
+	passHash := ""
+	if facades.Hash() != nil {
+		if bHash, err := facades.Hash().Make(password); err == nil {
+			passHash = bHash
+		}
+	}
+	if passHash == "" {
+		hash := sha256.Sum256([]byte(password))
+		passHash = hex.EncodeToString(hash[:])
+	}
 
 	newUser := UserAccount{
 		Username:         username,
-		Password:         password,
+		Password:         "", // Plaintext password never stored
 		PasswordHash:     passHash,
 		Email:            email,
 		MainDomain:       mainDomain,
@@ -560,12 +595,20 @@ func (s *UserAccountService) ResetPassword(username, newPassword string) error {
 
 	// 4. Update AKpanel Client Portal auth hash in users.json
 	list, _ := s.readUsers()
-	hash := sha256.Sum256([]byte(newPassword))
-	passHash := hex.EncodeToString(hash[:])
+	passHash := ""
+	if facades.Hash() != nil {
+		if bHash, err := facades.Hash().Make(newPassword); err == nil {
+			passHash = bHash
+		}
+	}
+	if passHash == "" {
+		hash := sha256.Sum256([]byte(newPassword))
+		passHash = hex.EncodeToString(hash[:])
+	}
 
 	for i := range list {
 		if list[i].Username == username {
-			list[i].Password = newPassword
+			list[i].Password = "" // Never store plaintext
 			list[i].PasswordHash = passHash
 			break
 		}
@@ -683,4 +726,25 @@ func (s *UserAccountService) DeleteUser(username string) error {
 	}
 
 	return s.writeUsers(updated)
+}
+
+// SaveUser updates or appends a UserAccount record in users.json
+func (s *UserAccountService) SaveUser(user UserAccount) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	list, _ := s.readUsers()
+	found := false
+	for i := range list {
+		if list[i].Username == user.Username {
+			list[i] = user
+			found = true
+			break
+		}
+	}
+	if !found {
+		list = append(list, user)
+	}
+
+	return s.writeUsers(list)
 }

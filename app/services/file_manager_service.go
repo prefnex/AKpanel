@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"goravel/app/paths"
 )
 
 type FileItem struct {
@@ -47,17 +49,69 @@ type FileManagerService struct {
 
 func NewFileManagerService() *FileManagerService {
 	return &FileManagerService{
-		defaultDir: "/var/www/sites",
+		defaultDir: paths.SitesRoot,
 	}
 }
 
-// ListDirectory lists files and folders with full server inspection
-func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, string, error) {
+// ValidateAdminPath verifies that the requested path falls inside allowed server directories
+// and prevents path traversal or access to forbidden system sensitive files (TASK-6.02).
+func (f *FileManagerService) ValidateAdminPath(targetPath string) (string, error) {
 	if targetPath == "" {
 		targetPath = f.defaultDir
 	}
 
 	cleanPath := filepath.Clean(targetPath)
+
+	// Block sensitive / dangerous system files and directories
+	forbiddenPrefixes := []string{
+		"/etc/shadow",
+		"/etc/gshadow",
+		"/root/.ssh",
+		"/proc",
+		"/sys",
+		"/dev",
+	}
+	for _, forbidden := range forbiddenPrefixes {
+		if cleanPath == forbidden || strings.HasPrefix(cleanPath, forbidden+"/") {
+			return "", fmt.Errorf("access denied: security policy restricts access to %s", forbidden)
+		}
+	}
+
+	// Allowed roots for management
+	allowedRoots := []string{
+		"/var/www",
+		"/home",
+		"/var/log",
+		"/etc/akpanel",
+		"/etc/nginx",
+		"/etc/apache2",
+		"/etc/bind",
+		"/tmp",
+		"/opt",
+	}
+
+	allowed := false
+	for _, root := range allowedRoots {
+		if cleanPath == root || strings.HasPrefix(cleanPath, root+"/") {
+			allowed = true
+			break
+		}
+	}
+
+	if !allowed {
+		return "", fmt.Errorf("access denied: path '%s' is outside manageable root directories", cleanPath)
+	}
+
+	return cleanPath, nil
+}
+
+// ListDirectory lists files and folders with full server inspection
+func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, string, error) {
+	cleanPath, err := f.ValidateAdminPath(targetPath)
+	if err != nil {
+		return nil, targetPath, err
+	}
+
 	// Ensure path exists, create default if missing
 	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
 		if cleanPath == f.defaultDir {
@@ -127,7 +181,10 @@ func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, strin
 
 // ReadFile reads the text content of a file
 func (f *FileManagerService) ReadFile(filePath string) (string, error) {
-	cleanPath := filepath.Clean(filePath)
+	cleanPath, err := f.ValidateAdminPath(filePath)
+	if err != nil {
+		return "", err
+	}
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return "", err
@@ -137,7 +194,10 @@ func (f *FileManagerService) ReadFile(filePath string) (string, error) {
 
 // WriteFile saves text content and automatically creates a .bak snapshot
 func (f *FileManagerService) WriteFile(filePath, content string) error {
-	cleanPath := filepath.Clean(filePath)
+	cleanPath, err := f.ValidateAdminPath(filePath)
+	if err != nil {
+		return err
+	}
 
 	// Create a .bak snapshot if file already exists
 	if _, err := os.Stat(cleanPath); err == nil {
@@ -150,7 +210,10 @@ func (f *FileManagerService) WriteFile(filePath, content string) error {
 
 // CreateItem creates a new file or directory
 func (f *FileManagerService) CreateItem(itemPath string, isDir bool) error {
-	cleanPath := filepath.Clean(itemPath)
+	cleanPath, err := f.ValidateAdminPath(itemPath)
+	if err != nil {
+		return err
+	}
 	if isDir {
 		return os.MkdirAll(cleanPath, 0755)
 	}
@@ -165,13 +228,24 @@ func (f *FileManagerService) CreateItem(itemPath string, isDir bool) error {
 
 // DeleteItem removes a file or directory
 func (f *FileManagerService) DeleteItem(itemPath string) error {
-	cleanPath := filepath.Clean(itemPath)
+	cleanPath, err := f.ValidateAdminPath(itemPath)
+	if err != nil {
+		return err
+	}
 	return os.RemoveAll(cleanPath)
 }
 
 // RenameItem renames or moves a file/directory
 func (f *FileManagerService) RenameItem(oldPath, newPath string) error {
-	return os.Rename(filepath.Clean(oldPath), filepath.Clean(newPath))
+	cleanOld, err := f.ValidateAdminPath(oldPath)
+	if err != nil {
+		return err
+	}
+	cleanNew, err := f.ValidateAdminPath(newPath)
+	if err != nil {
+		return err
+	}
+	return os.Rename(cleanOld, cleanNew)
 }
 
 // CopyItems copies multiple items to destination folder

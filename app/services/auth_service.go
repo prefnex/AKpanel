@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"goravel/app/paths"
 )
 
 type RootAuthData struct {
@@ -36,10 +39,11 @@ var (
 
 func NewAuthService() *AuthService {
 	authOnce.Do(func() {
-		_ = os.MkdirAll("/etc/akpanel", 0755)
+		_ = os.MkdirAll(paths.EtcAKpanel, 0755)
+		_ = os.MkdirAll(paths.EtcAKpanelSecrets, 0700)
 		s := &AuthService{
-			authFile:   "/etc/akpanel/root.auth",
-			secretFile: "/etc/akpanel/jwt.secret",
+			authFile:   filepath.Join(paths.EtcAKpanel, "root.auth"),
+			secretFile: filepath.Join(paths.EtcAKpanel, "jwt.secret"),
 		}
 		s.initSecretKey()
 		s.initDefaultRoot()
@@ -74,6 +78,15 @@ func (s *AuthService) initDefaultRoot() {
 	if _, err := os.Stat(s.authFile); os.IsNotExist(err) {
 		salt := hex.EncodeToString([]byte(fmt.Sprintf("%d", time.Now().UnixNano())))
 		defaultPass := "admin123456"
+
+		// Check if a secret password was provisioned via /etc/akpanel/secrets/admin_root
+		secretPassFile := filepath.Join(paths.EtcAKpanelSecrets, "admin_root")
+		if secretBytes, err := os.ReadFile(secretPassFile); err == nil {
+			if t := strings.TrimSpace(string(secretBytes)); t != "" {
+				defaultPass = t
+			}
+		}
+
 		data := RootAuthData{
 			Username:  "root",
 			Salt:      salt,

@@ -1,0 +1,25 @@
+# Ignore large build artifacts
+node_modules/
+public/build/
+dist/
+release-assets/
+
+# Ignore git history
+.git/
+.github/
+
+# Ignore dev tools
+.cache/
+.agents/
+docs/
+docsGoravelForAi/
+
+# Ignore compiled binaries (will be built inside container)
+akpanel
+akpanel-bin
+
+# Ignore logs
+*.log
+storage/logs/
+
+# Keep everything else (source code, configs)

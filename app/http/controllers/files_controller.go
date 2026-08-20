@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/goravel/framework/contracts/http"
+
+	"goravel/app/paths"
 	"goravel/app/services"
 )
 
@@ -21,7 +23,7 @@ func NewFilesController() *FilesController {
 
 // Index lists directory contents
 func (r *FilesController) Index(ctx http.Context) http.Response {
-	path := ctx.Request().Input("path", "/var/www/sites")
+	path := ctx.Request().Input("path", paths.SitesRoot)
 	items, currentPath, err := r.fileService.ListDirectory(path)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{

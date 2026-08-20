@@ -6,6 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"goravel/app/domain"
+	"goravel/app/paths"
 )
 
 type WebsiteConfig struct {
@@ -27,9 +30,9 @@ type NginxService struct {
 
 func NewNginxService() *NginxService {
 	svc := &NginxService{
-		sitesAvailablePath: "/etc/nginx/sites-available",
-		sitesEnabledPath:   "/etc/nginx/sites-enabled",
-		sitesRootPath:      "/var/www/sites",
+		sitesAvailablePath: paths.NginxAvailableDir,
+		sitesEnabledPath:   paths.NginxEnabledDir,
+		sitesRootPath:      paths.SitesRoot,
 		apacheService:      NewApacheService(),
 	}
 	svc.EnsureDefaultNginxConfig()
@@ -159,26 +162,26 @@ func (n *NginxService) CreateWebsite(cfg WebsiteConfig) error {
 	// 3. Set www-data ownership
 	exec.Command("chown", "-R", "www-data:www-data", filepath.Dir(cfg.RootPath)).Run()
 
-	// 4. Handle Server Engines
-	switch cfg.ServerEngine {
-	case "apache":
-		// Nginx remains the sole public listener. Apache is placed on the
-		// internal backend port so selecting Apache cannot collide with Nginx
-		// on port 80 and leave the hostname unreachable.
+	// 4. Handle Server Engines — normalize first to avoid string mismatches
+	engine := domain.EngineFromPackage(cfg.ServerEngine)
+
+	switch engine {
+	case domain.EngineApache:
+		// Nginx front → Apache:8081 (legacy mode, same provisioning as hybrid)
 		if err := n.apacheService.CreateApacheVhost(cfg, true); err != nil {
 			return err
 		}
 		return n.createNginxVhost(cfg, true)
 
-	case "hybrid":
-		// 1. Create Apache vhost listening on internal port 8081
+	case domain.EngineHybrid, domain.EngineVarnishHybrid:
+		// Nginx front → Apache:8081 (.htaccess support)
+		// Varnish sits in front of Nginx for varnish_hybrid (handled by VarnishService)
 		if err := n.apacheService.CreateApacheVhost(cfg, true); err != nil {
 			return err
 		}
-		// 2. Create Nginx vhost as frontend proxy on port 80/443
 		return n.createNginxVhost(cfg, true)
 
-	default: // "nginx"
+	default: // EngineNginx, EngineVarnishNginx
 		_ = n.apacheService.DeleteApacheVhost(cfg.Domain)
 		return n.createNginxVhost(cfg, false)
 	}
@@ -321,14 +324,22 @@ func (n *NginxService) ensureFallbackSSL() (string, string) {
 	return certPath, keyPath
 }
 
-func (n *NginxService) getSSLCertAndKey(domain string) (string, string) {
-	letsCert := fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", domain)
-	letsKey := fmt.Sprintf("/etc/letsencrypt/live/%s/privkey.pem", domain)
-	if _, err := os.Stat(letsCert); err == nil {
-		if _, errKey := os.Stat(letsKey); errKey == nil {
-			return letsCert, letsKey
+func (n *NginxService) getSSLCertAndKey(domainName string) (string, string) {
+	// 1. Canonical AKpanel SSL path (written by ACMEService) — always check first
+	if domain.SSLCertsExist(domainName) {
+		return domain.SSLCertPath(domainName), domain.SSLKeyPath(domainName)
+	}
+
+	// 2. Legacy Let's Encrypt path — for certs issued before migration
+	legacyCert := fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", domainName)
+	legacyKey := fmt.Sprintf("/etc/letsencrypt/live/%s/privkey.pem", domainName)
+	if _, err := os.Stat(legacyCert); err == nil {
+		if _, errKey := os.Stat(legacyKey); errKey == nil {
+			return legacyCert, legacyKey
 		}
 	}
+
+	// 3. Fallback: global self-signed cert
 	return n.ensureFallbackSSL()
 }
 

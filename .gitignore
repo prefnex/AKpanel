@@ -36,10 +36,21 @@ tmp/
 *.swp
 *~
 
+# Documentation & AI Agent instructions
+docs/
+.agents/
+docsGoravelForAi/
+
+# Local Database Files
+*.sqlite
+*.sqlite-journal
+*.db
+database/*.sqlite
+tests/**/*.sqlite
+
 # Local Development & Simulation (Container environment)
 .cache/
 docker/
 docker-compose.yml
-docsGoravelForAi/
 scripts/rebuild-and-restart-container.sh
 scripts/reset-test-server.sh

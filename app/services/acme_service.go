@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"goravel/app/paths"
 )
 
 type SSLStatus struct {
@@ -28,7 +30,7 @@ type ACMEService struct {
 
 func NewACMEService() *ACMEService {
 	s := &ACMEService{
-		sslBaseDir: "/etc/akpanel/ssl",
+		sslBaseDir: paths.SSLBase,
 	}
 	s.acmeBin = s.detectAcmeBin()
 	_ = os.MkdirAll(s.sslBaseDir, 0755)
@@ -103,7 +105,7 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 		email = "admin@" + domain
 	}
 	if webroot == "" {
-		webroot = fmt.Sprintf("/var/www/sites/%s/public", domain)
+		webroot = paths.ResolveWebsiteRoot("", domain)
 	}
 
 	domainDir := filepath.Join(a.sslBaseDir, domain)
