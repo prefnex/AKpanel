@@ -50,6 +50,18 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+# When the script is piped (curl | bash), plain "read" consumes script lines from stdin
+# and breaks if/else structure. Always read interactive answers from the terminal.
+akpanel_read() {
+    local _prompt="$1"
+    local _var="$2"
+    if [ -e /dev/tty ]; then
+        IFS= read -r -p "$_prompt" "$_var" < /dev/tty
+    else
+        IFS= read -r -p "$_prompt" "$_var"
+    fi
+}
+
 mkdir -p /var/log
 echo "=== AKpanel Installation Started: $(date) ===" > "$LOG_FILE"
 
@@ -104,7 +116,7 @@ if [ "$REBUILD" = true ]; then
     echo -e "${YELLOW}${BOLD}⚠️  WARNING: Full Rebuild Mode Selected!${NC}"
     echo -e "This will stop all AKpanel services, wipe ${INSTALL_DIR}, reset configurations, and perform a 100% clean reinstall."
     if [ "$AUTO_CONFIRM" = false ]; then
-        read -r -p "Are you sure you want to proceed? (y/N): " CONFIRM_REBUILD
+        akpanel_read "Are you sure you want to proceed? (y/N): " CONFIRM_REBUILD
         if [[ ! "$CONFIRM_REBUILD" =~ ^[Yy]$ ]]; then
             echo -e "${CYAN}Rebuild cancelled by user.${NC}"
             exit 0
@@ -126,10 +138,10 @@ AKPANEL_ADMIN_EMAIL=""
 if [ "$AUTO_CONFIRM" = false ]; then
     echo -e "\n${CYAN}${BOLD}Optional Server Identity${NC} ${DIM}(press Enter to skip any field)${NC}"
     echo -e "${DIM}If provided, AKpanel configures hostname, nameservers, and issues Hostname SSL (LE → ZeroSSL fallback).${NC}\n"
-    read -r -p "  Panel Hostname (FQDN, e.g. server.akpanel.site): " AKPANEL_HOSTNAME
-    read -r -p "  Primary Nameserver (e.g. ns1.akpanel.site): " AKPANEL_NS1
-    read -r -p "  Secondary Nameserver (e.g. ns2.akpanel.site): " AKPANEL_NS2
-    read -r -p "  Admin Email (for SSL notifications): " AKPANEL_ADMIN_EMAIL
+    akpanel_read "  Panel Hostname (FQDN, e.g. server.akpanel.site): " AKPANEL_HOSTNAME
+    akpanel_read "  Primary Nameserver (e.g. ns1.akpanel.site): " AKPANEL_NS1
+    akpanel_read "  Secondary Nameserver (e.g. ns2.akpanel.site): " AKPANEL_NS2
+    akpanel_read "  Admin Email (for SSL notifications): " AKPANEL_ADMIN_EMAIL
     AKPANEL_HOSTNAME=$(echo "$AKPANEL_HOSTNAME" | tr '[:upper:]' '[:lower:]' | xargs)
     AKPANEL_NS1=$(echo "$AKPANEL_NS1" | tr '[:upper:]' '[:lower:]' | xargs)
     AKPANEL_NS2=$(echo "$AKPANEL_NS2" | tr '[:upper:]' '[:lower:]' | xargs)
@@ -150,7 +162,7 @@ if [ "$AUTO_CONFIRM" = false ]; then
     echo -e "  ${GREEN}3)${NC} Nginx + Apache Hybrid ${DIM}(static Nginx, dynamic Apache)${NC}"
     echo -e "  ${GREEN}4)${NC} Nginx + Varnish + Apache ${DIM}(cached hybrid)${NC}"
     echo -e "  ${GREEN}5)${NC} Nginx + Varnish + PHP-FPM ${DIM}(cached pure FPM)${NC}"
-    read -r -p "  Choose stack [1-5] (default 1): " WS_CHOICE
+    akpanel_read "  Choose stack [1-5] (default 1): " WS_CHOICE
     case "${WS_CHOICE:-1}" in
         2) AKPANEL_WEB_PROFILE="apache_phpfpm" ;;
         3) AKPANEL_WEB_PROFILE="hybrid_nginx_apache" ;;
@@ -162,10 +174,10 @@ if [ "$AUTO_CONFIRM" = false ]; then
 
     echo -e "${CYAN}${BOLD}PHP Versions${NC}"
     echo -e "  Primary version ${GREEN}8.3${NC} will always be installed."
-    read -r -p "  Install additional PHP versions? [y/N]: " INSTALL_EXTRA_PHP
+    akpanel_read "  Install additional PHP versions? [y/N]: " INSTALL_EXTRA_PHP
     if [[ "$INSTALL_EXTRA_PHP" =~ ^[Yy]$ ]]; then
         echo -e "  Available: ${DIM}7.4  8.0  8.1  8.2  8.4${NC}"
-        read -r -p "  Enter extra versions (space-separated, e.g. 8.1 8.2): " AKPANEL_PHP_EXTRA
+        akpanel_read "  Enter extra versions (space-separated, e.g. 8.1 8.2): " AKPANEL_PHP_EXTRA
         for ver in $AKPANEL_PHP_EXTRA; do
             ver=$(echo "$ver" | tr -d '[:alpha:]' | xargs)
             [ -z "$ver" ] && continue
@@ -206,6 +218,11 @@ write_install_metadata() {
     done
     PHP_JSON="${PHP_JSON}]"
 
+    local VARNISH_ENABLED="false"
+    if [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_apache" ] || [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_phpfpm" ]; then
+        VARNISH_ENABLED="true"
+    fi
+
     cat << EOF > /etc/akpanel/install.conf
 {
   "hostname": "${AKPANEL_HOSTNAME:-}",
@@ -224,7 +241,7 @@ write_install_metadata() {
     "redis": true,
     "bind_dns": true,
     "mail_stack": true,
-    "varnish": $([ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_apache" ] || [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_phpfpm" ] && echo "true" || echo "false")
+    "varnish": ${VARNISH_ENABLED}
   },
   "paths": {
     "sites_root": "/var/www/sites",
