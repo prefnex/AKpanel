@@ -606,6 +606,22 @@ EOF
     mkdir -p "$PROJECT_ROOT/database"
     touch "$PROJECT_ROOT/database/akpanel.sqlite"
 
+    # Ensure full codebase & assets in /opt/akpanel
+    mkdir -p /opt/akpanel
+    if [ ! -f "/opt/akpanel/public/build/app.js" ]; then
+        if [ -d "$PWD/public/build" ]; then
+            cp -r "$PWD/"* /opt/akpanel/ 2>/dev/null || true
+        else
+            git clone --depth 1 https://github.com/prefnex/AKpanel.git /opt/akpanel >> "$LOG_FILE" 2>&1 || true
+        fi
+    fi
+    PROJECT_ROOT="/opt/akpanel"
+
+    # Deploy pre-built binary from release assets if available
+    if [ -f "$PROJECT_ROOT/release-assets/akpanel_v0.1.0_linux_${PKG_ARCH}.tar.gz" ]; then
+        tar -xzf "$PROJECT_ROOT/release-assets/akpanel_v0.1.0_linux_${PKG_ARCH}.tar.gz" -C "$PROJECT_ROOT/" 2>/dev/null || true
+    fi
+
     # Ensure binary
     if [ -f "$PROJECT_ROOT/akpanel" ]; then
         cp "$PROJECT_ROOT/akpanel" /usr/local/bin/akpanel
@@ -619,10 +635,11 @@ EOF
             export PATH="/usr/local/go/bin:${PATH}"
         fi
 
-        if command -v npm &> /dev/null && [ ! -f "public/build/app.js" ]; then
-            npm install >> "$LOG_FILE" 2>&1 && npm run build >> "$LOG_FILE" 2>&1 || true
+        if command -v npm &> /dev/null && [ ! -f "$PROJECT_ROOT/public/build/app.js" ]; then
+            cd "$PROJECT_ROOT" && npm install >> "$LOG_FILE" 2>&1 && npm run build >> "$LOG_FILE" 2>&1 || true
         fi
 
+        cd "$PROJECT_ROOT"
         go mod tidy >> "$LOG_FILE" 2>&1 || true
         go build -ldflags="-s -w" -o /usr/local/bin/akpanel main.go >> "$LOG_FILE" 2>&1 || true
     fi
