@@ -22,7 +22,7 @@ The installer will automatically detect your server architecture (`x86_64` / `ar
 
 ---
 
-## 🌐 Dual-Port Architecture & Port Map
+## 🌐 Dual-Port Architecture & Port Map 
 
 | Service | Port | Description |
 | :--- | :--- | :--- |
