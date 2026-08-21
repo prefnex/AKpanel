@@ -18,8 +18,7 @@ func registerSSLRoutes(securityController *controllers.SecurityController) {
 }
 
 func registerFirewallRoutes(securityController *controllers.SecurityController) {
-	// Security & Firewall API
-	facades.Route().Post("/api/security/ssl", securityController.IssueSSL)
+	// Security & Firewall API (SSL aliases live in registerSSLRoutes)
 	facades.Route().Get("/api/security/firewall", securityController.Firewall)
 	facades.Route().Post("/api/security/firewall/toggle", securityController.TogglePort)
 	facades.Route().Post("/api/security/firewall/rule", securityController.AddRule)
