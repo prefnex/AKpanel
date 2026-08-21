@@ -9,6 +9,12 @@ server {
     access_log /var/log/nginx/{{.Domain}}.access.log;
     error_log /var/log/nginx/{{.Domain}}.error.log;
 
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
     location / {
         try_files $uri $uri/ /index.php?$query_string;
     }

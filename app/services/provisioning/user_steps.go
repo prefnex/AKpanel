@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -70,9 +71,13 @@ func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionP
 			plan.InodeLimit = pkg.MaxInodes
 		}
 	}
-	if plan.PHPVersion == "" {
-		plan.PHPVersion = "8.2"
+	if b, err := os.ReadFile(paths.ServerProfileConf()); err == nil {
+		profile := strings.TrimSpace(string(b))
+		if profile != "" {
+			plan.WebEngine = domain.ProfileToSiteEngine(profile)
+		}
 	}
+	plan.PHPVersion = paths.DetectInstalledPHPVersion(plan.PHPVersion)
 	if plan.ProcessLimit <= 0 {
 		plan.ProcessLimit = 40
 	}
@@ -198,11 +203,43 @@ func (s *CreateUserDirectoriesStep) Execute(ctx context.Context, plan *UserProvi
 		_ = os.MkdirAll(d, 0755)
 	}
 
-	indexFile := filepath.Join(plan.RootPath, "index.html")
-	if _, err := os.Stat(indexFile); os.IsNotExist(err) {
-		html := fmt.Sprintf(`<!DOCTYPE html><html><head><title>%s</title></head><body><h1>%s is Live</h1><p>User: %s</p></body></html>`,
-			plan.MainDomain, plan.MainDomain, plan.Username)
-		_ = os.WriteFile(indexFile, []byte(html), 0644)
+	indexPhp := filepath.Join(plan.RootPath, "index.php")
+	if _, err := os.Stat(indexPhp); os.IsNotExist(err) {
+		body := fmt.Sprintf(`<?php
+header('Content-Type: text/html; charset=UTF-8');
+$domain = %s;
+$user = %s;
+$php = PHP_VERSION;
+?><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><?php echo htmlspecialchars($domain); ?> | AKpanel</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+      font-family: ui-sans-serif, system-ui, sans-serif; background:#0b0f19; color:#f8fafc; }
+    .card { width:min(560px,92vw); padding:2.4rem; border-radius:24px; background:#111827;
+      border:1px solid rgba(255,255,255,.08); box-shadow:0 24px 60px rgba(0,0,0,.45); text-align:center; }
+    .badge { display:inline-block; margin-bottom:1rem; padding:.3rem .8rem; border-radius:999px;
+      background:#312e81; color:#c7d2fe; font-size:.75rem; font-weight:700; letter-spacing:.04em; }
+    h1 { margin:0 0 .6rem; font-size:1.7rem; color:#a5b4fc; }
+    p { margin:.4rem 0; color:#94a3b8; line-height:1.6; }
+    code { color:#e2e8f0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">PHP <?php echo htmlspecialchars($php); ?> · nginx + php-fpm</div>
+    <h1><?php echo htmlspecialchars($domain); ?> is live</h1>
+    <p>Account <code><?php echo htmlspecialchars($user); ?></code> is ready on AKpanel.</p>
+    <p>Replace this file with your application (<code>index.php</code> or a framework public folder).</p>
+  </div>
+</body>
+</html>
+`, strconv.Quote(plan.MainDomain), strconv.Quote(plan.Username))
+		_ = os.WriteFile(indexPhp, []byte(body), 0644)
 	}
 
 	_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", plan.Username, plan.Username), plan.HomeDir).Run()

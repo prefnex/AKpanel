@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"goravel/app/paths"
@@ -235,86 +238,151 @@ func (s *SecurityService) GetFirewallStatus() (bool, []FirewallRule, error) {
 	return data.IsActive, data.Rules, nil
 }
 
+func runUFW(args ...string) error {
+	cmd := exec.Command("ufw", args...)
+	out, err := cmd.CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err != nil {
+		if msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		return err
+	}
+	low := strings.ToLower(msg)
+	if strings.Contains(low, "error:") {
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
+
+func firewallCommentForPort(port string) string {
+	switch port {
+	case "22":
+		return "SSH Remote Terminal"
+	case "80":
+		return "HTTP Web Service"
+	case "443":
+		return "HTTPS SSL Web Service"
+	case "2087":
+		return "AKpanel WHM Root"
+	case "2083":
+		return "AKpanel Client Portal"
+	case "53":
+		return "BIND DNS Nameserver"
+	case "21":
+		return "FTP File Transfer"
+	case "3306":
+		return "MySQL Database"
+	case "25", "465", "587":
+		return "SMTP Mail Routing"
+	case "110", "995":
+		return "POP3 Mail Delivery"
+	case "143", "993":
+		return "IMAP Mailbox Access"
+	default:
+		return "Custom Rule"
+	}
+}
+
+var ufwNumberedRe = regexp.MustCompile(`^\[(\s*\d+)\]\s+(\S+)(?:\s+\(v6\))?\s+(ALLOW|DENY|REJECT|LIMIT)\s+(?:(IN|OUT)\s+)?(\S+)`)
+
+func parseUFWNumbered(outStr string) []FirewallRule {
+	rules := []FirewallRule{}
+	for _, line := range strings.Split(outStr, "\n") {
+		line = strings.TrimSpace(line)
+		m := ufwNumberedRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		num := strings.TrimSpace(m[1])
+		portProto := m[2]
+		action := m[3]
+		fromIP := m[5]
+		if fromIP == "" {
+			fromIP = "Anywhere"
+		}
+		port := portProto
+		proto := "TCP/UDP"
+		if strings.Contains(portProto, "/") {
+			parts := strings.SplitN(portProto, "/", 2)
+			port = parts[0]
+			proto = strings.ToUpper(parts[1])
+		}
+		comment := firewallCommentForPort(port)
+		if idx := strings.Index(line, "#"); idx != -1 {
+			c := strings.TrimSpace(line[idx+1:])
+			if c != "" {
+				comment = c
+			}
+		}
+		rules = append(rules, FirewallRule{
+			ID: num, Number: num, Port: port, Protocol: proto,
+			Action: action, FromIP: fromIP, Comment: comment, IsActive: true,
+		})
+	}
+	return rules
+}
+
+func parseUFWShowAdded(outStr string) []FirewallRule {
+	rules := []FirewallRule{}
+	n := 0
+	for _, line := range strings.Split(outStr, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "ufw ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		action := strings.ToUpper(fields[1])
+		port := ""
+		proto := "TCP/UDP"
+		fromIP := "Anywhere"
+		for i, f := range fields {
+			if f == "from" && i+1 < len(fields) {
+				fromIP = fields[i+1]
+			}
+			if strings.Contains(f, "/") && !strings.Contains(f, ".") {
+				parts := strings.SplitN(f, "/", 2)
+				if _, err := strconv.Atoi(strings.Split(parts[0], ":")[0]); err == nil {
+					port = parts[0]
+					proto = strings.ToUpper(parts[1])
+				}
+			} else if port == "" {
+				if _, err := strconv.Atoi(strings.Split(f, ":")[0]); err == nil {
+					port = f
+				}
+			}
+		}
+		if port == "" {
+			continue
+		}
+		n++
+		num := strconv.Itoa(n)
+		rules = append(rules, FirewallRule{
+			ID: num, Number: num, Port: port, Protocol: proto,
+			Action: action, FromIP: fromIP, Comment: firewallCommentForPort(port), IsActive: true,
+		})
+	}
+	return rules
+}
+
 // GetFullFirewallInfo parses ufw numbered rules, fail2ban status, and WAF settings
 func (s *SecurityService) GetFullFirewallInfo() FirewallData {
 	out, err := exec.Command("ufw", "status", "numbered").CombinedOutput()
 	outStr := string(out)
 	isActive := strings.Contains(outStr, "Status: active")
 
-	rules := []FirewallRule{}
-	if err == nil && isActive {
-		lines := strings.Split(outStr, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "[") {
-				continue
-			}
-			// Example: [ 1] 22/tcp                     ALLOW IN    Anywhere
-			closeBracket := strings.Index(line, "]")
-			if closeBracket == -1 {
-				continue
-			}
-			num := strings.TrimSpace(line[1:closeBracket])
-			rest := strings.TrimSpace(line[closeBracket+1:])
-			fields := strings.Fields(rest)
-			if len(fields) >= 2 {
-				portProto := fields[0]
-				action := fields[1]
-				fromIP := "Anywhere"
-				if len(fields) >= 4 && (fields[2] == "IN" || fields[2] == "OUT") {
-					fromIP = fields[3]
-				}
-
-				port := portProto
-				proto := "TCP/UDP"
-				if strings.Contains(portProto, "/") {
-					parts := strings.Split(portProto, "/")
-					port = parts[0]
-					proto = strings.ToUpper(parts[1])
-				}
-
-				comment := "Custom Rule"
-				switch port {
-				case "22": comment = "SSH Remote Terminal"
-				case "80": comment = "HTTP Web Service"
-				case "443": comment = "HTTPS SSL Web Service"
-				case "2087": comment = "AKpanel WHM Root"
-				case "2083": comment = "AKpanel Client Portal"
-				case "53": comment = "BIND DNS Nameserver"
-				case "21": comment = "FTP File Transfer"
-				case "3306": comment = "MySQL Database"
-				case "25", "465", "587": comment = "SMTP Mail Routing"
-				case "110", "995": comment = "POP3 Mail Delivery"
-				case "143", "993": comment = "IMAP Mailbox Access"
-				}
-
-				rules = append(rules, FirewallRule{
-					ID:       num,
-					Number:   num,
-					Port:     port,
-					Protocol: proto,
-					Action:   action,
-					FromIP:   fromIP,
-					Comment:  comment,
-					IsActive: true,
-				})
-			}
+	rules := parseUFWNumbered(outStr)
+	if len(rules) == 0 {
+		added, aerr := exec.Command("ufw", "show", "added").CombinedOutput()
+		if aerr == nil {
+			rules = parseUFWShowAdded(string(added))
 		}
 	}
-
-	// Fallback standard rules if empty or non-root
-	if len(rules) == 0 {
-		rules = []FirewallRule{
-			{ID: "1", Number: "1", Port: "80", Protocol: "TCP", Action: "ALLOW", FromIP: "Anywhere", Comment: "HTTP Web Service", IsActive: true},
-			{ID: "2", Number: "2", Port: "443", Protocol: "TCP", Action: "ALLOW", FromIP: "Anywhere", Comment: "HTTPS SSL Web Service", IsActive: true},
-			{ID: "3", Number: "3", Port: "2087", Protocol: "TCP", Action: "ALLOW", FromIP: "Anywhere", Comment: "AKpanel WHM Root", IsActive: true},
-			{ID: "4", Number: "4", Port: "2083", Protocol: "TCP", Action: "ALLOW", FromIP: "Anywhere", Comment: "AKpanel Client Portal", IsActive: true},
-			{ID: "5", Number: "5", Port: "22", Protocol: "TCP", Action: "ALLOW", FromIP: "Anywhere", Comment: "SSH Remote Terminal", IsActive: true},
-			{ID: "6", Number: "6", Port: "53", Protocol: "TCP/UDP", Action: "ALLOW", FromIP: "Anywhere", Comment: "BIND DNS Nameserver", IsActive: true},
-			{ID: "7", Number: "7", Port: "21", Protocol: "TCP", Action: "ALLOW", FromIP: "Anywhere", Comment: "FTP File Transfer", IsActive: true},
-			{ID: "8", Number: "8", Port: "3306", Protocol: "TCP", Action: "ALLOW", FromIP: "127.0.0.1", Comment: "MySQL Database Local Only", IsActive: true},
-		}
-		isActive = true
+	if err != nil && len(rules) == 0 {
+		isActive = false
 	}
 
 	// Parse Fail2Ban Jails & Banned IPs
@@ -352,53 +420,87 @@ func (s *SecurityService) GetFullFirewallInfo() FirewallData {
 	}
 }
 
-// AddFirewallRule adds a custom rule
-func (s *SecurityService) AddFirewallRule(port, proto, action, fromIP, comment string) error {
-	if port == "" {
-		port = "any"
-	}
+func (s *SecurityService) addOneUFWRule(port, proto, action, fromIP, comment string) error {
+	action = strings.ToLower(strings.TrimSpace(action))
 	if action == "" {
 		action = "allow"
 	}
-	action = strings.ToLower(action)
+	proto = strings.ToLower(strings.TrimSpace(proto))
+	fromIP = strings.TrimSpace(fromIP)
 
 	var args []string
-	if fromIP != "" && fromIP != "Anywhere" && fromIP != "any" {
-		if proto != "" && proto != "TCP/UDP" && proto != "any" {
-			args = []string{action, "proto", strings.ToLower(proto), "from", fromIP, "to", "any", "port", port}
+	if fromIP != "" && !strings.EqualFold(fromIP, "Anywhere") && fromIP != "any" {
+		if proto != "" && proto != "tcp/udp" && proto != "any" {
+			args = []string{action, "proto", proto, "from", fromIP, "to", "any", "port", port}
 		} else {
 			args = []string{action, "from", fromIP, "to", "any", "port", port}
 		}
+	} else if proto != "" && proto != "tcp/udp" && proto != "any" {
+		args = []string{action, fmt.Sprintf("%s/%s", port, proto)}
 	} else {
-		if proto != "" && proto != "TCP/UDP" && proto != "any" {
-			args = []string{action, fmt.Sprintf("%s/%s", port, strings.ToLower(proto))}
-		} else {
-			args = []string{action, port}
-		}
+		args = []string{action, port}
 	}
-
 	if comment != "" {
 		args = append(args, "comment", comment)
 	}
+	return runUFW(args...)
+}
 
-	cmd := exec.Command("ufw", args...)
-	return cmd.Run()
+// AddFirewallRule adds a custom rule
+func (s *SecurityService) AddFirewallRule(port, proto, action, fromIP, comment string) error {
+	if strings.TrimSpace(port) == "" {
+		return fmt.Errorf("port is required")
+	}
+	if comment == "" {
+		comment = firewallCommentForPort(port)
+	}
+	proto = strings.TrimSpace(proto)
+	if proto == "" || strings.EqualFold(proto, "TCP/UDP") || strings.EqualFold(proto, "both") {
+		if err := s.addOneUFWRule(port, "tcp", action, fromIP, comment); err != nil {
+			return err
+		}
+		return s.addOneUFWRule(port, "udp", action, fromIP, comment)
+	}
+	return s.addOneUFWRule(port, proto, action, fromIP, comment)
 }
 
 // DeleteFirewallRule deletes by rule number or port
 func (s *SecurityService) DeleteFirewallRule(ruleNumOrPort string) error {
-	cmd := exec.Command("ufw", "--force", "delete", ruleNumOrPort)
-	return cmd.Run()
+	if _, err := strconv.Atoi(strings.TrimSpace(ruleNumOrPort)); err == nil {
+		return runUFW("--force", "delete", strings.TrimSpace(ruleNumOrPort))
+	}
+	return s.deleteRulesForPort(strings.TrimSpace(ruleNumOrPort))
+}
+
+func (s *SecurityService) deleteRulesForPort(port string) error {
+	out, _ := exec.Command("ufw", "status", "numbered").CombinedOutput()
+	nums := []int{}
+	for _, r := range parseUFWNumbered(string(out)) {
+		if r.Port == port {
+			n, err := strconv.Atoi(strings.TrimSpace(r.Number))
+			if err == nil {
+				nums = append(nums, n)
+			}
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(nums)))
+	for _, n := range nums {
+		if err := runUFW("--force", "delete", strconv.Itoa(n)); err != nil {
+			return err
+		}
+	}
+	_ = runUFW("delete", "allow", port+"/tcp")
+	_ = runUFW("delete", "deny", port+"/tcp")
+	_ = runUFW("delete", "allow", port)
+	return nil
 }
 
 // SetFirewallEnabled turns UFW on/off
 func (s *SecurityService) SetFirewallEnabled(enable bool) error {
 	if enable {
-		cmd := exec.Command("ufw", "--force", "enable")
-		return cmd.Run()
+		return runUFW("--force", "enable")
 	}
-	cmd := exec.Command("ufw", "disable")
-	return cmd.Run()
+	return runUFW("disable")
 }
 
 // UnbanIP unbans an IP from Fail2Ban
@@ -412,16 +514,27 @@ func (s *SecurityService) UnbanIP(ip, jail string) error {
 
 // BanIP bans an IP manually
 func (s *SecurityService) BanIP(ip, reason string) error {
-	cmd := exec.Command("ufw", "insert", "1", "deny", "from", ip, "comment", reason)
-	return cmd.Run()
+	return runUFW("insert", "1", "deny", "from", ip, "comment", reason)
 }
 
-// TogglePort opens or closes a port in UFW
+// TogglePort opens or closes a port in UFW.
+// Block removes allow rules (default incoming DENY). Adding deny while allow exists does nothing.
 func (s *SecurityService) TogglePort(port string, allow bool) error {
-	action := "allow"
-	if !allow {
-		action = "deny"
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return fmt.Errorf("port is required")
 	}
-	cmd := exec.Command("ufw", action, port)
-	return cmd.Run()
+	if err := s.deleteRulesForPort(port); err != nil {
+		return err
+	}
+	if !allow {
+		return nil
+	}
+	if port == "53" {
+		if err := runUFW("allow", "53/tcp", "comment", firewallCommentForPort(port)); err != nil {
+			return err
+		}
+		return runUFW("allow", "53/udp", "comment", firewallCommentForPort(port))
+	}
+	return runUFW("allow", port+"/tcp", "comment", firewallCommentForPort(port))
 }

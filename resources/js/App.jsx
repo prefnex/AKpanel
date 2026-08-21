@@ -4,7 +4,17 @@ import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 
 import WebServerManager from './components/WebServerManager';
-import PHPManager from './components/PHPManager';
+import PHPLayout from './components/php/PHPLayout';
+import PHPCLIPage from './components/php/PHPCLIPage';
+import PHPFPMPage from './components/php/PHPFPMPage';
+import PHPDefaultPage from './components/php/PHPDefaultPage';
+import PHPShortInfoPage from './components/php/PHPShortInfoPage';
+import PHPInfoPage from './components/php/PHPInfoPage';
+import PHPExtensionsPage from './components/php/PHPExtensionsPage';
+import PHPAddonsPage from './components/php/PHPAddonsPage';
+import PHPIniPage from './components/php/PHPIniPage';
+import PHPIniRawPage from './components/php/PHPIniRawPage';
+import PHPInstallPage from './components/php/PHPInstallPage';
 import WebsitesTable from './components/WebsitesTable';
 import TemplatesShowcase from './components/TemplatesShowcase';
 import DatabasesManager from './components/DatabasesManager';
@@ -437,12 +447,24 @@ export default function App() {
               </div>
             } />
 
-            {/* Multi-PHP Management Route */}
+            {/* Multi-PHP: one React page file per URL */}
             <Route path="/php" element={
               <div className="max-w-[1400px] mx-auto">
-                <PHPManager showToast={showToast} />
+                <PHPLayout showToast={showToast} />
               </div>
-            } />
+            }>
+              <Route index element={<Navigate to="cli" replace />} />
+              <Route path="cli" element={<PHPCLIPage />} />
+              <Route path="fpm" element={<PHPFPMPage />} />
+              <Route path="default" element={<PHPDefaultPage />} />
+              <Route path="short-info" element={<PHPShortInfoPage />} />
+              <Route path="info" element={<PHPInfoPage />} />
+              <Route path="extensions" element={<PHPExtensionsPage />} />
+              <Route path="addons" element={<PHPAddonsPage />} />
+              <Route path="ini" element={<PHPIniPage />} />
+              <Route path="ini-raw" element={<PHPIniRawPage />} />
+              <Route path="install/:version" element={<PHPInstallPage />} />
+            </Route>
 
             {/* Database Management Suite (Dropdown & Specific Sub-engines) */}
             <Route path="/databases" element={

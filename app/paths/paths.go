@@ -17,7 +17,7 @@ const (
 	// Default web root
 	DefaultWebRoot = "/var/www/html"
 
-	// Roundcube webmail root
+	// Roundcube webmail root (compat path; prefer RoundcubeWebRoot())
 	RoundcubeRoot = "/var/www/roundcube"
 
 	// User homes base directory
@@ -113,6 +113,35 @@ func ApacheEnabled(domain string) string {
 	return filepath.Join(ApacheEnabledDir, fmt.Sprintf("%s.conf", domain))
 }
 
+// DetectInstalledPHPVersion returns preferred if that FPM/CLI exists, else the newest installed PHP.
+func DetectInstalledPHPVersion(preferred string) string {
+	if versionHasPHP(preferred) {
+		return preferred
+	}
+	for _, ver := range []string{"8.4", "8.3", "8.2", "8.1", "8.0", "7.4"} {
+		if versionHasPHP(ver) {
+			return ver
+		}
+	}
+	if preferred != "" {
+		return preferred
+	}
+	return "8.3"
+}
+
+func versionHasPHP(ver string) bool {
+	if ver == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath.Join("/usr/bin", "php"+ver)); err == nil {
+		return true
+	}
+	if _, err := os.Stat(filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm.sock", ver))); err == nil {
+		return true
+	}
+	return false
+}
+
 // SSLCert returns the canonical fullchain.pem path for a domain.
 func SSLCert(domain string) string {
 	return filepath.Join(SSLBase, domain, "fullchain.pem")
@@ -126,6 +155,15 @@ func SSLKey(domain string) string {
 // SSLDir returns the directory containing SSL certificates for a domain.
 func SSLDir(domain string) string {
 	return filepath.Join(SSLBase, domain)
+}
+
+// RoundcubeWebRoot is the document root nginx should use for Roundcube.
+// Debian/Ubuntu packages live in /var/lib/roundcube and load /etc/roundcube.
+func RoundcubeWebRoot() string {
+	if _, err := os.Stat("/var/lib/roundcube/index.php"); err == nil {
+		return "/var/lib/roundcube"
+	}
+	return RoundcubeRoot
 }
 
 // InstallConf returns the path to the main installation config file.

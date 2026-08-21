@@ -1813,6 +1813,8 @@ func (s *DNSService) syncBindZone(zone *DNSZone) error {
 		_ = os.WriteFile(namedLocalPath, []byte(zoneBlock), 0644)
 	}
 
+	NewACMEService().EnsureBindACMETSIG()
+
 	if _, err := exec.LookPath("named-checkzone"); err == nil {
 		cmdCheck := exec.Command("named-checkzone", zone.Domain, zoneFilePath)
 		if out, err := cmdCheck.CombinedOutput(); err != nil {

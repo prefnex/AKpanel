@@ -1,14 +1,18 @@
 package services
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"goravel/app/paths"
 )
 
 type EmailAccount struct {
@@ -640,140 +644,118 @@ func min(a, b int) int {
 	return b
 }
 
-// EnsureRoundcubeWebmail automates Roundcube directory, config, SQLite database, and web server aliases
-func (s *EmailService) EnsureRoundcubeWebmail() {
-	rcDir := "/var/www/roundcube"
-	_ = os.MkdirAll(rcDir, 0755)
-	_ = os.MkdirAll(rcDir+"/config", 0755)
-	_ = os.MkdirAll(rcDir+"/db", 0777)
-	_ = os.MkdirAll(rcDir+"/temp", 0777)
-	_ = os.MkdirAll(rcDir+"/logs", 0777)
+func randomAlnum(n int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	raw := make([]byte, n)
+	_, _ = rand.Read(raw)
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = letters[int(raw[i])%len(letters)]
+	}
+	return string(out)
+}
 
-	// Ensure required PHP and SQLite packages are installed
-	_ = exec.Command("bash", "-c", "which apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq roundcube roundcube-sqlite3 roundcube-plugins sqlite3 php-sqlite3 php-mbstring php-xml 2>/dev/null").Run()
-
-	// If Roundcube index.php doesn't exist, copy from system package
-	if _, err := os.Stat(rcDir + "/index.php"); os.IsNotExist(err) {
-		if _, errSys := os.Stat("/usr/share/roundcube/index.php"); errSys == nil {
-			_ = exec.Command("bash", "-c", "cp -rn /usr/share/roundcube/* /var/www/roundcube/ 2>/dev/null || ln -sfn /usr/share/roundcube/* /var/www/roundcube/").Run()
-		} else if _, errVar := os.Stat("/var/lib/roundcube/index.php"); errVar == nil {
-			_ = exec.Command("bash", "-c", "cp -rn /var/lib/roundcube/* /var/www/roundcube/ 2>/dev/null").Run()
+func persistSecret(name string, n int) string {
+	_ = os.MkdirAll(paths.EtcAKpanelSecrets, 0700)
+	p := filepath.Join(paths.EtcAKpanelSecrets, name)
+	if b, err := os.ReadFile(p); err == nil {
+		s := strings.TrimSpace(string(b))
+		if len(s) == n {
+			return s
+		}
+		if n == 24 && len(s) > 24 {
+			s = s[:24]
+			_ = os.WriteFile(p, []byte(s), 0600)
+			return s
+		}
+		if s != "" && n != 24 {
+			return s
 		}
 	}
+	s := randomAlnum(n)
+	_ = os.WriteFile(p, []byte(s), 0600)
+	return s
+}
 
-	// Initialize Roundcube SQLite Database Schema if missing or empty
-	dbPath := rcDir + "/db/sqlite.db"
-	sqlSchema := `
-CREATE TABLE IF NOT EXISTS users (
-  user_id integer NOT NULL PRIMARY KEY AUTOINCREMENT,
-  username varchar(128) NOT NULL,
-  mail_host varchar(128) NOT NULL,
-  created datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_login datetime DEFAULT NULL,
-  failed_login datetime DEFAULT NULL,
-  failed_login_counter integer DEFAULT NULL,
-  language varchar(16),
-  preferences text
-);
-CREATE UNIQUE INDEX IF NOT EXISTS lx_users_username ON users (username, mail_host);
+func mysqlRootExec(sql string) {
+	cmd := fmt.Sprintf("mysql --protocol=socket -u root -e %s || mysql -u root -e %s", strconv.Quote(sql), strconv.Quote(sql))
+	_ = exec.Command("bash", "-c", cmd).Run()
+}
 
-CREATE TABLE IF NOT EXISTS session (
-  sess_id varchar(128) NOT NULL PRIMARY KEY,
-  created datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  changed datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  ip varchar(41) NOT NULL,
-  vars text NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ix_session_changed ON session (changed);
-
-CREATE TABLE IF NOT EXISTS identities (
-  identity_id integer NOT NULL PRIMARY KEY AUTOINCREMENT,
-  user_id integer NOT NULL REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-  changed datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  del smallint NOT NULL DEFAULT '0',
-  standard smallint NOT NULL DEFAULT '0',
-  name varchar(128) NOT NULL,
-  organization varchar(128) NOT NULL DEFAULT '',
-  email varchar(255) NOT NULL,
-  "reply-to" varchar(255) NOT NULL DEFAULT '',
-  bcc varchar(255) NOT NULL DEFAULT '',
-  signature text,
-  html_signature integer NOT NULL DEFAULT '0'
-);
-CREATE INDEX IF NOT EXISTS ix_identities_user_id ON identities (user_id, del);
-
-CREATE TABLE IF NOT EXISTS contacts (
-  contact_id integer NOT NULL PRIMARY KEY AUTOINCREMENT,
-  user_id integer NOT NULL REFERENCES users(user_id) ON DELETE CASCADE ON UPDATE CASCADE,
-  changed datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  del smallint NOT NULL DEFAULT '0',
-  name varchar(128) NOT NULL DEFAULT '',
-  email text NOT NULL DEFAULT '',
-  firstname varchar(128) NOT NULL DEFAULT '',
-  lastname varchar(128) NOT NULL DEFAULT '',
-  vcard text,
-  words text
-);
-CREATE INDEX IF NOT EXISTS ix_contacts_user_id ON contacts (user_id, del);
-`
-	// Try running system SQL file first, or apply inline fallback schema
-	systemSql := "/usr/share/roundcube/SQL/sqlite.initial.sql"
-	if _, errSql := os.Stat(systemSql); errSql == nil {
-		_ = exec.Command("bash", "-c", fmt.Sprintf("sqlite3 %s < %s 2>/dev/null", dbPath, systemSql)).Run()
-	} else {
-		tmpSql := "/tmp/rc_init.sql"
-		_ = os.WriteFile(tmpSql, []byte(sqlSchema), 0644)
-		_ = exec.Command("bash", "-c", fmt.Sprintf("sqlite3 %s < %s 2>/dev/null", dbPath, tmpSql)).Run()
-		_ = os.Remove(tmpSql)
-	}
-
-	// Write modern optimized config.inc.php compatible with all Roundcube versions
-	cfgPath := rcDir + "/config/config.inc.php"
-	rcConfig := `<?php
+func writeRoundcubePHPConfig(dbPass, desKey string) {
+	cfg := fmt.Sprintf(`<?php
 $config = [];
-$config['db_dsnw'] = 'sqlite:////var/www/roundcube/db/sqlite.db?mode=0666';
+$config['db_dsnw'] = 'mysql://roundcube:%s@127.0.0.1/roundcubemail';
 $config['default_host'] = '127.0.0.1';
 $config['imap_host'] = '127.0.0.1:143';
 $config['default_port'] = 143;
 $config['smtp_server'] = '127.0.0.1';
 $config['smtp_host'] = '127.0.0.1:587';
 $config['smtp_port'] = 587;
-$config['smtp_user'] = '%u';
-$config['smtp_pass'] = '%p';
+$config['smtp_user'] = '%%u';
+$config['smtp_pass'] = '%%p';
 $config['support_url'] = '';
 $config['product_name'] = 'AKpanel Webmail';
-$config['des_key'] = 'rcmail-akpanel-sec-key-998877665544';
-$config['plugins'] = ['archive', 'zipdownload'];
+$config['des_key'] = '%s';
+$config['plugins'] = [];
 $config['skin'] = 'elastic';
 $config['enable_spellcheck'] = false;
 $config['auto_create_user'] = true;
-`
-	_ = os.WriteFile(cfgPath, []byte(rcConfig), 0644)
+$config['force_https'] = false;
+$config['use_https'] = false;
+$config['log_dir'] = '/var/log/roundcube/';
+$config['temp_dir'] = '/var/lib/roundcube/temp/';
+`, dbPass, desKey)
+	_ = os.MkdirAll("/etc/roundcube", 0755)
+	_ = os.WriteFile("/etc/roundcube/config.inc.php", []byte(cfg), 0640)
+	_ = exec.Command("chown", "root:www-data", "/etc/roundcube/config.inc.php").Run()
+}
 
-	// Set full permissions
-	_ = exec.Command("chown", "-R", "www-data:www-data", rcDir).Run()
-	_ = exec.Command("chmod", "-R", "777", rcDir+"/db", rcDir+"/temp", rcDir+"/logs").Run()
+// EnsureRoundcubeWebmail points nginx at the Debian Roundcube tree and aligns
+// the MariaDB password with /etc/roundcube (apt's dbconfig password otherwise 1045s).
+func (s *EmailService) EnsureRoundcubeWebmail() {
+	_ = exec.Command("bash", "-c", "which apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq roundcube roundcube-core roundcube-mysql roundcube-plugins php-mysql php-mbstring php-xml 2>/dev/null").Run()
+
+	dbPass := persistSecret("roundcube_db_pass", 24)
+	desKey := persistSecret("roundcube_des_key", 24)
+	mysqlRootExec(fmt.Sprintf(
+		"CREATE DATABASE IF NOT EXISTS roundcubemail DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '%s'; CREATE USER IF NOT EXISTS 'roundcube'@'127.0.0.1' IDENTIFIED BY '%s'; ALTER USER 'roundcube'@'localhost' IDENTIFIED BY '%s'; ALTER USER 'roundcube'@'127.0.0.1' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost'; GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'127.0.0.1'; FLUSH PRIVILEGES;",
+		dbPass, dbPass, dbPass, dbPass,
+	))
+	for _, sqlFile := range []string{
+		"/usr/share/roundcube/SQL/mysql.initial.sql",
+		"/usr/share/roundcube/SQL/mysql/initial.sql",
+	} {
+		if _, err := os.Stat(sqlFile); err == nil {
+			_ = exec.Command("bash", "-c", fmt.Sprintf("mysql --protocol=socket -u root roundcubemail < %s || true", sqlFile)).Run()
+			break
+		}
+	}
+	writeRoundcubePHPConfig(dbPass, desKey)
+
+	rcRoot := paths.RoundcubeWebRoot()
+	_ = os.MkdirAll(rcRoot+"/temp", 0750)
+	_ = os.MkdirAll("/var/log/roundcube", 0755)
+	_ = exec.Command("chown", "-R", "www-data:www-data", rcRoot+"/temp", "/var/log/roundcube").Run()
 
 	nginx := NewNginxService()
 	_ = nginx.EnsureRoundcubeListener()
 	nginx.RepairPanelServiceVhosts()
 
-	// Ensure Apache configuration
-	apacheConf := `Alias /webmail /var/www/roundcube
-Alias /roundcube /var/www/roundcube
+	apacheConf := fmt.Sprintf(`Alias /webmail %s
+Alias /roundcube %s
 
-<Directory /var/www/roundcube>
+<Directory %s>
     Options +FollowSymLinks
     AllowOverride All
     Require all granted
 </Directory>
-`
+`, rcRoot, rcRoot, rcRoot)
 	_ = os.MkdirAll("/etc/apache2/conf-available", 0755)
 	_ = os.WriteFile("/etc/apache2/conf-available/roundcube.conf", []byte(apacheConf), 0644)
 	_ = exec.Command("bash", "-c", "a2enconf roundcube 2>/dev/null; systemctl reload apache2 2>/dev/null || service apache2 reload 2>/dev/null").Run()
 
-	// Detect PHP socket
-	phpSock := "unix:/run/php/php8.2-fpm.sock"
+	phpSock := "unix:/run/php/php8.3-fpm.sock"
 	for _, ver := range []string{"8.3", "8.2", "8.1", "8.0", "7.4"} {
 		sock := fmt.Sprintf("/run/php/php%s-fpm.sock", ver)
 		if _, err := os.Stat(sock); err == nil {
@@ -781,11 +763,9 @@ Alias /roundcube /var/www/roundcube
 			break
 		}
 	}
-
-	// Ensure Nginx snippet
 	_ = os.MkdirAll("/etc/nginx/snippets", 0755)
 	nginxSnippet := fmt.Sprintf(`location /webmail {
-    alias /var/www/roundcube;
+    alias %s;
     index index.php index.html;
     try_files $uri $uri/ /webmail/index.php?$query_string;
     location ~ \.php$ {
@@ -796,7 +776,7 @@ Alias /roundcube /var/www/roundcube
         fastcgi_read_timeout 300;
     }
 }
-`, phpSock)
+`, rcRoot, phpSock)
 	_ = os.WriteFile("/etc/nginx/snippets/webmail.conf", []byte(nginxSnippet), 0644)
 	_ = exec.Command("bash", "-c", "nginx -t 2>/dev/null && (systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null)").Run()
 }

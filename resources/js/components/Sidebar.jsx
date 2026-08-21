@@ -29,7 +29,7 @@ import {
   HardDrive,
   Mail,
   Network,
-  Clock, ExternalLink, Inbox, Radio, Send
+  Clock, ExternalLink, Inbox, Radio, Send, Check, Activity, Info
 } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Avatar, AvatarFallback } from './ui/avatar';
@@ -47,7 +47,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
     dns: false,
     email: false,
     webserver: false,
-    php: false,
+    php: path === '/php' || path.startsWith('/php/'),
     domains: false,
     databases: false,
     files: false,
@@ -63,6 +63,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
   };
 
   const isNavActive = (targetPath) => path === targetPath;
+  const isPhpActive = path === '/php' || path.startsWith('/php/');
 
   return (
     <TooltipProvider delayDuration={150}>
@@ -538,8 +539,8 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  onClick={() => navigate('/php')}
-                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isNavActive('/php') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+                  onClick={() => navigate('/php/cli')}
+                  className={`w-full h-10 rounded-xl flex items-center justify-center transition ${isPhpActive ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
                     }`}
                 >
                   <Cpu className="w-4 h-4 text-indigo-400" />
@@ -564,17 +565,26 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
 
               {openSections.php && (
                 <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
-                  <button
-                    onClick={() => navigate('/php')}
-                    className={`w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs transition ${isNavActive('/php') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'
-                      }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <PackageCheck className="w-3.5 h-3.5 text-indigo-400" />
-                      <span>Versions & CLI Manager</span>
-                    </div>
-                    <Badge variant="secondary" className="bg-indigo-500/10 text-indigo-400 text-[9px] px-1 py-0">7.4-8.4</Badge>
-                  </button>
+                  {[
+                    ['/php/cli', 'CLI versions', PackageCheck],
+                    ['/php/fpm', 'PHP-FPM pools', Server],
+                    ['/php/default', 'Default PHP', Check],
+                    ['/php/short-info', 'Short info', Activity],
+                    ['/php/info', 'phpinfo()', Info],
+                    ['/php/extensions', 'Extensions', Layers],
+                    ['/php/addons', 'Addons', Zap],
+                    ['/php/ini', 'php.ini', Sliders],
+                    ['/php/ini-raw', 'Raw php.ini', FileCode],
+                  ].map(([href, label, Icon]) => (
+                    <button
+                      key={href}
+                      onClick={() => navigate(href)}
+                      className={`w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs transition ${isNavActive(href) || (href === '/php/cli' && path === '/php') ? 'bg-zinc-800 text-white font-bold' : 'text-zinc-400 hover:text-white hover:bg-zinc-900/40'}`}
+                    >
+                      <Icon className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>{label}</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

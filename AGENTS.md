@@ -126,4 +126,16 @@ Task لا تُعتبر مكتملة إلا إذا:
 
 ---
 
+## تثبيت / إصدار / ريليز (إلزامي)
+
+- الاختبار يكون على **VPS نظيف يُعاد بناؤه كل مرة** — لا تفترض باتش على سيرفر قديم.
+- الإصدار الحالي ثابت: **`v0.1.0`**. بعد أي فيكس: ادفع `main` ثم حرّك **نفس التاج** `v0.1.0` (force-push) وانتظر ريليز GitHub Actions.
+- أمر التثبيت على VPS جديد (root):
+
+```bash
+curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.1.0/install.sh | bash
+```
+
+- لا تشغّل `nginx` / `systemctl` / البانل على جهاز التطوير.
+
 > **للبدء السريع:** اقرأ `.agents/skills/akpanel-pre-task/SKILL.md` ثم حدد Task ID من `docs/AGENT_MASTER_PLAN.md`

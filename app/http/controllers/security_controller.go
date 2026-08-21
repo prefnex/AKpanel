@@ -150,11 +150,34 @@ func (r *SecurityController) Firewall(ctx http.Context) http.Response {
 
 // AddRule creates a new firewall rule
 func (r *SecurityController) AddRule(ctx http.Context) http.Response {
-	port := ctx.Request().Input("port")
-	proto := ctx.Request().Input("protocol", "TCP/UDP")
-	action := ctx.Request().Input("action", "allow")
-	fromIP := ctx.Request().Input("from_ip", "Anywhere")
-	comment := ctx.Request().Input("comment", "Custom Rule")
+	var req struct {
+		Port     string `json:"port"`
+		Protocol string `json:"protocol"`
+		Action   string `json:"action"`
+		FromIP   string `json:"from_ip"`
+		Comment  string `json:"comment"`
+	}
+	_ = ctx.Request().Bind(&req)
+	port := req.Port
+	if port == "" {
+		port = ctx.Request().Input("port")
+	}
+	proto := req.Protocol
+	if proto == "" {
+		proto = ctx.Request().Input("protocol", "TCP")
+	}
+	action := req.Action
+	if action == "" {
+		action = ctx.Request().Input("action", "allow")
+	}
+	fromIP := req.FromIP
+	if fromIP == "" {
+		fromIP = ctx.Request().Input("from_ip", "Anywhere")
+	}
+	comment := req.Comment
+	if comment == "" {
+		comment = ctx.Request().Input("comment", "Custom Rule")
+	}
 
 	if port == "" {
 		return ctx.Response().Status(422).Json(http.Json{
@@ -178,7 +201,18 @@ func (r *SecurityController) AddRule(ctx http.Context) http.Response {
 
 // DeleteRule removes a firewall rule
 func (r *SecurityController) DeleteRule(ctx http.Context) http.Response {
-	rule := ctx.Request().Input("rule")
+	var req struct {
+		Rule   string `json:"rule"`
+		Number string `json:"number"`
+	}
+	_ = ctx.Request().Bind(&req)
+	rule := req.Rule
+	if rule == "" {
+		rule = req.Number
+	}
+	if rule == "" {
+		rule = ctx.Request().Input("rule")
+	}
 	if rule == "" {
 		rule = ctx.Request().Input("number")
 	}
@@ -204,7 +238,16 @@ func (r *SecurityController) DeleteRule(ctx http.Context) http.Response {
 
 // ToggleFirewall enables or disables the whole firewall
 func (r *SecurityController) ToggleFirewall(ctx http.Context) http.Response {
-	enable := ctx.Request().InputBool("enable", true)
+	var req struct {
+		Enable *bool `json:"enable"`
+	}
+	_ = ctx.Request().Bind(&req)
+	enable := true
+	if req.Enable != nil {
+		enable = *req.Enable
+	} else {
+		enable = ctx.Request().InputBool("enable", true)
+	}
 	if err := r.securityService.SetFirewallEnabled(enable); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
@@ -224,8 +267,19 @@ func (r *SecurityController) ToggleFirewall(ctx http.Context) http.Response {
 
 // UnbanIP unbans an IP from Fail2Ban
 func (r *SecurityController) UnbanIP(ctx http.Context) http.Response {
-	ip := ctx.Request().Input("ip")
-	jail := ctx.Request().Input("jail", "sshd")
+	var req struct {
+		IP   string `json:"ip"`
+		Jail string `json:"jail"`
+	}
+	_ = ctx.Request().Bind(&req)
+	ip := req.IP
+	if ip == "" {
+		ip = ctx.Request().Input("ip")
+	}
+	jail := req.Jail
+	if jail == "" {
+		jail = ctx.Request().Input("jail", "sshd")
+	}
 	if ip == "" {
 		return ctx.Response().Status(422).Json(http.Json{
 			"status":  "error",
@@ -248,8 +302,19 @@ func (r *SecurityController) UnbanIP(ctx http.Context) http.Response {
 
 // BanIP manually bans an IP in the firewall
 func (r *SecurityController) BanIP(ctx http.Context) http.Response {
-	ip := ctx.Request().Input("ip")
-	reason := ctx.Request().Input("reason", "Manual Ban by Admin")
+	var req struct {
+		IP     string `json:"ip"`
+		Reason string `json:"reason"`
+	}
+	_ = ctx.Request().Bind(&req)
+	ip := req.IP
+	if ip == "" {
+		ip = ctx.Request().Input("ip")
+	}
+	reason := req.Reason
+	if reason == "" {
+		reason = ctx.Request().Input("reason", "Manual Ban by Admin")
+	}
 	if ip == "" {
 		return ctx.Response().Status(422).Json(http.Json{
 			"status":  "error",
@@ -272,8 +337,21 @@ func (r *SecurityController) BanIP(ctx http.Context) http.Response {
 
 // TogglePort opens or closes a port in UFW
 func (r *SecurityController) TogglePort(ctx http.Context) http.Response {
-	port := ctx.Request().Input("port")
-	allow := ctx.Request().InputBool("allow", true)
+	var req struct {
+		Port  string `json:"port"`
+		Allow *bool  `json:"allow"`
+	}
+	_ = ctx.Request().Bind(&req)
+	port := req.Port
+	if port == "" {
+		port = ctx.Request().Input("port")
+	}
+	allow := true
+	if req.Allow != nil {
+		allow = *req.Allow
+	} else {
+		allow = ctx.Request().InputBool("allow", true)
+	}
 
 	if port == "" {
 		return ctx.Response().Status(422).Json(http.Json{

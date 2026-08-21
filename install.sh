@@ -835,6 +835,21 @@ options {
     max-cache-size 128M;
 };
 EOF
+    mkdir -p /etc/bind/keys
+    if [ ! -s /etc/bind/akpanel-acme.key ]; then
+        tsig-keygen -a hmac-sha256 akpanel-acme > /etc/bind/akpanel-acme.key 2>/dev/null || true
+    fi
+    if [ -s /etc/bind/akpanel-acme.key ]; then
+        cp -a /etc/bind/akpanel-acme.key /etc/bind/keys/akpanel-acme.conf
+        chown root:bind /etc/bind/akpanel-acme.key /etc/bind/keys/akpanel-acme.conf 2>/dev/null || true
+        chmod 640 /etc/bind/akpanel-acme.key /etc/bind/keys/akpanel-acme.conf 2>/dev/null || true
+        if [ -f /etc/bind/named.conf ] && ! grep -q 'akpanel-acme.key' /etc/bind/named.conf 2>/dev/null; then
+            sed -i '1i include "/etc/bind/akpanel-acme.key";' /etc/bind/named.conf
+        fi
+        if [ -f /etc/bind/named.conf.options ] && ! grep -q 'akpanel-acme.key' /etc/bind/named.conf.options 2>/dev/null; then
+            sed -i '1i include "/etc/bind/akpanel-acme.key";' /etc/bind/named.conf.options
+        fi
+    fi
     systemctl enable bind9 >> "$LOG_FILE" 2>&1 || systemctl enable named >> "$LOG_FILE" 2>&1 || true
     systemctl restart bind9 >> "$LOG_FILE" 2>&1 || systemctl restart named >> "$LOG_FILE" 2>&1 || true
 }
@@ -861,30 +876,60 @@ task_step4() {
         run_mysql phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql >> "$LOG_FILE" 2>&1 || true
     fi
 
-    # Roundcube Webmail Database & Config Setup
-    run_mysql -e "CREATE DATABASE IF NOT EXISTS roundcubemail DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY 'roundcube_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
+    # Roundcube: apt's dbconfig-common creates user roundcube with a random
+    # password. CREATE USER IF NOT EXISTS would leave that password in place
+    # while we wrote a different DSN → SQLSTATE 1045 and Roundcube "Oops".
+    mkdir -p /etc/akpanel/secrets
+    if [ ! -s /etc/akpanel/secrets/roundcube_db_pass ] || [ "$(wc -c < /etc/akpanel/secrets/roundcube_db_pass | tr -d ' ')" -lt 24 ]; then
+        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24 > /etc/akpanel/secrets/roundcube_db_pass
+    fi
+    if [ ! -s /etc/akpanel/secrets/roundcube_des_key ] || [ "$(wc -c < /etc/akpanel/secrets/roundcube_des_key | tr -d ' ')" -lt 24 ]; then
+        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24 > /etc/akpanel/secrets/roundcube_des_key
+    fi
+    chmod 600 /etc/akpanel/secrets/roundcube_db_pass /etc/akpanel/secrets/roundcube_des_key 2>/dev/null || true
+    RC_DB_PASS=$(tr -d '\n' < /etc/akpanel/secrets/roundcube_db_pass)
+    RC_DES_KEY=$(tr -d '\n' < /etc/akpanel/secrets/roundcube_des_key | head -c 24)
+
+    run_mysql -e "CREATE DATABASE IF NOT EXISTS roundcubemail DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" >> "$LOG_FILE" 2>&1
+    run_mysql -e "CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '${RC_DB_PASS}'; CREATE USER IF NOT EXISTS 'roundcube'@'127.0.0.1' IDENTIFIED BY '${RC_DB_PASS}'; ALTER USER 'roundcube'@'localhost' IDENTIFIED BY '${RC_DB_PASS}'; ALTER USER 'roundcube'@'127.0.0.1' IDENTIFIED BY '${RC_DB_PASS}'; GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost'; GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'127.0.0.1'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
     if [ -f /usr/share/roundcube/SQL/mysql.initial.sql ]; then
         run_mysql roundcubemail < /usr/share/roundcube/SQL/mysql.initial.sql >> "$LOG_FILE" 2>&1 || true
+    elif [ -f /usr/share/roundcube/SQL/mysql/initial.sql ]; then
+        run_mysql roundcubemail < /usr/share/roundcube/SQL/mysql/initial.sql >> "$LOG_FILE" 2>&1 || true
     fi
 
-    mkdir -p /etc/roundcube
-    cat << 'EOF' > /etc/roundcube/config.inc.php
+    mkdir -p /etc/roundcube /var/log/roundcube /var/lib/roundcube/temp
+    chown www-data:www-data /var/log/roundcube /var/lib/roundcube/temp 2>/dev/null || true
+    cat << EOF > /etc/roundcube/config.inc.php
 <?php
-$config = [];
-$config['db_dsnw'] = 'mysql://roundcube:roundcube_akpanel_secret_pass@localhost/roundcubemail';
-$config['default_host'] = '127.0.0.1';
-$config['default_port'] = 143;
-$config['smtp_server'] = '127.0.0.1';
-$config['smtp_port'] = 25;
-$config['smtp_user'] = '%u';
-$config['smtp_pass'] = '%p';
-$config['support_url'] = '';
-$config['product_name'] = 'AKpanel Webmail';
-$config['des_key'] = 'rcmail_akpanel_super_secret_des_key_24';
-$config['plugins'] = ['archive', 'zipdownload'];
-$config['skin'] = 'elastic';
+\$config = [];
+\$config['db_dsnw'] = 'mysql://roundcube:${RC_DB_PASS}@127.0.0.1/roundcubemail';
+\$config['default_host'] = '127.0.0.1';
+\$config['imap_host'] = '127.0.0.1:143';
+\$config['default_port'] = 143;
+\$config['smtp_server'] = '127.0.0.1';
+\$config['smtp_host'] = '127.0.0.1:587';
+\$config['smtp_port'] = 587;
+\$config['smtp_user'] = '%u';
+\$config['smtp_pass'] = '%p';
+\$config['support_url'] = '';
+\$config['product_name'] = 'AKpanel Webmail';
+\$config['des_key'] = '${RC_DES_KEY}';
+\$config['plugins'] = [];
+\$config['skin'] = 'elastic';
+\$config['enable_spellcheck'] = false;
+\$config['auto_create_user'] = true;
+\$config['force_https'] = false;
+\$config['use_https'] = false;
+\$config['log_dir'] = '/var/log/roundcube/';
+\$config['temp_dir'] = '/var/lib/roundcube/temp/';
 EOF
-    chmod 644 /etc/roundcube/config.inc.php 2>/dev/null || true
+    chown root:www-data /etc/roundcube/config.inc.php 2>/dev/null || true
+    chmod 640 /etc/roundcube/config.inc.php 2>/dev/null || true
+    if [ -d /var/lib/roundcube ] && [ ! -L /var/www/roundcube ]; then
+        rm -rf /var/www/roundcube
+        ln -sfn /var/lib/roundcube /var/www/roundcube
+    fi
 
     cat << 'EOF' > /etc/phpmyadmin/config-db.php
 <?php
@@ -1237,9 +1282,13 @@ task_step6() {
         ufw allow 53 comment "DNS Service" >> "$LOG_FILE" 2>&1 || true
         ufw allow 53/tcp comment "DNS TCP" >> "$LOG_FILE" 2>&1 || true
         ufw allow 53/udp comment "DNS UDP" >> "$LOG_FILE" 2>&1 || true
-        ufw allow 25/tcp comment "SMTP Mail" >> "$LOG_FILE" 2>&1 || true
+		ufw allow 25/tcp comment "SMTP Mail" >> "$LOG_FILE" 2>&1 || true
+        ufw allow 465/tcp comment "SMTPS" >> "$LOG_FILE" 2>&1 || true
         ufw allow 587/tcp comment "SMTP Submission" >> "$LOG_FILE" 2>&1 || true
+        ufw allow 110/tcp comment "POP3" >> "$LOG_FILE" 2>&1 || true
+        ufw allow 143/tcp comment "IMAP" >> "$LOG_FILE" 2>&1 || true
         ufw allow 993/tcp comment "IMAP SSL" >> "$LOG_FILE" 2>&1 || true
+        ufw allow 995/tcp comment "POP3 SSL" >> "$LOG_FILE" 2>&1 || true
         
         if ufw status 2>/dev/null | grep -q "Status: active"; then
             ufw reload >> "$LOG_FILE" 2>&1 || true

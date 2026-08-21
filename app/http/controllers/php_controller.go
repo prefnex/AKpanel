@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/goravel/framework/contracts/http"
 	"goravel/app/services"
@@ -138,12 +139,27 @@ func (r *PHPController) StartLiveInstall(ctx http.Context) http.Response {
 	itemType := ctx.Request().Input("type", "version") // "version", "extension", "ffmpeg", "addon"
 	name := ctx.Request().Input("name", "")
 
+	packagesRaw := ctx.Request().Input("packages")
 	var title, cmdStr string
 	switch itemType {
 	case "version":
 		title = fmt.Sprintf("PHP %s Installation", version)
-		cmdStr = fmt.Sprintf("apt-get update -qq && apt-get install -y php%s-cli php%s-fpm php%s-common php%s-sqlite3 php%s-curl php%s-mbstring php%s-xml php%s-zip php%s-gd php%s-mysql && service php%s-fpm start",
-			version, version, version, version, version, version, version, version, version, version, version)
+		pkgs := []string{"cli", "fpm", "common", "mysql", "curl", "mbstring", "xml", "zip", "gd", "sqlite3"}
+		if packagesRaw != "" {
+			pkgs = []string{}
+			for _, p := range strings.Split(packagesRaw, ",") {
+				p = strings.TrimSpace(strings.ToLower(p))
+				if p != "" {
+					pkgs = append(pkgs, p)
+				}
+			}
+		}
+		apt := "apt-get update -qq && apt-get install -y"
+		for _, p := range pkgs {
+			apt += fmt.Sprintf(" php%s-%s", version, p)
+		}
+		apt += fmt.Sprintf(" && service php%s-fpm start", version)
+		cmdStr = apt
 	case "extension":
 		title = fmt.Sprintf("Extension '%s' for PHP %s", name, version)
 		cmdStr = fmt.Sprintf("apt-get install -y php%s-%s && service php%s-fpm restart", version, name, version)

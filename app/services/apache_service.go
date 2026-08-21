@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"goravel/app/domain"
 	"goravel/app/paths"
 )
 
@@ -93,6 +94,15 @@ func (a *ApacheService) DeleteApacheVhost(domain string) error {
 
 // ReloadApache tests config and reloads Apache service
 func (a *ApacheService) ReloadApache() error {
+	profile := strings.TrimSpace("")
+	if b, err := os.ReadFile(paths.ServerProfileConf()); err == nil {
+		profile = strings.TrimSpace(string(b))
+	}
+	if !domain.ProfileNeedsApache(profile) {
+		_ = a.EnsureInternalBackend()
+		_ = exec.Command("service", "apache2", "stop").Run()
+		return nil
+	}
 	if output, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {
 		return fmt.Errorf("apache syntax test failed: %s", string(output))
 	}

@@ -122,18 +122,11 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 	if email == "" {
 		email = "admin@" + domain
 	}
-	if webroot == "" {
-		webroot = paths.ResolveWebsiteRoot("", domain)
-	}
-	if webroot == "" {
-		webroot = "/var/www/html"
-	} else if _, err := os.Stat(webroot); os.IsNotExist(err) {
+	if webroot == "" || webroot != "/var/www/html" {
 		webroot = "/var/www/html"
 	}
 
-	// Ensure challenge directories
 	_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0777)
-	_ = os.MkdirAll(filepath.Join(webroot, ".well-known/acme-challenge"), 0777)
 	_ = exec.Command("chmod", "-R", "777", "/var/www/html/.well-known").Run()
 
 	domainDir := filepath.Join(a.sslBaseDir, domain)
@@ -438,7 +431,8 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 	}
 
 	_ = a.EnsureAcmeInstalled()
-	a.ensureBindACMETSIG()
+	a.EnsureBindACMETSIG()
+	time.Sleep(1 * time.Second)
 
 	domainDir := filepath.Join(a.sslBaseDir, domain)
 	_ = os.MkdirAll(domainDir, 0755)
@@ -470,16 +464,12 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 		acmeOutput = string(out)
 
 		if err != nil {
-			// Fallback: multi-domain HTTP-01 for service hostnames
-			webroot = paths.ResolveWebsiteRoot("", domain)
-			if webroot == "" {
-				webroot = "/var/www/html"
-			}
+			// HTTP-01 on the shared challenge root (every vhost aliases this).
+			_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0777)
 			cmdHTTP := exec.Command(a.acmeBin, "--issue",
 				"-d", domain, "-d", "www."+domain,
 				"-d", "webmail."+domain, "-d", "cpanel."+domain,
-				"-d", "ftp."+domain, "-d", "imap."+domain, "-d", "pop."+domain,
-				"-w", webroot, "--server", "letsencrypt", "--force")
+				"-w", "/var/www/html", "--server", "letsencrypt", "--force")
 			out2, err2 := cmdHTTP.CombinedOutput()
 			acmeOutput += "\n[HTTP-01 fallback]\n" + string(out2)
 			if err2 == nil {
@@ -525,30 +515,44 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 	}, nil
 }
 
-func (a *ACMEService) ensureBindACMETSIG() {
-	keyConf := "/etc/bind/keys/akpanel-acme.conf"
-	_ = os.MkdirAll(paths.EtcAKpanelSecrets, 0700)
-	_ = os.MkdirAll("/etc/bind/keys", 0755)
+func (a *ACMEService) EnsureBindACMETSIG() {
+	keyPath := "/etc/bind/akpanel-acme.key"
+	legacyPath := "/etc/bind/keys/akpanel-acme.conf"
+	_ = os.MkdirAll("/etc/bind/keys", 0750)
 
-	if _, err := os.Stat(keyConf); os.IsNotExist(err) {
-		out, _ := exec.Command("tsig-keygen", "-a", "hmac-sha256", "akpanel-acme").CombinedOutput()
-		if len(out) > 0 {
-			_ = os.WriteFile(keyConf, out, 0640)
+	if _, err := os.Stat(keyPath); os.IsNotExist(err) {
+		if _, err2 := os.Stat(legacyPath); err2 == nil {
+			_ = exec.Command("cp", "-a", legacyPath, keyPath).Run()
+		} else {
+			out, _ := exec.Command("tsig-keygen", "-a", "hmac-sha256", "akpanel-acme").CombinedOutput()
+			if len(out) > 0 {
+				_ = os.WriteFile(keyPath, out, 0640)
+			}
 		}
 	}
-
-	optsPath := "/etc/bind/named.conf.options"
-	content, err := os.ReadFile(optsPath)
-	if err == nil && !strings.Contains(string(content), "akpanel-acme") {
-		includeLine := `include "/etc/bind/keys/akpanel-acme.conf";` + "\n"
-		_ = os.WriteFile(optsPath, append([]byte(includeLine), content...), 0644)
+	if b, err := os.ReadFile(keyPath); err == nil && len(b) > 0 {
+		_ = os.WriteFile(legacyPath, b, 0640)
 	}
+	_ = exec.Command("chown", "root:bind", keyPath, legacyPath).Run()
+	_ = os.Chmod(keyPath, 0640)
+	_ = os.Chmod(legacyPath, 0640)
 
-	localPath := "/etc/bind/named.conf.local"
-	if localContent, err := os.ReadFile(localPath); err == nil {
-		if !strings.Contains(string(localContent), "akpanel-acme") && strings.Contains(string(localContent), "allow-update") == false {
-			// allow-update added per-zone in upsertZoneToBind
+	includeLine := `include "/etc/bind/akpanel-acme.key";` + "\n"
+	for _, confPath := range []string{"/etc/bind/named.conf", "/etc/bind/named.conf.options", "/etc/bind/named.conf.local"} {
+		content, err := os.ReadFile(confPath)
+		if err != nil {
+			continue
 		}
+		s := string(content)
+		if strings.Contains(s, "akpanel-acme.key") || strings.Contains(s, "akpanel-acme.conf") {
+			continue
+		}
+		_ = os.WriteFile(confPath, append([]byte(includeLine), content...), 0644)
 	}
+
+	_ = exec.Command("rndc", "reconfig").Run()
+	_ = exec.Command("rndc", "reload").Run()
+	_ = exec.Command("systemctl", "reload", "named").Run()
+	_ = exec.Command("systemctl", "reload", "bind9").Run()
 }
 

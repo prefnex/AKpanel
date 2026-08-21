@@ -42,6 +42,14 @@ func NewNginxService() *NginxService {
 	return svc
 }
 
+func readServerProfileID() string {
+	b, err := os.ReadFile(paths.ServerProfileConf())
+	if err != nil {
+		return domain.ProfileNginxPHPFPM
+	}
+	return strings.TrimSpace(string(b))
+}
+
 func (n *NginxService) getActivePHPSocket() string {
 	for _, ver := range []string{"8.3", "8.2", "8.1", "8.0", "7.4"} {
 		sock := fmt.Sprintf("/run/php/php%s-fpm.sock", ver)
@@ -50,6 +58,16 @@ func (n *NginxService) getActivePHPSocket() string {
 		}
 	}
 	return "unix:/run/php/php8.2-fpm.sock"
+}
+
+func acmeChallengeLocation() string {
+	return `    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
+`
 }
 
 func (n *NginxService) phpFastcgiLocation(socket string) string {
@@ -239,6 +257,10 @@ func (n *NginxService) CreateWebsite(cfg WebsiteConfig) error {
 		return n.createNginxVhost(cfg, true)
 
 	default: // EngineNginx, EngineVarnishNginx
+		_ = n.apacheService.EnsureInternalBackend()
+		if !domain.ProfileNeedsApache(readServerProfileID()) {
+			_ = exec.Command("service", "apache2", "stop").Run()
+		}
 		_ = n.apacheService.DeleteApacheVhost(cfg.Domain)
 		return n.createNginxVhost(cfg, false)
 	}
@@ -464,7 +486,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
     access_log /var/log/nginx/%s.access.log;
     error_log /var/log/nginx/%s.error.log;
 
-    # Static files served directly by Nginx with aggressive caching
+%s    # Static files served directly by Nginx with aggressive caching
     location ~* \.(jpg|jpeg|gif|png|css|js|ico|svg|woff2|woff|ttf|mp4|webm)$ {
         expires 30d;
         add_header Cache-Control "public, no-transform";
@@ -487,7 +509,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain)
+`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, acmeChallengeLocation())
 	}
 
 	// Reverse Proxy / Node / Python / Go
@@ -506,7 +528,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
     access_log /var/log/nginx/%s.access.log;
     error_log /var/log/nginx/%s.error.log;
 
-    location / {
+%s    location / {
         proxy_pass http://127.0.0.1:%d;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -518,7 +540,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         proxy_cache_bypass $http_upgrade;
     }
 }
-`, cfg.Domain, cfg.Domain, sslCert, sslKey, cfg.Domain, cfg.Domain, cfg.ProxyPort)
+`, cfg.Domain, cfg.Domain, sslCert, sslKey, cfg.Domain, cfg.Domain, acmeChallengeLocation(), cfg.ProxyPort)
 	}
 
 	// Static / SPA
@@ -540,7 +562,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
     access_log /var/log/nginx/%s.access.log;
     error_log /var/log/nginx/%s.error.log;
 
-    location / {
+%s    location / {
         try_files $uri $uri/ /index.html =404;
     }
 
@@ -548,7 +570,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         deny all;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain)
+`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, acmeChallengeLocation())
 	}
 
 	// Default: Pure Nginx PHP FastCGI
@@ -569,7 +591,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
     access_log /var/log/nginx/%s.access.log;
     error_log /var/log/nginx/%s.error.log;
 
-    location / {
+%s    location / {
         try_files $uri $uri/ /index.php?$query_string;
     }
 
@@ -578,7 +600,7 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         deny all;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, n.phpFastcgiLocation(phpSocket))
+`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, acmeChallengeLocation(), n.phpFastcgiLocation(phpSocket))
 }
 
 // CreateProxyVhost writes an nginx vhost that reverse-proxies to a local port with optional extra headers.
@@ -602,7 +624,7 @@ func (n *NginxService) CreateProxyVhost(domain string, port int, extraHeaders ma
     access_log /var/log/nginx/%s.access.log;
     error_log /var/log/nginx/%s.error.log;
 
-    location / {
+%s    location / {
         proxy_pass http://127.0.0.1:%d;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -612,7 +634,7 @@ func (n *NginxService) CreateProxyVhost(domain string, port int, extraHeaders ma
 %s        proxy_cache_bypass $http_upgrade;
     }
 }
-`, domain, sslCert, sslKey, domain, domain, port, headerLines)
+`, domain, sslCert, sslKey, domain, domain, acmeChallengeLocation(), port, headerLines)
 	return n.writeAndEnableVhost(domain, vhost)
 }
 
@@ -632,9 +654,9 @@ func (n *NginxService) CreateStaticInfoVhost(domain, title, bodyHTML string) err
     ssl_certificate %s;
     ssl_certificate_key %s;
     index index.html;
-    location / { try_files $uri $uri/ =404; }
+%s    location / { try_files $uri $uri/ =404; }
 }
-`, domain, root, sslCert, sslKey)
+`, domain, root, sslCert, sslKey, acmeChallengeLocation())
 	return n.writeAndEnableVhost(domain, vhost)
 }
 
@@ -742,7 +764,8 @@ func (n *NginxService) roundcubePHPLocations() string {
 
 // EnsureRoundcubeListener serves Roundcube on 127.0.0.1:8086 for the panel /webmail proxy.
 func (n *NginxService) EnsureRoundcubeListener() error {
-	_ = os.MkdirAll(paths.RoundcubeRoot, 0755)
+	rcRoot := paths.RoundcubeWebRoot()
+	_ = os.MkdirAll(rcRoot, 0755)
 	conf := fmt.Sprintf(`# AKpanel internal Roundcube (panel /webmail reverse proxy)
 server {
     listen 127.0.0.1:8086;
@@ -752,7 +775,7 @@ server {
 
 %s
 }
-`, paths.RoundcubeRoot, n.roundcubePHPLocations())
+`, rcRoot, n.roundcubePHPLocations())
 
 	availablePath := filepath.Join(n.sitesAvailablePath, "akpanel-roundcube-internal.conf")
 	if existing, err := os.ReadFile(availablePath); err == nil && string(existing) == conf {
@@ -799,7 +822,7 @@ func (n *NginxService) CreateWebmailVhost(host string) error {
 
 %s
 }
-`, host, paths.RoundcubeRoot, sslCert, sslKey, n.roundcubePHPLocations())
+`, host, paths.RoundcubeWebRoot(), sslCert, sslKey, n.roundcubePHPLocations())
 	return n.writeAndEnableVhost(host, vhost)
 }
 
@@ -855,7 +878,7 @@ func (n *NginxService) RepairPanelServiceVhosts() {
 		content, _ := os.ReadFile(filepath.Join(n.sitesAvailablePath, name))
 		body := string(content)
 		if strings.HasPrefix(host, "webmail.") {
-			if strings.Contains(body, "proxy_pass http://127.0.0.1:8086") || !strings.Contains(body, paths.RoundcubeRoot) {
+			if strings.Contains(body, "proxy_pass http://127.0.0.1:8086") || !strings.Contains(body, paths.RoundcubeWebRoot()) {
 				_ = n.CreateWebmailVhost(host)
 			}
 		}

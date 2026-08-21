@@ -97,8 +97,8 @@ export default function FirewallManager({ showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enable: targetState })
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
 
       showToast(json.message || `Firewall ${targetState ? 'enabled' : 'disabled'}`);
       fetchFirewall();
@@ -115,8 +115,8 @@ export default function FirewallManager({ showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newRule)
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
 
       showToast(json.message || 'Firewall rule created successfully');
       setIsAddRuleOpen(false);
@@ -135,8 +135,8 @@ export default function FirewallManager({ showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rule: ruleIdOrPort })
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
 
       showToast('Firewall rule deleted');
       fetchFirewall();
@@ -152,8 +152,8 @@ export default function FirewallManager({ showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port: String(port), allow: !currentAllowed })
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
 
       showToast(`Port ${port} ${!currentAllowed ? 'allowed' : 'blocked'}`);
       fetchFirewall();
@@ -169,8 +169,8 @@ export default function FirewallManager({ showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ip, jail })
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
 
       showToast(json.message || `IP ${ip} unbanned`);
       fetchFirewall();
@@ -187,8 +187,8 @@ export default function FirewallManager({ showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ip: banIP, reason: banReason })
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
 
       showToast(json.message || `IP ${banIP} blocked`);
       setIsBanModalOpen(false);
@@ -203,7 +203,12 @@ export default function FirewallManager({ showToast }) {
   const bannedIps = Array.isArray(firewallData?.banned_ips) ? firewallData.banned_ips : [];
 
   const isPortAllowed = (port) => {
-    return rules.some(r => r && r.port === String(port) && r.action && r.action.toUpperCase() === 'ALLOW');
+    const want = String(port);
+    return rules.some((r) => {
+      if (!r || r.port == null || !r.action) return false;
+      const rp = String(r.port).split('/')[0];
+      return rp === want && String(r.action).toUpperCase().includes('ALLOW');
+    });
   };
 
   const presetPorts = [
@@ -217,6 +222,9 @@ export default function FirewallManager({ showToast }) {
     { name: 'MySQL Database', port: '3306', proto: 'TCP', icon: Database, color: 'text-indigo-400', desc: 'MySQL / MariaDB Daemon' },
     { name: 'Mail SMTP', port: '25', proto: 'TCP', icon: Mail, color: 'text-rose-400', desc: 'Inbound / Outbound SMTP' },
     { name: 'Mail SMTP SSL', port: '465', proto: 'TCP', icon: Mail, color: 'text-rose-400', desc: 'Secure SMTP Submission' },
+    { name: 'Mail Submission', port: '587', proto: 'TCP', icon: Mail, color: 'text-rose-400', desc: 'Authenticated SMTP' },
+    { name: 'Mail IMAP', port: '143', proto: 'TCP', icon: Mail, color: 'text-pink-400', desc: 'IMAP mailbox access' },
+    { name: 'Mail POP3', port: '110', proto: 'TCP', icon: Mail, color: 'text-pink-400', desc: 'POP3 retrieval' },
     { name: 'Mail IMAP SSL', port: '993', proto: 'TCP', icon: Mail, color: 'text-pink-400', desc: 'Dovecot Secure Mailboxes' },
     { name: 'Mail POP3 SSL', port: '995', proto: 'TCP', icon: Mail, color: 'text-pink-400', desc: 'Dovecot POP3 Retrieval' }
   ];
@@ -230,9 +238,9 @@ export default function FirewallManager({ showToast }) {
             <Shield className="w-5 h-5" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">Firewall & Security Suite</h1>
+            <h1 className="text-xl font-bold text-white tracking-tight">Firewall</h1>
             <p className="text-zinc-400 text-xs mt-0.5">
-              Netfilter/UFW packet filtering, Fail2Ban intrusion prevention, and Web Application Firewall (WAF).
+              Open the ports your stack needs. Mail, web, DNS, and the panel are grouped below.
             </p>
           </div>
         </div>
@@ -394,8 +402,8 @@ export default function FirewallManager({ showToast }) {
                       <td className="py-3 px-4 font-bold text-white">{r.port}</td>
                       <td className="py-3 px-4 text-cyan-400">{r.protocol}</td>
                       <td className="py-3 px-4">
-                        <Badge className={`${r.action.toUpperCase() === 'ALLOW' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'} text-[10px]`}>
-                          {r.action.toUpperCase()}
+                        <Badge className={`${String(r.action || '').toUpperCase().includes('ALLOW') ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'} text-[10px]`}>
+                          {String(r.action || 'UNKNOWN').toUpperCase()}
                         </Badge>
                       </td>
                       <td className="py-3 px-4 text-zinc-400">{r.from_ip || 'Anywhere'}</td>

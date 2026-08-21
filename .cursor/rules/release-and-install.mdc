@@ -1,0 +1,20 @@
+---
+description: Fresh VPS install command; always ship on the same v0.1.0 tag/release
+alwaysApply: true
+---
+
+# Install, version, and release
+
+The owner **rebuilds a clean VPS every test**. Do not assume a live panel to patch in place. After a fix: **commit, push `main`, move tag `v0.1.0` to HEAD, force-push the tag**, wait until GitHub Actions **Release AKpanel** succeeds, then give this install command.
+
+Current version/tag (do not bump unless the owner asks): **`v0.1.0`**
+
+Fresh VPS install (root, Ubuntu):
+
+```bash
+curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.1.0/install.sh | bash
+```
+
+That installer downloads `akpanel_v0.1.0_linux_<arch>.tar.gz` from the same release. Do not tell them to copy a binary onto an old VPS unless they ask.
+
+Do **not** run `nginx -t`, `systemctl`, or panel tests on the workstation. The owner tests on the rebuilt VPS only.
