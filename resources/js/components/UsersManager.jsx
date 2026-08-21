@@ -164,7 +164,9 @@ export default function UsersManager({ showToast }) {
           setProvisionError('');
           localStorage.removeItem('akpanel_user_provision_task');
           setProvisionTaskId('');
-          showToast(`User provisioned: ${task.subject}`);
+          setIsCreateOpen(false);
+          const who = task.subject || formData.username || 'account';
+          showToast(`User created successfully: ${who}`, 'success');
           fetchUsers();
         } else if (task.status === 'failed') {
           setIsProvisioning(false);

@@ -185,7 +185,7 @@ export default function App() {
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
+    setTimeout(() => setToast(null), 7000);
   };
 
   const handleTemplateSelect = (tpl) => {

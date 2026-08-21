@@ -538,16 +538,26 @@ func (a *ACMEService) EnsureBindACMETSIG() {
 	_ = os.Chmod(legacyPath, 0640)
 
 	includeLine := `include "/etc/bind/akpanel-acme.key";` + "\n"
-	for _, confPath := range []string{"/etc/bind/named.conf", "/etc/bind/named.conf.options", "/etc/bind/named.conf.local"} {
+	stripTSIGInclude := func(confPath string) {
 		content, err := os.ReadFile(confPath)
 		if err != nil {
-			continue
+			return
 		}
-		s := string(content)
-		if strings.Contains(s, "akpanel-acme.key") || strings.Contains(s, "akpanel-acme.conf") {
-			continue
+		lines := strings.Split(string(content), "\n")
+		kept := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if strings.Contains(line, "akpanel-acme.key") || strings.Contains(line, "akpanel-acme.conf") {
+				continue
+			}
+			kept = append(kept, line)
 		}
-		_ = os.WriteFile(confPath, append([]byte(includeLine), content...), 0644)
+		_ = os.WriteFile(confPath, []byte(strings.Join(kept, "\n")), 0644)
+	}
+	for _, confPath := range []string{"/etc/bind/named.conf.options", "/etc/bind/named.conf.local", "/etc/bind/named.conf"} {
+		stripTSIGInclude(confPath)
+	}
+	if content, err := os.ReadFile("/etc/bind/named.conf"); err == nil {
+		_ = os.WriteFile("/etc/bind/named.conf", append([]byte(includeLine), content...), 0644)
 	}
 
 	_ = exec.Command("rndc", "reconfig").Run()

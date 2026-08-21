@@ -747,10 +747,18 @@ func (c *ClientService) SaveClientFile(username, filePath, content string) error
 	}
 
 	_ = os.MkdirAll(filepath.Dir(target), 0755)
-	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+	info, statErr := os.Stat(target)
+	mode := os.FileMode(0644)
+	if statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := os.WriteFile(target, []byte(content), mode); err != nil {
 		return err
 	}
 	_ = exec.Command("chown", fmt.Sprintf("%s:%s", username, username), target).Run()
+	if statErr == nil {
+		_ = os.Chmod(target, mode)
+	}
 	return nil
 }
 

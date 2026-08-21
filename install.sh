@@ -365,38 +365,121 @@ EOF
     nginx -t >> "$LOG_FILE" 2>&1 && (systemctl reload nginx >> "$LOG_FILE" 2>&1 || service nginx reload >> "$LOG_FILE" 2>&1) || true
 }
 
+PROGRESS_FILE="/tmp/akpanel-install.progress"
+
+akp_progress() {
+    local pct="$1"
+    shift
+    local msg="$*"
+    echo "${pct}|${msg}" > "$PROGRESS_FILE"
+}
+
+akp_crawl() {
+    local from="$1"
+    local to="$2"
+    shift 2
+    local label="$1"
+    shift
+    akp_progress "$from" "$label"
+    "$@" >> "$LOG_FILE" 2>&1 &
+    local pid=$!
+    local p=$from
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 2
+        if [ "$p" -lt $((to - 1)) ]; then
+            p=$((p + 1))
+            akp_progress "$p" "$label"
+        fi
+    done
+    wait "$pid"
+    local st=$?
+    akp_progress "$to" "$label"
+    return $st
+}
+
+svc_disable_now() {
+    local u
+    for u in "$@"; do
+        systemctl disable --now "$u" >> "$LOG_FILE" 2>&1 || service "$u" stop >> "$LOG_FILE" 2>&1 || true
+    done
+}
+
+svc_enable_now() {
+    local u
+    for u in "$@"; do
+        systemctl enable --now "$u" >> "$LOG_FILE" 2>&1 || service "$u" start >> "$LOG_FILE" 2>&1 || true
+    done
+}
+
+configure_postfix_submission() {
+    local master="/etc/postfix/master.cf"
+    [ -f "$master" ] || return 0
+    if ! grep -qE '^submission[[:space:]]' "$master"; then
+        cat >> "$master" << 'EOF'
+
+submission inet n       -       y       -       -       smtpd
+  -o syslog_name=postfix/submission
+  -o smtpd_tls_security_level=may
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_tls_auth_only=no
+  -o smtpd_reject_unlisted_recipient=no
+  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+smtps     inet n       -       y       -       -       smtpd
+  -o syslog_name=postfix/smtps
+  -o smtpd_tls_wrappermode=yes
+  -o smtpd_sasl_auth_enable=yes
+  -o smtpd_reject_unlisted_recipient=no
+  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+  -o smtpd_relay_restrictions=permit_sasl_authenticated,reject
+EOF
+    fi
+    postconf -e "inet_interfaces = all" >> "$LOG_FILE" 2>&1 || true
+    systemctl reload postfix >> "$LOG_FILE" 2>&1 || service postfix reload >> "$LOG_FILE" 2>&1 || true
+}
+
 apply_webserver_profile() {
     case "$AKPANEL_WEB_PROFILE" in
         nginx_phpfpm)
-            service apache2 stop >> "$LOG_FILE" 2>&1 || true
-            service varnish stop >> "$LOG_FILE" 2>&1 || true
-            service nginx restart >> "$LOG_FILE" 2>&1 || true
+            svc_disable_now apache2 varnish
+            svc_enable_now nginx
             ;;
-        apache_phpfpm|hybrid_nginx_apache)
-            service varnish stop >> "$LOG_FILE" 2>&1 || true
-            service apache2 start >> "$LOG_FILE" 2>&1 || true
-            service nginx restart >> "$LOG_FILE" 2>&1 || true
+        apache_phpfpm)
+            svc_disable_now varnish
+            svc_enable_now nginx apache2
+            ;;
+        hybrid_nginx_apache)
+            svc_disable_now varnish
+            svc_enable_now nginx apache2
             ;;
         varnish_nginx_apache)
-            service apache2 start >> "$LOG_FILE" 2>&1 || true
-            service varnish restart >> "$LOG_FILE" 2>&1 || true
-            service nginx restart >> "$LOG_FILE" 2>&1 || true
+            svc_enable_now nginx apache2 varnish
             ;;
         varnish_nginx_phpfpm)
-            service apache2 stop >> "$LOG_FILE" 2>&1 || true
-            service varnish restart >> "$LOG_FILE" 2>&1 || true
-            service nginx restart >> "$LOG_FILE" 2>&1 || true
+            svc_disable_now apache2
+            svc_enable_now nginx varnish
+            ;;
+        *)
+            svc_disable_now apache2 varnish
+            svc_enable_now nginx
             ;;
     esac
+    for v in $AKPANEL_PHP_VERSIONS; do
+        svc_enable_now "php${v}-fpm"
+    done
+    svc_enable_now bind9 named mariadb mysql redis-server postfix dovecot
+    configure_postfix_submission
 }
 
-# Animated task runner
+# Animated task runner — bar follows akp_progress from inside the step
 run_task() {
     local task_title="$1"
     local start_pct="$2"
     local end_pct="$3"
     shift 3
     local cmd="$*"
+
+    akp_progress "$start_pct" "$task_title"
 
     if [ "$VERBOSE" = true ]; then
         echo -e "\n${BOLD}${CYAN}▶ [${start_pct}%] ${task_title}...${NC}"
@@ -410,32 +493,42 @@ run_task() {
         return $status
     fi
 
-    # Quiet Animated Mode
     eval "$cmd" >> "$LOG_FILE" 2>&1 &
     local pid=$!
 
     local spinner=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
     local spin_idx=0
-    local cur_pct=$start_pct
 
     while kill -0 $pid 2>/dev/null; do
         local spin_char="${spinner[$spin_idx]}"
         spin_idx=$(( (spin_idx + 1) % 10 ))
 
-        if [ $cur_pct -lt $end_pct ]; then
-            cur_pct=$((cur_pct + 1))
+        local cur_pct=$start_pct
+        local live_title="$task_title"
+        if [ -f "$PROGRESS_FILE" ]; then
+            local raw
+            raw=$(head -n1 "$PROGRESS_FILE" 2>/dev/null || true)
+            if [ -n "$raw" ]; then
+                cur_pct="${raw%%|*}"
+                live_title="${raw#*|}"
+            fi
         fi
+        [[ "$cur_pct" =~ ^[0-9]+$ ]] || cur_pct=$start_pct
+        [ "$cur_pct" -lt "$start_pct" ] && cur_pct=$start_pct
+        [ "$cur_pct" -gt "$end_pct" ] && cur_pct=$end_pct
+        [ ${#live_title} -gt 42 ] && live_title="${live_title:0:39}..."
 
         local width=22
         local filled=$(( (cur_pct * width) / 100 ))
         local empty=$(( width - filled ))
         [ $empty -lt 0 ] && empty=0
         local bar=""
+        local i
         for ((i=0; i<filled; i++)); do bar="${bar}█"; done
         for ((i=0; i<empty; i++)); do bar="${bar}░"; done
 
-        printf "\r  ${PURPLE}%s${NC} ${BOLD}%-42s${NC} [${GREEN}%s${NC}] ${YELLOW}%3d%%${NC} " "$spin_char" "$task_title" "$bar" "$cur_pct"
-        sleep 0.15
+        printf "\r  ${PURPLE}%s${NC} ${BOLD}%-42s${NC} [${GREEN}%s${NC}] ${YELLOW}%3d%%${NC} " "$spin_char" "$live_title" "$bar" "$cur_pct"
+        sleep 0.12
     done
 
     wait $pid
@@ -443,6 +536,7 @@ run_task() {
 
     local width=22
     local bar=""
+    local i
     for ((i=0; i<width; i++)); do bar="${bar}█"; done
 
     if [ $exit_code -eq 0 ]; then
@@ -673,22 +767,18 @@ EOF
 
     local ACME_BIN="/root/.acme.sh/acme.sh"
     local SSL_OK=false
-    local attempt
     if [ -f "$ACME_BIN" ]; then
-        for attempt in 1 2 3; do
-            echo "ACME attempt ${attempt} for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
-            local resolved
-            resolved=$(dig +short A "$AKPANEL_HOSTNAME" @127.0.0.1 2>/dev/null | head -1)
-            echo "Local BIND A ${AKPANEL_HOSTNAME}=${resolved:-none}" >> "$LOG_FILE"
-            if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server letsencrypt --force >> "$LOG_FILE" 2>&1; then
+        echo "ACME Let's Encrypt for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
+        akp_progress 96 "Hostname SSL: Let's Encrypt"
+        if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server letsencrypt --force >> "$LOG_FILE" 2>&1; then
+            SSL_OK=true
+        else
+            echo "ACME ZeroSSL fallback for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
+            akp_progress 97 "Hostname SSL: ZeroSSL fallback"
+            if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server zerossl --force >> "$LOG_FILE" 2>&1; then
                 SSL_OK=true
-                break
-            elif "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server zerossl --force >> "$LOG_FILE" 2>&1; then
-                SSL_OK=true
-                break
             fi
-            sleep $((attempt * 8))
-        done
+        fi
     fi
 
     if [ "$SSL_OK" = true ] && [ -f "$ACME_BIN" ]; then
@@ -704,7 +794,7 @@ EOF
             echo "Trusted Hostname SSL installed for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
         fi
     else
-        echo "ACME not ready (public DNS/NS glue). Keeping self-signed fallback for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
+        echo "ACME not ready (rate limit or DNS). Keeping self-signed fallback for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
     fi
 
     systemctl restart akpanel >> "$LOG_FILE" 2>&1 || true
@@ -714,7 +804,9 @@ EOF
 # STEP 1: Pre-Flight Checks & Architecture (15%)
 # ------------------------------------------------------------------------------
 task_step1() {
-    sleep 0.5
+    akp_progress 5 "Checking architecture and root"
+    sleep 0.3
+    akp_progress 15 "System checks complete"
 }
 run_task "Checking system requirements & arch" 0 15 task_step1
 
@@ -729,12 +821,12 @@ task_step2() {
         apt-get update -y
         apt-get install $APT_OPTS \
             curl wget git unzip zip tar software-properties-common sudo procps net-tools \
-            sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw
+            sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw acl
     else
-        apt-get update -y >> "$LOG_FILE" 2>&1 || true
-        apt-get install $APT_OPTS \
+        akp_crawl 16 24 "Refreshing apt indexes" apt-get update -y || true
+        akp_crawl 24 35 "Installing base utilities" apt-get install $APT_OPTS \
             curl wget git unzip zip tar software-properties-common sudo procps net-tools \
-            sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw >> "$LOG_FILE" 2>&1 || true
+            sqlite3 libsqlite3-dev build-essential ca-certificates gnupg lsb-release ufw acl || true
     fi
 }
 run_task "Updating repositories & base utilities" 15 35 task_step2
@@ -748,6 +840,8 @@ task_step3() {
 
     mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d
     local PPA_ADDED=false
+
+    akp_progress 36 "Adding PHP repository"
 
     if [[ "$UBUNTU_CODENAME" =~ ^(focal|jammy|noble)$ ]]; then
         if LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php >> "$LOG_FILE" 2>&1; then
@@ -775,16 +869,18 @@ task_step3() {
         apt-get install $APT_OPTS $(build_php_package_list) \
             roundcube roundcube-core roundcube-mysql phpmyadmin || apt-get install $APT_OPTS php-cli php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin
     else
-        apt-get update -y >> "$LOG_FILE" 2>&1 || true
-        apt-get install $APT_OPTS \
+        akp_crawl 36 38 "Refreshing apt after PHP repo" apt-get update -y
+        akp_crawl 38 48 "Installing nginx, BIND, MariaDB, mail" apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd >> "$LOG_FILE" 2>&1 || true
+            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
-        apt-get install $APT_OPTS $(build_php_package_list) \
-            roundcube roundcube-core roundcube-mysql phpmyadmin >> "$LOG_FILE" 2>&1 || \
-        apt-get install $APT_OPTS \
-            php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin >> "$LOG_FILE" 2>&1 || true
+        akp_crawl 48 55 "Installing PHP, Roundcube, phpMyAdmin" apt-get install $APT_OPTS $(build_php_package_list) \
+            roundcube roundcube-core roundcube-mysql phpmyadmin || \
+        akp_crawl 48 55 "Installing PHP fallback packages" apt-get install $APT_OPTS \
+            php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin
     fi
+
+    akp_progress 55 "Moving Apache off port 80"
 
     # Nginx owns the public HTTP/HTTPS ports. Apache is an internal PHP/
     # .htaccess backend on 127.0.0.1:8081; otherwise both daemons compete for
@@ -795,7 +891,7 @@ task_step3() {
         rm -f /etc/apache2/sites-enabled/000-default.conf /etc/apache2/sites-enabled/default-ssl.conf
     fi
 
-    # Install acme.sh for SSL management & setup daily auto-renewal cron
+    akp_progress 56 "Installing acme.sh"
     if [ ! -f /root/.acme.sh/acme.sh ]; then
         curl -fsSL https://get.acme.sh | sh -s email=admin@akpanel.site >> "$LOG_FILE" 2>&1 || \
         (git clone --depth 1 https://github.com/acmesh-official/acme.sh.git /root/.acme.sh-repo >> "$LOG_FILE" 2>&1 && cd /root/.acme.sh-repo && ./acme.sh --install -m admin@akpanel.site >> "$LOG_FILE" 2>&1) || true
@@ -809,6 +905,7 @@ task_step3() {
     echo "0 2 * * * root /root/.acme.sh/acme.sh --cron --home /root/.acme.sh > /var/log/akpanel-ssl-renew.log 2>&1" > /etc/cron.d/akpanel-ssl-renew
     chmod 644 /etc/cron.d/akpanel-ssl-renew 2>/dev/null || true
 
+    akp_progress 58 "Configuring BIND 9"
     # Setup BIND 9 Authoritative Nameserver configuration
     mkdir -p /etc/bind /var/cache/bind /etc/bind/zones
     cat << 'EOF' > /etc/bind/named.conf.options
@@ -822,7 +919,6 @@ options {
     allow-query-cache { localhost; 127.0.0.1/32; };
 
     recursion no;
-    allow-recursion { localhost; 127.0.0.1/32; };
     allow-transfer { none; };
 
     forwarders {
@@ -843,15 +939,17 @@ EOF
         cp -a /etc/bind/akpanel-acme.key /etc/bind/keys/akpanel-acme.conf
         chown root:bind /etc/bind/akpanel-acme.key /etc/bind/keys/akpanel-acme.conf 2>/dev/null || true
         chmod 640 /etc/bind/akpanel-acme.key /etc/bind/keys/akpanel-acme.conf 2>/dev/null || true
-        if [ -f /etc/bind/named.conf ] && ! grep -q 'akpanel-acme.key' /etc/bind/named.conf 2>/dev/null; then
-            sed -i '1i include "/etc/bind/akpanel-acme.key";' /etc/bind/named.conf
-        fi
-        if [ -f /etc/bind/named.conf.options ] && ! grep -q 'akpanel-acme.key' /etc/bind/named.conf.options 2>/dev/null; then
-            sed -i '1i include "/etc/bind/akpanel-acme.key";' /etc/bind/named.conf.options
-        fi
+        # Include the TSIG key once. named.conf already includes options + local;
+        # repeating the include there defines the same key twice and BIND exits.
+        for _ak_bind_conf in /etc/bind/named.conf.options /etc/bind/named.conf.local /etc/bind/named.conf; do
+            [ -f "$_ak_bind_conf" ] && sed -i '/akpanel-acme\.key/d;/akpanel-acme\.conf/d' "$_ak_bind_conf" 2>/dev/null || true
+        done
+        sed -i '1i include "/etc/bind/akpanel-acme.key";' /etc/bind/named.conf
     fi
+    named-checkconf >> "$LOG_FILE" 2>&1 || true
     systemctl enable bind9 >> "$LOG_FILE" 2>&1 || systemctl enable named >> "$LOG_FILE" 2>&1 || true
     systemctl restart bind9 >> "$LOG_FILE" 2>&1 || systemctl restart named >> "$LOG_FILE" 2>&1 || true
+    akp_progress 60 "Web stack packages ready"
 }
 run_task "Installing Nginx, Multi-PHP & MariaDB" 35 60 task_step3
 
@@ -859,6 +957,7 @@ run_task "Installing Nginx, Multi-PHP & MariaDB" 35 60 task_step3
 # STEP 4: DB Users, Directories & phpMyAdmin SSO (75%)
 # ------------------------------------------------------------------------------
 task_step4() {
+    akp_progress 61 "Starting MariaDB"
     service mariadb start >> "$LOG_FILE" 2>&1 || service mysql start >> "$LOG_FILE" 2>&1 || systemctl start mariadb >> "$LOG_FILE" 2>&1 || true
     sleep 1
 
@@ -1215,20 +1314,11 @@ EOF
 
     chmod +x /usr/local/bin/akpanel 2>/dev/null || true
 
-    # Start Daemons
-    service apache2 start >> "$LOG_FILE" 2>&1 || systemctl start apache2 >> "$LOG_FILE" 2>&1 || true
-    service nginx start >> "$LOG_FILE" 2>&1 || systemctl start nginx >> "$LOG_FILE" 2>&1 || true
-    service varnish start >> "$LOG_FILE" 2>&1 || systemctl start varnish >> "$LOG_FILE" 2>&1 || true
-    service redis-server start >> "$LOG_FILE" 2>&1 || systemctl start redis-server >> "$LOG_FILE" 2>&1 || true
-
-    for v in $AKPANEL_PHP_VERSIONS; do
-        service "php${v}-fpm" start >> "$LOG_FILE" 2>&1 || systemctl start "php${v}-fpm" >> "$LOG_FILE" 2>&1 || true
-    done
-
+    akp_progress 86 "Applying web stack profile (${AKPANEL_WEB_PROFILE})"
     configure_nginx_php
-
     write_install_metadata
     apply_webserver_profile
+    akp_progress 88 "Stack daemons aligned to profile"
 
     # Setup Systemd Service
     if [ -d "/etc/systemd/system" ]; then
@@ -1271,7 +1361,7 @@ run_task "Deploying AKpanel binary & systemd" 75 90 task_step5
 # STEP 6: Firewall, MOTD & Verification Health Check (100%)
 # ------------------------------------------------------------------------------
 task_step6() {
-    # Configure Firewall
+    akp_progress 91 "Opening firewall ports"
     if command -v ufw &>/dev/null; then
         ufw allow 22/tcp comment "SSH Remote Access" >> "$LOG_FILE" 2>&1 || true
         ufw allow 2087/tcp comment "AKpanel Root WHM" >> "$LOG_FILE" 2>&1 || true
@@ -1295,6 +1385,7 @@ task_step6() {
         fi
     fi
 
+    akp_progress 93 "Writing SSH login banner"
     # SSH banner via profile.d only. Do not install into /etc/update-motd.d —
     # PAM MOTD is shown to every SSH user and would duplicate this banner.
     mkdir -p /etc/profile.d
@@ -1409,6 +1500,7 @@ MOTD_EOF
 
     chmod 644 /etc/profile.d/00-akpanel-motd.sh 2>/dev/null || true
 
+    akp_progress 94 "Waiting for panel on :2087"
     # Health Verification on Port 2087 & 2083
     local verified=false
     for ((i=1; i<=15; i++)); do
@@ -1424,8 +1516,10 @@ MOTD_EOF
         sleep 2
     fi
 
+    akp_progress 95 "Panel hostname, BIND zone, SSL"
     configure_panel_identity
     write_install_metadata
+    akp_progress 100 "Install complete"
 }
 run_task "Firewall, SSH MOTD & Health Verification" 90 100 task_step6
 

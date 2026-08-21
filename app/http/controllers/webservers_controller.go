@@ -58,8 +58,19 @@ func (r *WebServersController) Services(ctx http.Context) http.Response {
 
 // ControlService starts, stops, restarts, or reloads a service
 func (r *WebServersController) ControlService(ctx http.Context) http.Response {
-	serviceName := ctx.Request().Input("service")
-	action := ctx.Request().Input("action")
+	var req struct {
+		Service string `json:"service"`
+		Action  string `json:"action"`
+	}
+	_ = ctx.Request().Bind(&req)
+	serviceName := req.Service
+	if serviceName == "" {
+		serviceName = ctx.Request().Input("service")
+	}
+	action := req.Action
+	if action == "" {
+		action = ctx.Request().Input("action")
+	}
 
 	if serviceName == "" || action == "" {
 		return ctx.Response().Status(422).Json(http.Json{

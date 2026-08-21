@@ -166,6 +166,8 @@ func (s *CreateLinuxUserStep) Execute(ctx context.Context, plan *UserProvisionPl
 
 	// Harden /home — no listing of other users
 	_ = exec.Command("chmod", "711", paths.UserHomes).Run()
+	// Nginx/Apache (www-data) must read sites owned by user:user.
+	_ = exec.Command("usermod", "-aG", plan.Username, "www-data").Run()
 
 	limits := fmt.Sprintf("%s soft nproc %d\n%s hard nproc %d\n%s soft nofile %d\n%s hard nofile %d\n",
 		plan.Username, plan.ProcessLimit, plan.Username, plan.ProcessLimit*2,
@@ -245,6 +247,9 @@ $php = PHP_VERSION;
 	_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", plan.Username, plan.Username), plan.HomeDir).Run()
 	_ = exec.Command("chmod", "711", plan.HomeDir).Run()
 	_ = exec.Command("chmod", "755", plan.RootPath).Run()
+	_ = exec.Command("setfacl", "-m", "u:www-data:--x", plan.HomeDir).Run()
+	_ = exec.Command("setfacl", "-R", "-m", "u:www-data:r-X", plan.RootPath).Run()
+	_ = exec.Command("setfacl", "-d", "-m", "u:www-data:r-X", plan.RootPath).Run()
 	_ = services.ChrootHome(plan.Username)
 
 	progressLog(plan, s.Name(), 25, fmt.Sprintf("Directories created at %s", plan.RootPath))
@@ -284,11 +289,24 @@ php_admin_value[open_basedir] = %s/:/tmp/
 php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
 `, plan.Username, plan.Username, plan.Username, sock, plan.HomeDir)
 
+	_ = os.MkdirAll("/run/php", 0755)
 	_ = os.MkdirAll(filepath.Dir(s.poolFile), 0755)
 	if err := os.WriteFile(s.poolFile, []byte(pool), 0644); err != nil {
 		return err
 	}
-	_ = exec.Command("service", fmt.Sprintf("php%s-fpm", ver), "reload").Run()
+	svc := fmt.Sprintf("php%s-fpm", ver)
+	_ = exec.Command("systemctl", "restart", svc).Run()
+	_ = exec.Command("service", svc, "restart").Run()
+	for i := 0; i < 20; i++ {
+		if _, err := os.Stat(sock); err == nil {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	if _, err := os.Stat(sock); err != nil {
+		progressLog(plan, s.Name(), 32, fmt.Sprintf("PHP-FPM pool wrote %s (socket not up yet; vhost will use global FPM)", sock))
+		return nil
+	}
 	progressLog(plan, s.Name(), 32, fmt.Sprintf("PHP-FPM pool created (%s)", sock))
 	return nil
 }

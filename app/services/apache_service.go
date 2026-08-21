@@ -99,8 +99,7 @@ func (a *ApacheService) ReloadApache() error {
 		profile = strings.TrimSpace(string(b))
 	}
 	if !domain.ProfileNeedsApache(profile) {
-		_ = a.EnsureInternalBackend()
-		_ = exec.Command("service", "apache2", "stop").Run()
+		disableNow("apache2")
 		return nil
 	}
 	if output, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {

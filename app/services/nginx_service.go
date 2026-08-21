@@ -51,13 +51,41 @@ func readServerProfileID() string {
 }
 
 func (n *NginxService) getActivePHPSocket() string {
-	for _, ver := range []string{"8.3", "8.2", "8.1", "8.0", "7.4"} {
+	for _, ver := range []string{"8.4", "8.3", "8.2", "8.1", "8.0", "7.4"} {
 		sock := fmt.Sprintf("/run/php/php%s-fpm.sock", ver)
 		if _, err := os.Stat(sock); err == nil {
 			return fmt.Sprintf("unix:%s", sock)
 		}
 	}
-	return "unix:/run/php/php8.2-fpm.sock"
+	return "unix:/run/php/php8.3-fpm.sock"
+}
+
+func (n *NginxService) resolvePHPSocket(cfg WebsiteConfig) string {
+	try := func(path string) string {
+		path = strings.TrimPrefix(path, "unix:")
+		if path == "" {
+			return ""
+		}
+		if _, err := os.Stat(path); err == nil {
+			return "unix:" + path
+		}
+		return ""
+	}
+	if cfg.PHPSocket != "" {
+		if hit := try(cfg.PHPSocket); hit != "" {
+			return hit
+		}
+	}
+	ver := paths.DetectInstalledPHPVersion(cfg.PHPVersion)
+	if cfg.OwnerUsername != "" {
+		if hit := try(paths.PHPSocketForUser(ver, cfg.OwnerUsername)); hit != "" {
+			return hit
+		}
+	}
+	if hit := try(fmt.Sprintf("/run/php/php%s-fpm.sock", ver)); hit != "" {
+		return hit
+	}
+	return n.getActivePHPSocket()
 }
 
 func acmeChallengeLocation() string {
@@ -234,11 +262,20 @@ func (n *NginxService) CreateWebsite(cfg WebsiteConfig) error {
 
 	// 3. Set ownership (skip for client-owned sites — they use user:user + FPM pool)
 	if !cfg.SkipOwnershipFix {
-		exec.Command("chown", "-R", "www-data:www-data", filepath.Dir(cfg.RootPath)).Run()
+		if strings.HasPrefix(cfg.RootPath, paths.UserHomes+"/") {
+			if acc := linuxAccountFromPath(cfg.RootPath); acc != "" {
+				_ = exec.Command("chown", "-R", acc+":"+acc, cfg.RootPath).Run()
+			}
+		} else {
+			_ = exec.Command("chown", "-R", "www-data:www-data", filepath.Dir(cfg.RootPath)).Run()
+		}
 	}
 
 	// 4. Handle Server Engines — normalize first to avoid string mismatches
 	engine := domain.EngineFromPackage(cfg.ServerEngine)
+	if !domain.ProfileNeedsApache(readServerProfileID()) {
+		engine = domain.EngineNginx
+	}
 
 	switch engine {
 	case domain.EngineApache:
@@ -298,7 +335,7 @@ func (n *NginxService) UpdateWebsiteRoot(domain, rootPath string) error {
 		Domain:           domain,
 		RootPath:         rootPath,
 		ServerEngine:     "nginx",
-		PHPVersion:       "8.2",
+		PHPVersion:       paths.DetectInstalledPHPVersion(""),
 		SiteType:         "php",
 		SkipOwnershipFix: true,
 	}
@@ -455,17 +492,8 @@ func (n *NginxService) getSSLCertAndKey(domainName string) (string, string) {
 }
 
 func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) string {
-	if cfg.PHPVersion == "" {
-		cfg.PHPVersion = "8.2"
-	}
-
-	phpSocket := fmt.Sprintf("unix:/run/php/php%s-fpm.sock", cfg.PHPVersion)
-	if cfg.PHPSocket != "" {
-		phpSocket = cfg.PHPSocket
-		if !strings.HasPrefix(phpSocket, "unix:") {
-			phpSocket = "unix:" + phpSocket
-		}
-	}
+	cfg.PHPVersion = paths.DetectInstalledPHPVersion(cfg.PHPVersion)
+	phpSocket := n.resolvePHPSocket(cfg)
 	sslCert, sslKey := n.getSSLCertAndKey(cfg.Domain)
 
 	// Hybrid Mode: Nginx caches static assets and proxies PHP requests to Apache on port 8081

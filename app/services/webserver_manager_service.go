@@ -102,26 +102,26 @@ func (w *WebServerManagerService) GetProfiles() []ServerProfile {
 }
 
 func (w *WebServerManagerService) GetServicesState() []ServiceState {
-	services := []struct {
-		Name        string
-		DisplayName string
-		Port        string
-	}{
-		{"nginx", "Nginx Web Server", "80, 443"},
-		{"apache2", "Apache HTTP Server", "8081"},
-		{"varnish", "Varnish HTTP Accelerator", "6081"},
-		{"php8.2-fpm", "PHP 8.2 FPM Daemon", "unix socket"},
-		{"php8.3-fpm", "PHP 8.3 FPM Daemon", "unix socket"},
+	profile := currentServerProfile()
+	type row struct{ Name, DisplayName, Port string; Show bool }
+	rows := []row{
+		{"nginx", "Nginx Web Server", "80, 443", true},
+		{"apache2", "Apache HTTP Server", "8081", domain.ProfileNeedsApache(profile)},
+		{"varnish", "Varnish HTTP Accelerator", "6081", domain.ProfileNeedsVarnish(profile)},
+		{"php8.3-fpm", "PHP 8.3 FPM Daemon", "unix socket", systemdUnitInstalled("php8.3-fpm")},
+		{"php8.2-fpm", "PHP 8.2 FPM Daemon", "unix socket", systemdUnitInstalled("php8.2-fpm")},
+		{"bind9", "BIND 9 DNS", "53", systemdUnitInstalled("bind9") || systemdUnitInstalled("named")},
 	}
 
 	var states []ServiceState
-	for _, s := range services {
-		cmd := exec.Command("service", s.Name, "status")
-		isRunning := (cmd.Run() == nil)
+	for _, s := range rows {
+		if !s.Show {
+			continue
+		}
 		states = append(states, ServiceState{
 			Name:        s.Name,
 			DisplayName: s.DisplayName,
-			IsRunning:   isRunning,
+			IsRunning:   systemdIsActive(resolveServiceUnits(s.Name)...),
 			Uptime:      "Active",
 			Port:        s.Port,
 		})
@@ -134,9 +134,7 @@ func (w *WebServerManagerService) ControlService(serviceName, action string) err
 	if !validActions[action] {
 		return fmt.Errorf("invalid action '%s'", action)
 	}
-
-	cmd := exec.Command("service", serviceName, action)
-	return cmd.Run()
+	return controlSystemdUnit(serviceName, action)
 }
 
 func (w *WebServerManagerService) SwitchGlobalProfile(profileID string) error {
@@ -328,18 +326,17 @@ func (w *WebServerManagerService) rebuildAllVhostsForProfile(profileID string) (
 func (w *WebServerManagerService) reloadServicesForProfile(profileID string) error {
 	switch profileID {
 	case domain.ProfileNginxPHPFPM:
-		_ = exec.Command("service", "apache2", "stop").Run()
-		_ = exec.Command("service", "varnish", "stop").Run()
+		disableNow("apache2", "varnish")
 	case domain.ProfileApachePHPFPM, domain.ProfileHybridNginxApache:
-		_ = exec.Command("service", "varnish", "stop").Run()
-		_ = exec.Command("service", "apache2", "start").Run()
+		disableNow("varnish")
+		enableNow("apache2")
 	case domain.ProfileVarnishNginxApache:
-		_ = exec.Command("service", "apache2", "start").Run()
-		_ = exec.Command("service", "varnish", "restart").Run()
+		enableNow("apache2", "varnish")
 	case domain.ProfileVarnishNginxPHPFPM:
-		_ = exec.Command("service", "apache2", "stop").Run()
-		_ = exec.Command("service", "varnish", "restart").Run()
+		disableNow("apache2")
+		enableNow("varnish")
 	}
+	enableNow("nginx")
 
 	if out, err := exec.Command("nginx", "-t").CombinedOutput(); err != nil {
 		return fmt.Errorf("nginx -t failed: %s", strings.TrimSpace(string(out)))

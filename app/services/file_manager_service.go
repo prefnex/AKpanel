@@ -192,6 +192,46 @@ func (f *FileManagerService) ReadFile(filePath string) (string, error) {
 	return string(data), nil
 }
 
+func linuxAccountFromPath(p string) string {
+	clean := filepath.Clean(p)
+	home := filepath.Clean(paths.UserHomes)
+	rel, err := filepath.Rel(home, clean)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) == 0 || parts[0] == "." || parts[0] == "" {
+		return ""
+	}
+	return parts[0]
+}
+
+func chownLike(src, dst string) {
+	info, err := os.Stat(src)
+	if err != nil {
+		info, err = os.Stat(filepath.Dir(src))
+		if err != nil {
+			return
+		}
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return
+	}
+	_ = os.Chown(dst, int(st.Uid), int(st.Gid))
+	if !info.IsDir() {
+		_ = os.Chmod(dst, info.Mode().Perm())
+	}
+}
+
+func chownToParentOrAccount(path string) {
+	if acc := linuxAccountFromPath(path); acc != "" {
+		_ = exec.Command("chown", acc+":"+acc, path).Run()
+		return
+	}
+	chownLike(filepath.Dir(path), path)
+}
+
 // WriteFile saves text content and automatically creates a .bak snapshot
 func (f *FileManagerService) WriteFile(filePath, content string) error {
 	cleanPath, err := f.ValidateAdminPath(filePath)
@@ -199,13 +239,34 @@ func (f *FileManagerService) WriteFile(filePath, content string) error {
 		return err
 	}
 
-	// Create a .bak snapshot if file already exists
-	if _, err := os.Stat(cleanPath); err == nil {
+	mode := os.FileMode(0644)
+	var uid, gid int = -1, -1
+	if info, err := os.Stat(cleanPath); err == nil {
+		mode = info.Mode().Perm()
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			uid, gid = int(st.Uid), int(st.Gid)
+		}
 		bakPath := fmt.Sprintf("%s.bak", cleanPath)
-		_ = copyFile(cleanPath, bakPath)
+		if copyErr := copyFile(cleanPath, bakPath); copyErr == nil {
+			if uid >= 0 {
+				_ = os.Chown(bakPath, uid, gid)
+				_ = os.Chmod(bakPath, mode)
+			} else {
+				chownToParentOrAccount(bakPath)
+			}
+		}
 	}
 
-	return os.WriteFile(cleanPath, []byte(content), 0644)
+	if err := os.WriteFile(cleanPath, []byte(content), mode); err != nil {
+		return err
+	}
+	if uid >= 0 {
+		_ = os.Chown(cleanPath, uid, gid)
+		_ = os.Chmod(cleanPath, mode)
+	} else {
+		chownToParentOrAccount(cleanPath)
+	}
+	return nil
 }
 
 // CreateItem creates a new file or directory
@@ -223,6 +284,7 @@ func (f *FileManagerService) CreateItem(itemPath string, isDir bool) error {
 		return err
 	}
 	file.Close()
+	chownToParentOrAccount(cleanPath)
 	return nil
 }
 
@@ -484,13 +546,18 @@ func (f *FileManagerService) ChangePermissions(targetPath, mode, owner, group st
 	return nil
 }
 
-// FixPermissions resets web permissions to www-data:www-data (755/644)
+// FixPermissions resets web tree ownership. Account homes stay user:user
+// so PHP-FPM/nginx can serve sites without rewriting files to www-data.
 func (f *FileManagerService) FixPermissions(targetPath string) error {
 	if targetPath == "" {
 		targetPath = f.defaultDir
 	}
 	cleanPath := filepath.Clean(targetPath)
-	_ = exec.Command("chown", "-R", "www-data:www-data", cleanPath).Run()
+	owner := "www-data:www-data"
+	if acc := linuxAccountFromPath(cleanPath); acc != "" {
+		owner = acc + ":" + acc
+	}
+	_ = exec.Command("chown", "-R", owner, cleanPath).Run()
 	_ = exec.Command("find", cleanPath, "-type", "d", "-exec", "chmod", "755", "{}", "+").Run()
 	_ = exec.Command("find", cleanPath, "-type", "f", "-exec", "chmod", "644", "{}", "+").Run()
 	return nil
@@ -510,7 +577,12 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 
 	_, err = io.Copy(out, in)
-	return err
+	if err != nil {
+		return err
+	}
+	_ = out.Close()
+	chownLike(src, dst)
+	return nil
 }
 
 func formatHumanSize(bytes int64, isDir bool) string {

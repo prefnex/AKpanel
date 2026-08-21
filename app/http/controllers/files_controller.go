@@ -444,7 +444,7 @@ func (r *FilesController) FixPermissions(ctx http.Context) http.Response {
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": "Permissions fixed to www-data:www-data (755/644) successfully",
+		"message": "Permissions repaired (755/644; account homes stay user:user)",
 	})
 }
 

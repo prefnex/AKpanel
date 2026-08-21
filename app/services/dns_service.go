@@ -885,9 +885,9 @@ func (s *DNSService) applyBindOptionsConfig(opts BindServerOptions) {
 		}
 	}
 
-	recursionStr := "no"
+	recursionBlock := "recursion no;"
 	if opts.Recursion {
-		recursionStr = "yes"
+		recursionBlock = "recursion yes;\n    allow-recursion { localhost; 127.0.0.1/32; };"
 	}
 
 	namedOptionsContent := fmt.Sprintf(`options {
@@ -896,13 +896,10 @@ func (s *DNSService) applyBindOptionsConfig(opts BindServerOptions) {
     listen-on port %d { any; };
     listen-on-v6 { any; };
 
-    // Allow authoritative queries from the public Internet
     allow-query { any; };
     allow-query-cache { localhost; 127.0.0.1/32; };
 
-    // Security & Recursion Lockdown
-    recursion %s;
-    allow-recursion { localhost; 127.0.0.1/32; };
+    %s
     allow-transfer { %s; };
 
     forwarders {
@@ -912,7 +909,7 @@ func (s *DNSService) applyBindOptionsConfig(opts BindServerOptions) {
     auth-nxdomain no;
     max-cache-size %dM;
 };
-`, opts.ListenPort, recursionStr, opts.AllowTransfer, forwardersStr, opts.MaxCacheSizeMB)
+`, opts.ListenPort, recursionBlock, opts.AllowTransfer, forwardersStr, opts.MaxCacheSizeMB)
 
 	_ = os.WriteFile(optionsFile, []byte(namedOptionsContent), 0644)
 	_ = exec.Command("rndc", "reconfig").Run()

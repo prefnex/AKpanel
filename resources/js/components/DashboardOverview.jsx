@@ -411,7 +411,7 @@ export default function DashboardOverview({ stats, onRefresh, showToast }) {
               <h2 className="text-xs font-bold uppercase tracking-wider text-white">Stack Daemons</h2>
             </div>
             <span className="text-[10px] font-mono text-zinc-400">
-              {installedStack.filter(s => s.is_running).length} / {installedStack.length} Active
+              {installedStack.filter(s => s.is_running && s.in_profile !== false).length} / {installedStack.filter(s => s.in_profile !== false).length} Active
             </span>
           </div>
 

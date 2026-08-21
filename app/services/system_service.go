@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"goravel/app/domain"
 )
 
 type ProcessInfo struct {
@@ -59,6 +61,8 @@ type ServiceStatusItem struct {
 	IsRunning   bool   `json:"is_running"`
 	Port        string `json:"port"`
 	Category    string `json:"category"` // "web", "php", "database", "mail", "dns", "system"
+	Installed   bool   `json:"installed"`
+	InProfile   bool   `json:"in_profile"`
 }
 
 type ServerSystemInfo struct {
@@ -435,55 +439,106 @@ func (s *SystemService) countTotalProcesses() int {
 	return 1
 }
 
-// readInstalledStack dynamically checks services on the system categorized by stack
+func phpFpmUnitsInstalled() []struct{ Key, Name, Desc string } {
+	vers := []struct{ Key, Name, Desc string }{
+		{"php8.4-fpm", "PHP 8.4 FastCGI", "PHP 8.4 runtime process manager"},
+		{"php8.3-fpm", "PHP 8.3 FastCGI", "PHP 8.3 runtime process manager"},
+		{"php8.2-fpm", "PHP 8.2 FastCGI", "PHP 8.2 runtime process manager"},
+		{"php8.1-fpm", "PHP 8.1 FastCGI", "PHP 8.1 runtime process manager"},
+		{"php8.0-fpm", "PHP 8.0 FastCGI", "PHP 8.0 runtime process manager"},
+		{"php7.4-fpm", "PHP 7.4 FastCGI", "PHP 7.4 legacy runtime process manager"},
+	}
+	var out []struct{ Key, Name, Desc string }
+	for _, v := range vers {
+		if systemdUnitInstalled(v.Key) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func ufwIsActive() bool {
+	out, err := exec.Command("ufw", "status").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "Status: active")
+}
+
+func binaryInstalled(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
 func (s *SystemService) readInstalledStack(stats *SystemStats) []ServiceStatusItem {
-	realDefs := []struct{ Key, Name, Desc, Port, Pgrep, Category string }{
-		// 1. Web & Proxy Stack
-		{"nginx", "Nginx Reverse Proxy", "High-concurrency reverse proxy & TLS accelerator", "80 / 443", "nginx", "web"},
-		{"apache2", "Apache HTTP Server", "Dynamic backend engine & .htaccess handler", "8080 / 8443", "apache2", "web"},
-		{"varnish", "Varnish HTTP Cache", "In-memory dynamic content caching accelerator", "6081 / 6082", "varnishd", "web"},
+	profile := currentServerProfile()
+	needApache := domain.ProfileNeedsApache(profile)
+	needVarnish := domain.ProfileNeedsVarnish(profile)
 
-		// 2. PHP Runtimes
-		{"php8.3-fpm", "PHP 8.3 FastCGI", "Next-gen PHP runtime process manager", "Unix Socket", "php-fpm8.3", "php"},
-		{"php8.2-fpm", "PHP 8.2 FastCGI", "High-speed PHP runtime process manager", "Unix Socket", "php-fpm8.2", "php"},
-		{"php8.1-fpm", "PHP 8.1 FastCGI", "PHP 8.1 runtime process manager", "Unix Socket", "php-fpm8.1", "php"},
-		{"php8.0-fpm", "PHP 8.0 FastCGI", "PHP 8.0 runtime process manager", "Unix Socket", "php-fpm8.0", "php"},
-		{"php7.4-fpm", "PHP 7.4 FastCGI", "PHP 7.4 legacy runtime process manager", "Unix Socket", "php-fpm7.4", "php"},
+	type def struct {
+		Key, Name, Desc, Port, Category string
+		Units                           []string
+		Installed                       bool
+		InProfile                       bool
+		Running                         func() bool
+	}
 
-		// 3. Databases & Cache
-		{"mariadb", "MariaDB / MySQL Server", "Relational database server engine", "3306", "mariadbd", "database"},
-		{"redis", "Redis In-Memory Store", "High-speed in-memory cache & key-value broker", "6379", "redis-server", "database"},
-		{"postgresql", "PostgreSQL Server", "Advanced open-source relational database", "5432", "postgres", "database"},
-		{"mongodb", "MongoDB Document Server", "Distributed NoSQL document database", "27017", "mongod", "database"},
+	bindUnits := resolveServiceUnits("bind9")
+	bindInstalled := systemdUnitInstalled("bind9") || systemdUnitInstalled("named") || binaryInstalled("named")
+	pdnsInstalled := systemdUnitInstalled("pdns") || binaryInstalled("pdns_server")
 
-		// 4. Mail Stack
-		{"postfix", "Postfix Mail MTA", "High-security SMTP mail transfer agent", "25 / 587", "postfix", "mail"},
-		{"dovecot", "Dovecot IMAP/POP3", "Secure mailbox storage and delivery daemon", "143 / 993", "dovecot", "mail"},
-		{"opendkim", "OpenDKIM Signer", "Cryptographic DKIM email authentication", "8891", "opendkim", "mail"},
-		{"spamassassin", "SpamAssassin Filter", "Heuristic anti-spam email scanner", "783", "spamd", "mail"},
-
-		// 5. DNS Stack
-		{"named", "BIND 9 DNS Server", "Authoritative domain name resolution server", "53 (UDP/TCP)", "named", "dns"},
-		{"powerdns", "PowerDNS Server", "High-performance database-driven DNS daemon", "5300", "pdns", "dns"},
-
-		// 6. System & Security Stack
-		{"sshd", "OpenSSH Server", "Secure remote cryptographic shell daemon", "22", "sshd", "system"},
-		{"cron", "Cron Daemon", "System task and background job scheduler", "Background", "cron", "system"},
-		{"fail2ban", "Fail2ban Daemon", "Automated intrusion prevention & brute-force banner", "Netfilter", "fail2ban", "system"},
-		{"ufw", "UFW Firewall", "Stateful packet filtering netfilter firewall", "Kernel Netfilter", "ufw", "system"},
+	defs := []def{
+		{"nginx", "Nginx", "Public HTTP/HTTPS for this stack", "80 / 443", "web", []string{"nginx"}, systemdUnitInstalled("nginx"), true, nil},
+		{"apache2", "Apache HTTP Server", "Internal .htaccess backend (this stack only)", "127.0.0.1:8081", "web", []string{"apache2"}, systemdUnitInstalled("apache2"), needApache, nil},
+		{"varnish", "Varnish HTTP Cache", "In-memory cache (this stack only)", "6081", "web", []string{"varnish"}, systemdUnitInstalled("varnish"), needVarnish, nil},
+		{"mariadb", "MariaDB / MySQL", "Relational database", "3306", "database", resolveServiceUnits("mariadb"), systemdUnitInstalled("mariadb") || systemdUnitInstalled("mysql"), true, nil},
+		{"redis-server", "Redis", "In-memory cache", "6379", "database", resolveServiceUnits("redis"), systemdUnitInstalled("redis-server") || systemdUnitInstalled("redis"), true, nil},
+		{"postgresql", "PostgreSQL", "Relational database", "5432", "database", resolveServiceUnits("postgresql"), systemdUnitInstalled("postgresql"), true, nil},
+		{"mongodb", "MongoDB", "Document database", "27017", "database", []string{"mongod", "mongodb"}, systemdUnitInstalled("mongod") || systemdUnitInstalled("mongodb"), true, nil},
+		{"postfix", "Postfix Mail MTA", "SMTP (25 / 587 / 465)", "25 / 587 / 465", "mail", []string{"postfix"}, systemdUnitInstalled("postfix"), true, nil},
+		{"dovecot", "Dovecot IMAP/POP3", "Mailbox access", "143 / 993 / 110 / 995", "mail", []string{"dovecot"}, systemdUnitInstalled("dovecot"), true, nil},
+		{"opendkim", "OpenDKIM", "DKIM signing", "8891", "mail", []string{"opendkim"}, systemdUnitInstalled("opendkim"), true, nil},
+		{"spamassassin", "SpamAssassin", "Anti-spam filter", "783", "mail", []string{"spamassassin", "spamd"}, systemdUnitInstalled("spamassassin"), true, nil},
+		{"bind9", "BIND 9 DNS Server", "Authoritative DNS", "53 (UDP/TCP)", "dns", bindUnits, bindInstalled, true, nil},
+		{"pdns", "PowerDNS Server", "Optional DNS (not used by AKpanel)", "5300", "dns", resolveServiceUnits("pdns"), pdnsInstalled, false, nil},
+		{"ssh", "OpenSSH Server", "Remote shell", "22", "system", resolveServiceUnits("sshd"), systemdUnitInstalled("ssh") || systemdUnitInstalled("sshd"), true, nil},
+		{"cron", "Cron", "Scheduled jobs", "Background", "system", resolveServiceUnits("cron"), systemdUnitInstalled("cron") || systemdUnitInstalled("crond"), true, nil},
+		{"fail2ban", "Fail2ban", "Intrusion prevention", "Netfilter", "system", []string{"fail2ban"}, systemdUnitInstalled("fail2ban"), true, nil},
+		{"ufw", "UFW Firewall", "Host packet filter", "Netfilter", "system", []string{"ufw"}, systemdUnitInstalled("ufw") || binaryInstalled("ufw"), true, ufwIsActive},
 	}
 
 	var stack []ServiceStatusItem
-	for _, def := range realDefs {
-		running := s.isServiceRunning(def.Pgrep, def.Key)
-		stats.ServicesStatus[def.Key] = running
+	appendItem := func(d def) {
+		if !d.Installed {
+			return
+		}
+		if d.Category == "web" && !d.InProfile {
+			return
+		}
+		if d.Key == "pdns" {
+			return
+		}
+		running := false
+		if d.Running != nil {
+			running = d.Running()
+		} else {
+			running = systemdIsActive(d.Units...)
+		}
+		stats.ServicesStatus[d.Key] = running
 		stack = append(stack, ServiceStatusItem{
-			Name:        def.Key,
-			DisplayName: def.Name,
-			Description: def.Desc,
-			IsRunning:   running,
-			Port:        def.Port,
-			Category:    def.Category,
+			Name: d.Key, DisplayName: d.Name, Description: d.Desc,
+			IsRunning: running, Port: d.Port, Category: d.Category,
+			Installed: true, InProfile: d.InProfile,
+		})
+	}
+
+	for _, d := range defs {
+		appendItem(d)
+	}
+	for _, php := range phpFpmUnitsInstalled() {
+		appendItem(def{
+			Key: php.Key, Name: php.Name, Desc: php.Desc, Port: "Unix Socket", Category: "php",
+			Units: []string{php.Key}, Installed: true, InProfile: true,
 		})
 	}
 	return stack
