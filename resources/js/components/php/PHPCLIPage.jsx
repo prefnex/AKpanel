@@ -4,6 +4,7 @@ import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { usePHPRuntime } from './PHPRuntimeContext';
+import PHPSectionIntro from './PHPSectionIntro';
 
 export default function PHPCLIPage() {
   const {
@@ -13,6 +14,10 @@ export default function PHPCLIPage() {
 
   return (
     <div className="space-y-6">
+      <PHPSectionIntro
+        title="PHP CLI selector"
+        goal="Pick which PHP binary /usr/bin/php and SSH/cron use. This does not change website FPM pools — use PHP FPM selector for that."
+      />
       <Card className="bg-gradient-to-r from-indigo-950/40 to-[#121215] border-indigo-900/40 rounded-3xl p-5">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div>

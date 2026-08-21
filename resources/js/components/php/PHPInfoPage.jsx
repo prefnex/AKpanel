@@ -4,6 +4,7 @@ import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { usePHPRuntime } from './PHPRuntimeContext';
+import PHPSectionIntro from './PHPSectionIntro';
 
 export default function PHPInfoPage() {
   const { selectedVer, phpInfoSections, infoFilter, setInfoFilter, fetchPHPInfo } = usePHPRuntime();
@@ -12,6 +13,10 @@ export default function PHPInfoPage() {
 
   return (
     <div className="space-y-4">
+      <PHPSectionIntro
+        title="phpinfo()"
+        goal="Inspect compiled modules, INI paths, and environment for the selected PHP version — same data a site would see under that FPM pool."
+      />
       <div className="flex items-center justify-between">
         <div className="relative w-80">
           <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-3" />

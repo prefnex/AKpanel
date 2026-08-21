@@ -4,6 +4,7 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Input } from '../ui/input';
 import { usePHPRuntime } from './PHPRuntimeContext';
+import PHPSectionIntro from './PHPSectionIntro';
 
 export default function PHPExtensionsPage() {
   const {
@@ -13,6 +14,10 @@ export default function PHPExtensionsPage() {
 
   return (
     <div className="space-y-4">
+      <PHPSectionIntro
+        title="Extensions"
+        goal="Enable or install PHP modules (mysqli, gd, intl, redis, …) for the selected version. Changes apply after FPM restart."
+      />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="relative flex-1 max-w-sm">
           <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-3" />

@@ -119,6 +119,7 @@ func NewEmailService() *EmailService {
 		s.initDefaultEmails()
 		s.initDefaultAliases()
 		s.EnsureRoundcubeWebmail()
+		_ = GetMailAuthService().EnsureDovecotConfig()
 		emailServiceInstance = s
 	})
 	return emailServiceInstance
@@ -489,6 +490,10 @@ func (s *EmailService) CreateAccount(email, password string, quotaMB int) error 
 	list = append(list, newAcc)
 	_ = s.writeEmails(list)
 
+	if err := GetMailAuthService().SetMailboxPassword(email, password); err != nil {
+		return err
+	}
+
 	// Register in Postfix virtual mailbox
 	vmailFile := "/etc/postfix/vmailbox"
 	entry := fmt.Sprintf("%s %s/%s/Maildir/\n", email, domain, username)
@@ -545,6 +550,7 @@ func (s *EmailService) DeleteAccount(email string) error {
 
 	if mailDir != "" {
 		_ = os.RemoveAll(mailDir)
+		_ = GetMailAuthService().RemoveMailboxPassword(email)
 	}
 
 	return s.writeEmails(updated)
@@ -703,6 +709,8 @@ $config['enable_spellcheck'] = false;
 $config['auto_create_user'] = true;
 $config['force_https'] = false;
 $config['use_https'] = false;
+$config['request_path'] = '/roundcube';
+$config['login_autocomplete'] = 2;
 $config['log_dir'] = '/var/log/roundcube/';
 $config['temp_dir'] = '/var/lib/roundcube/temp/';
 `, dbPass, desKey)
@@ -779,4 +787,52 @@ Alias /roundcube %s
 `, rcRoot, phpSock)
 	_ = os.WriteFile("/etc/nginx/snippets/webmail.conf", []byte(nginxSnippet), 0644)
 	_ = exec.Command("bash", "-c", "nginx -t 2>/dev/null && (systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null)").Run()
+}
+
+type webmailSSORecord struct {
+	Email     string `json:"email"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// IssueWebmailSSOToken creates a one-time auto-login token for Roundcube.
+func (s *EmailService) IssueWebmailSSOToken(email string) (string, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	found := false
+	for _, acc := range s.ListAccounts("all") {
+		if acc.Email == email {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", fmt.Errorf("mailbox not found")
+	}
+	dir := "/var/lib/akpanel/webmail-sso"
+	_ = os.MkdirAll(dir, 0700)
+	token := randomAlnum(32)
+	rec := webmailSSORecord{Email: email, ExpiresAt: time.Now().Add(2 * time.Minute).Unix()}
+	bytes, _ := json.Marshal(rec)
+	if err := os.WriteFile(filepath.Join(dir, token+".json"), bytes, 0600); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+// ConsumeWebmailSSOToken returns mailbox email for a valid one-time token.
+func ConsumeWebmailSSOToken(token string) (string, error) {
+	token = strings.TrimSpace(token)
+	if token == "" || strings.ContainsAny(token, "/.\\") {
+		return "", fmt.Errorf("invalid token")
+	}
+	p := filepath.Join("/var/lib/akpanel/webmail-sso", token+".json")
+	b, err := os.ReadFile(p)
+	_ = os.Remove(p)
+	if err != nil {
+		return "", fmt.Errorf("token expired")
+	}
+	var rec webmailSSORecord
+	if json.Unmarshal(b, &rec) != nil || rec.Email == "" || rec.ExpiresAt < time.Now().Unix() {
+		return "", fmt.Errorf("token expired")
+	}
+	return rec.Email, nil
 }

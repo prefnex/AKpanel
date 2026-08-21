@@ -17,9 +17,11 @@ func NewEmailController() *EmailController {
 }
 
 type CreateEmailRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	QuotaMB  int    `json:"quota_mb"`
+	Email     string `json:"email"`
+	LocalPart string `json:"username"`
+	Domain    string `json:"domain"`
+	Password  string `json:"password"`
+	QuotaMB   int    `json:"quota_mb"`
 }
 
 type CreateAliasRequest struct {
@@ -57,6 +59,9 @@ func (c *EmailController) Store(ctx goravelhttp.Context) goravelhttp.Response {
 		})
 	}
 
+	if req.Email == "" && req.LocalPart != "" && req.Domain != "" {
+		req.Email = req.LocalPart + "@" + req.Domain
+	}
 	if req.Email == "" || req.Password == "" {
 		return ctx.Response().Status(400).Json(goravelhttp.Json{
 			"status":  "error",
@@ -300,6 +305,22 @@ func (c *EmailController) SecurityReport(ctx goravelhttp.Context) goravelhttp.Re
 func (c *EmailController) WebmailURL(ctx goravelhttp.Context) goravelhttp.Response {
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status":      "success",
-		"webmail_url": "/webmail",
+		"webmail_url": "/roundcube/",
+	})
+}
+
+// WebmailSSO issues a one-time auto-login URL for a mailbox.
+func (c *EmailController) WebmailSSO(ctx goravelhttp.Context) goravelhttp.Response {
+	email := ctx.Request().Query("email", "")
+	if email == "" {
+		email = ctx.Request().Input("email")
+	}
+	token, err := c.emailService.IssueWebmailSSOToken(email)
+	if err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{"status": "error", "message": err.Error()})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status": "success",
+		"url":    "/webmail/sso?token=" + token,
 	})
 }

@@ -44,7 +44,15 @@ func (m *MailAuthService) EnsureDovecotConfig() error {
 		_ = os.WriteFile(m.passwdFile, []byte(""), 0600)
 	}
 
-	conf := `passdb {
+	conf := `auth_master_user_separator = *
+
+passdb {
+  driver = passwd-file
+  args = scheme=SHA512-CRYPT username_format=%u /etc/dovecot/akpanel-master-users
+  master = yes
+}
+
+passdb {
   driver = passwd-file
   args = scheme=SHA512-CRYPT username_format=%u /etc/dovecot/akpanel-passwd
 }
@@ -53,6 +61,7 @@ userdb {
   args = uid=vmail gid=vmail home=/var/vmail/%d/%n
 }
 `
+	m.ensureMasterUserLocked()
 	if err := os.WriteFile(m.confFile, []byte(conf), 0644); err != nil {
 		return err
 	}
@@ -62,13 +71,30 @@ userdb {
 }
 
 func (m *MailAuthService) hashPassword(password string) (string, error) {
-	b, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		// fallback SHA512 crypt style prefix for dovecot
+	out, err := exec.Command("doveadm", "pw", "-s", "SHA512-CRYPT", "-p", password).Output()
+	if err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	b, berr := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if berr != nil {
 		h := sha512.Sum512([]byte(password))
 		return fmt.Sprintf("{SHA512}%x", h), nil
 	}
-	return string(b), nil
+	return "{BLF-CRYPT}" + string(b), nil
+}
+
+func (m *MailAuthService) ensureMasterUserLocked() {
+	secret := persistSecret("dovecot_master_pass", 24)
+	hash, err := m.hashPassword(secret)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile("/etc/dovecot/akpanel-master-users", []byte("akpanel-sso:"+hash+"\n"), 0600)
+}
+
+// MasterLoginIdentity returns Roundcube IMAP login using the Dovecot master user.
+func (m *MailAuthService) MasterLoginIdentity(email string) (user, pass string) {
+	return email + "*akpanel-sso", persistSecret("dovecot_master_pass", 24)
 }
 
 // SetMailboxPassword adds or updates a mailbox password in Dovecot passwd-file.

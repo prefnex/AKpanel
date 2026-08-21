@@ -5,6 +5,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { usePHPRuntime } from './PHPRuntimeContext';
+import PHPSectionIntro from './PHPSectionIntro';
 
 export default function PHPFPMPage() {
   const { selectedVer, fpmPool, setFpmPool, handleSaveFpmPool, fetchFpmPool } = usePHPRuntime();
@@ -12,6 +13,11 @@ export default function PHPFPMPage() {
   useEffect(() => { fetchFpmPool(selectedVer); }, [selectedVer]);
 
   return (
+    <div className="space-y-4">
+      <PHPSectionIntro
+        title="PHP FPM selector"
+        goal="Tune the selected PHP-FPM pool (workers, pm mode, request limits). New sites and per-user pools follow this version when it is the server default."
+      />
     <Card className="bg-[#121215] border-zinc-800/80 rounded-3xl p-6 shadow-sm max-w-2xl">
       <CardHeader className="p-0 pb-5 border-b border-zinc-800/80">
         <CardTitle className="text-base font-bold text-white">PHP {selectedVer} FPM Pool</CardTitle>
@@ -53,5 +59,6 @@ export default function PHPFPMPage() {
         </div>
       </form>
     </Card>
+    </div>
   );
 }

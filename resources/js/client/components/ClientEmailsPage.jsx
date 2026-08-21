@@ -15,7 +15,9 @@ import {
   Smartphone,
   Server,
   Settings,
-  Download
+  Download,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -42,7 +44,19 @@ export default function ClientEmailsPage({ showToast }) {
   const [emailUser, setEmailUser] = useState('');
   const [selectedDomain, setSelectedDomain] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [quota, setQuota] = useState(1024);
+  const [isPassOpen, setIsPassOpen] = useState(false);
+  const [passTarget, setPassTarget] = useState('');
+  const [newMailboxPass, setNewMailboxPass] = useState('');
+  const [showNewPass, setShowNewPass] = useState(false);
+
+  const generatePassword = (setter) => {
+    const chars = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%';
+    let pass = '';
+    for (let i = 0; i < 14; i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
+    setter(pass);
+  };
 
   const fetchEmails = async () => {
     setLoading(true);
@@ -136,6 +150,39 @@ export default function ClientEmailsPage({ showToast }) {
     setIsConfigOpen(true);
   };
 
+  const openWebmail = async (email) => {
+    try {
+      const token = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
+      const res = await fetch(`/api/client/emails/webmail-sso?email=${encodeURIComponent(email)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message || 'Could not open webmail');
+      window.open(json.url, '_blank');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    try {
+      const token = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
+      const res = await fetch('/api/client/emails/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ email: passTarget, new_password: newMailboxPass }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message);
+      showToast('Mailbox password updated');
+      setIsPassOpen(false);
+      setNewMailboxPass('');
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       {/* Header */}
@@ -153,16 +200,15 @@ export default function ClientEmailsPage({ showToast }) {
         </div>
 
         <div className="flex items-center gap-3">
-          <a
-            href={`http://${window.location.hostname}/webmail/`}
-            target="_blank"
-            rel="noreferrer"
+          <button
+            type="button"
+            onClick={() => (emails[0] ? openWebmail(emails[0].email) : window.open(`${window.location.origin}/roundcube/`, '_blank'))}
             className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 hover:bg-zinc-800 text-zinc-300 text-xs font-bold h-10 px-4 rounded-xl transition"
           >
             <Mail className="w-4 h-4 text-purple-400" />
             <span>Open Webmail</span>
             <ExternalLink className="w-3 h-3 opacity-60" />
-          </a>
+          </button>
 
           <Button
             onClick={() => setIsAddOpen(true)}
@@ -204,6 +250,18 @@ export default function ClientEmailsPage({ showToast }) {
                   </Badge>
 
                   <button
+                    type="button"
+                    onClick={() => {
+                      setPassTarget(m.email);
+                      setNewMailboxPass('');
+                      setIsPassOpen(true);
+                    }}
+                    className="p-1 text-zinc-500 hover:text-white transition"
+                    title="Change password"
+                  >
+                    <Key className="w-3.5 h-3.5" />
+                  </button>
+                  <button
                     onClick={() => handleDeleteEmail(m.email)}
                     className="p-1 text-zinc-500 hover:text-rose-400 transition"
                     title="Delete Mailbox"
@@ -222,15 +280,14 @@ export default function ClientEmailsPage({ showToast }) {
                   <Smartphone className="w-3.5 h-3.5" />
                   <span>Mail Client Setup</span>
                 </button>
-                <a
-                  href={`http://${window.location.hostname}/webmail/`}
-                  target="_blank"
-                  rel="noreferrer"
+                <button
+                  type="button"
+                  onClick={() => openWebmail(m.email)}
                   className="text-purple-400 hover:underline text-[11px] font-semibold flex items-center gap-1"
                 >
                   <span>Launch Webmail</span>
                   <ExternalLink className="w-2.5 h-2.5" />
-                </a>
+                </button>
               </div>
             </Card>
           ))
@@ -355,15 +412,23 @@ export default function ClientEmailsPage({ showToast }) {
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-zinc-300 block mb-1">Password</label>
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Strong mailbox password"
-                className="bg-zinc-950 border-zinc-800 text-xs rounded-xl font-mono h-10"
-                required
-              />
+              <div className="flex justify-between items-center mb-1">
+                <label className="text-xs font-semibold text-zinc-300">Password</label>
+                <button type="button" onClick={() => generatePassword(setPassword)} className="text-[11px] text-purple-400 font-semibold">Generate</button>
+              </div>
+              <div className="relative">
+                <Input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Strong mailbox password"
+                  className="bg-zinc-950 border-zinc-800 text-xs rounded-xl font-mono h-10 pr-10"
+                  required
+                />
+                <button type="button" onClick={() => setShowPassword((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500">
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
             <div>
@@ -384,6 +449,40 @@ export default function ClientEmailsPage({ showToast }) {
               <Button type="submit" className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-5 rounded-xl shadow-lg shadow-purple-600/20">
                 Provision Mailbox
               </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isPassOpen} onOpenChange={setIsPassOpen}>
+        <DialogContent className="bg-[#0f1015] border-zinc-800 text-white max-w-md rounded-2xl p-6">
+          <DialogHeader>
+            <DialogTitle className="text-base font-bold flex items-center gap-2">
+              <Key className="w-5 h-5 text-purple-400" />
+              Change mailbox password
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleChangePassword} className="space-y-3 mt-2">
+            <p className="text-xs text-zinc-400 font-mono">{passTarget}</p>
+            <div className="flex justify-end">
+              <button type="button" onClick={() => generatePassword(setNewMailboxPass)} className="text-[11px] text-purple-400 font-semibold">Generate</button>
+            </div>
+            <div className="relative">
+              <Input
+                type={showNewPass ? 'text' : 'password'}
+                value={newMailboxPass}
+                onChange={(e) => setNewMailboxPass(e.target.value)}
+                className="bg-zinc-950 border-zinc-800 text-xs rounded-xl font-mono h-10 pr-10"
+                required
+                minLength={6}
+              />
+              <button type="button" onClick={() => setShowNewPass((v) => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500">
+                {showNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="ghost" onClick={() => setIsPassOpen(false)} className="rounded-xl text-xs">Cancel</Button>
+              <Button type="submit" className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs rounded-xl">Save password</Button>
             </DialogFooter>
           </form>
         </DialogContent>

@@ -147,7 +147,7 @@ func (s *CreateLinuxUserStep) Name() string { return "CreateLinuxUser" }
 func (s *CreateLinuxUserStep) Execute(ctx context.Context, plan *UserProvisionPlan) error {
 	shell := "/usr/sbin/nologin"
 	if plan.ShellAccess {
-		shell = "/bin/bash"
+		shell = "/usr/local/bin/akpanel-ssh-shell"
 	}
 
 	_ = exec.Command("groupadd", "-f", plan.Username).Run()
@@ -168,6 +168,7 @@ func (s *CreateLinuxUserStep) Execute(ctx context.Context, plan *UserProvisionPl
 	_ = exec.Command("chmod", "711", paths.UserHomes).Run()
 	// Nginx/Apache (www-data) must read sites owned by user:user.
 	_ = exec.Command("usermod", "-aG", plan.Username, "www-data").Run()
+	services.ApplySSHJailToUser(plan.Username, plan.ShellAccess)
 
 	limits := fmt.Sprintf("%s soft nproc %d\n%s hard nproc %d\n%s soft nofile %d\n%s hard nofile %d\n",
 		plan.Username, plan.ProcessLimit, plan.Username, plan.ProcessLimit*2,

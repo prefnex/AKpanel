@@ -4,11 +4,17 @@ import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { usePHPRuntime } from './PHPRuntimeContext';
+import PHPSectionIntro from './PHPSectionIntro';
 
 export default function PHPDefaultPage() {
   const { phpDetails, selectedVer, setSelectedVer, setPreviewItem, navigate } = usePHPRuntime();
 
   return (
+    <div className="space-y-4">
+      <PHPSectionIntro
+        title="Default version"
+        goal="Choose the PHP version assigned to new websites and the system fallback FPM socket when a site has no per-user pool."
+      />
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       {phpDetails.map(ver => (
         <Card
@@ -58,6 +64,7 @@ export default function PHPDefaultPage() {
           </div>
         </Card>
       ))}
+    </div>
     </div>
   );
 }

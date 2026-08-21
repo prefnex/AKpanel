@@ -33,7 +33,7 @@ export default function PHPPageShell() {
               </Badge>
             </div>
             <p className="text-xs text-zinc-400 mt-0.5">
-              Each sidebar item is its own React page under /php.
+              PHP CLI selector, FPM selector, default version, extensions, and php.ini — each as its own page.
             </p>
           </div>
         </div>

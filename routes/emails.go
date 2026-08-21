@@ -21,5 +21,6 @@ func registerEmailsRoutes(emailController *controllers.EmailController) {
 	facades.Route().Get("/api/emails/queue", emailController.Queue)
 	facades.Route().Post("/api/emails/queue/flush", emailController.FlushQueue)
 	facades.Route().Post("/api/emails/queue/delete", emailController.DeleteQueue)
+	facades.Route().Get("/api/emails/webmail-sso", emailController.WebmailSSO)
 	facades.Route().Get("/api/emails/security-report", emailController.SecurityReport)
 }

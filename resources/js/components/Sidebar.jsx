@@ -381,7 +381,7 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                   </button>
 
                   <button
-                    onClick={() => window.open(`http://${window.location.hostname}/webmail/`, '_blank')}
+                    onClick={() => window.open(`${window.location.origin}/roundcube/`, '_blank')}
                     className="w-full flex items-center justify-between px-2 py-1.5 rounded-lg text-xs text-emerald-400 hover:text-emerald-300 hover:bg-zinc-900/40 transition"
                   >
                     <div className="flex items-center gap-2">
@@ -566,14 +566,14 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
               {openSections.php && (
                 <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
                   {[
-                    ['/php/cli', 'CLI versions', PackageCheck],
-                    ['/php/fpm', 'PHP-FPM pools', Server],
-                    ['/php/default', 'Default PHP', Check],
-                    ['/php/short-info', 'Short info', Activity],
+                    ['/php/cli', 'PHP CLI selector', PackageCheck],
+                    ['/php/fpm', 'PHP FPM selector', Server],
+                    ['/php/default', 'Default version', Check],
+                    ['/php/short-info', 'Runtime overview', Activity],
                     ['/php/info', 'phpinfo()', Info],
                     ['/php/extensions', 'Extensions', Layers],
-                    ['/php/addons', 'Addons', Zap],
-                    ['/php/ini', 'php.ini', Sliders],
+                    ['/php/addons', 'System addons', Zap],
+                    ['/php/ini', 'php.ini editor', Sliders],
                     ['/php/ini-raw', 'Raw php.ini', FileCode],
                   ].map(([href, label, Icon]) => (
                     <button

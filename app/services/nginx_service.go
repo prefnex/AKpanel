@@ -305,6 +305,9 @@ func (n *NginxService) CreateWebsite(cfg WebsiteConfig) error {
 
 func (n *NginxService) createNginxVhost(cfg WebsiteConfig, isHybrid bool) error {
 	vhostContent := n.generateVhostConfig(cfg, isHybrid)
+	if hold := NginxAccountHoldSnippet(cfg.OwnerUsername); hold != "" {
+		vhostContent = strings.Replace(vhostContent, "server {", "server {\n"+hold, 1)
+	}
 	availableFile := filepath.Join(n.sitesAvailablePath, fmt.Sprintf("%s.conf", cfg.Domain))
 	enabledFile := filepath.Join(n.sitesEnabledPath, fmt.Sprintf("%s.conf", cfg.Domain))
 
@@ -826,6 +829,56 @@ server {
 	return n.ReloadNginx()
 }
 
+// EnsurePhpMyAdminListener serves phpMyAdmin on 127.0.0.1:8085 for the panel reverse proxy.
+func (n *NginxService) EnsurePhpMyAdminListener() error {
+	pmaRoot := "/usr/share/phpmyadmin"
+	if _, err := os.Stat(pmaRoot); err != nil {
+		pmaRoot = "/usr/share/phpMyAdmin"
+	}
+	_ = os.MkdirAll(pmaRoot, 0755)
+	sock := n.phpFastcgiPass()
+	conf := fmt.Sprintf(`# AKpanel internal phpMyAdmin (panel /phpmyadmin reverse proxy)
+server {
+    listen 127.0.0.1:8085;
+    server_name _;
+    root %s;
+    index index.php index.html;
+
+    rewrite ^/phpmyadmin(/.*)$ $1 last;
+    rewrite ^/phpmyadmin$ /index.php last;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+%s
+    location ~ /\.(ht|git) {
+        deny all;
+    }
+}
+`, pmaRoot, n.phpFastcgiLocation(sock))
+
+	availablePath := filepath.Join(n.sitesAvailablePath, "akpanel-pma-internal.conf")
+	if existing, err := os.ReadFile(availablePath); err == nil && string(existing) == conf {
+		enabledPath := filepath.Join(n.sitesEnabledPath, "akpanel-pma-internal.conf")
+		if _, err := os.Lstat(enabledPath); err == nil {
+			return nil
+		}
+	}
+	if err := os.WriteFile(availablePath, []byte(conf), 0644); err != nil {
+		return err
+	}
+	enabledPath := filepath.Join(n.sitesEnabledPath, "akpanel-pma-internal.conf")
+	_ = os.Remove(enabledPath)
+	if err := os.Symlink(availablePath, enabledPath); err != nil {
+		return err
+	}
+	if err := n.TestConfig(); err != nil {
+		return err
+	}
+	return n.ReloadNginx()
+}
+
 // CreateWebmailVhost serves Roundcube over HTTP/HTTPS for webmail.{domain}.
 func (n *NginxService) CreateWebmailVhost(host string) error {
 	sslCert, sslKey := n.getSSLCertAndKey(host)
@@ -893,6 +946,7 @@ func (n *NginxService) CreateClientPanelVhost(host string) error {
 // RepairPanelServiceVhosts rewrites existing webmail.* / cpanel.* vhosts to the current templates.
 func (n *NginxService) RepairPanelServiceVhosts() {
 	_ = n.EnsureRoundcubeListener()
+	_ = n.EnsurePhpMyAdminListener()
 	entries, err := os.ReadDir(n.sitesAvailablePath)
 	if err != nil {
 		return

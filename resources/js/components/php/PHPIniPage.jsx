@@ -4,11 +4,17 @@ import { Card, CardHeader, CardTitle, CardDescription } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { usePHPRuntime } from './PHPRuntimeContext';
+import PHPSectionIntro from './PHPSectionIntro';
 
 export default function PHPIniPage() {
   const { selectedVer, iniForm, setIniForm, handleSaveSimpleIni } = usePHPRuntime();
 
   return (
+    <div className="space-y-4">
+      <PHPSectionIntro
+        title="php.ini editor"
+        goal="Set memory, upload, and execution limits for the selected PHP version without editing the raw file."
+      />
     <Card className="bg-[#121215] border-zinc-800/80 rounded-3xl p-6 shadow-sm max-w-2xl">
       <CardHeader className="p-0 pb-5 border-b border-zinc-800/80">
         <CardTitle className="text-base font-bold text-white">PHP {selectedVer} php.ini</CardTitle>
@@ -41,5 +47,6 @@ export default function PHPIniPage() {
         </div>
       </form>
     </Card>
+    </div>
   );
 }

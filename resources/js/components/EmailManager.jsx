@@ -37,7 +37,9 @@ import {
   Globe,
   ListTree,
   Cpu,
-  FileText
+  FileText,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
@@ -113,7 +115,9 @@ export default function EmailManager({ showToast }) {
   // Forms
   const [targetEmail, setTargetEmail] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [formData, setFormData] = useState({ email: '', password: '', quota_mb: 1024 });
+  const [formData, setFormData] = useState({ username: '', domain: '', password: '', quota_mb: 1024 });
+  const [showCreatePassword, setShowCreatePassword] = useState(false);
+  const [allDomains, setAllDomains] = useState([]);
   const [aliasData, setAliasData] = useState({ source: '', destination: '' });
   const [autoRespData, setAutoRespData] = useState({ email: '', subject: 'Out of Office / Automated Reply', body: 'I am currently away and will respond to your email as soon as possible.', start_date: '2026-08-19', end_date: '2026-09-19' });
 
@@ -202,12 +206,29 @@ export default function EmailManager({ showToast }) {
     }
   };
 
+  const fetchDomains = async () => {
+    try {
+      const res = await fetch('/api/websites');
+      if (res.ok) {
+        const json = await res.json();
+        const list = (json.data || []).map((w) => w.domain).filter(Boolean);
+        setAllDomains(list);
+        if (list.length > 0) {
+          setFormData((prev) => ({ ...prev, domain: prev.domain || list[0] }));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   useEffect(() => {
     fetchEmails();
     fetchAliases();
     fetchQueue();
     fetchServicesStatus();
     fetchMailConfig();
+    fetchDomains();
   }, []);
 
   useEffect(() => {
@@ -222,13 +243,19 @@ export default function EmailManager({ showToast }) {
       const res = await fetch('/api/emails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          username: formData.username,
+          domain: formData.domain,
+          email: `${formData.username}@${formData.domain}`,
+          password: formData.password,
+          quota_mb: formData.quota_mb,
+        }),
       });
       const data = await res.json();
       if (res.ok) {
         showToast('Mailbox created successfully!');
         setIsCreateOpen(false);
-        setFormData({ email: '', password: '', quota_mb: 1024 });
+        setFormData({ username: '', domain: allDomains[0] || '', password: '', quota_mb: 1024 });
         fetchEmails();
       } else {
         showToast(data.message || 'Failed to create mailbox', 'error');
@@ -478,7 +505,7 @@ export default function EmailManager({ showToast }) {
           </Button>
 
           <button
-            onClick={() => window.open(`http://${window.location.hostname}/webmail/`, '_blank')}
+            onClick={() => window.open(`${window.location.origin}/roundcube/`, '_blank')}
             className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition"
           >
             <Inbox className="w-3.5 h-3.5" />
@@ -581,6 +608,24 @@ export default function EmailManager({ showToast }) {
                           </td>
                           <td className="py-3.5 px-4 text-zinc-400 font-mono">{e.created_at || '2026-08-18'}</td>
                           <td className="py-3.5 px-4 text-right space-x-1.5">
+                            <Button
+                              onClick={async () => {
+                                try {
+                                  const res = await fetch(`/api/emails/webmail-sso?email=${encodeURIComponent(e.email)}`);
+                                  const json = await res.json();
+                                  if (!res.ok) throw new Error(json.message || 'SSO failed');
+                                  window.open(json.url, '_blank');
+                                } catch (err) {
+                                  showToast(err.message, 'error');
+                                }
+                              }}
+                              variant="ghost"
+                              size="sm"
+                              className="text-emerald-400 hover:text-emerald-300 hover:bg-zinc-800 p-1.5 h-auto rounded-lg"
+                              title="Open webmail (auto login)"
+                            >
+                              <Inbox className="w-3.5 h-3.5" />
+                            </Button>
                             <Button
                               onClick={() => {
                                 setActiveConfigMailbox(e);
@@ -1184,16 +1229,31 @@ export default function EmailManager({ showToast }) {
           </DialogHeader>
 
           <form onSubmit={handleCreate} className="space-y-4 mt-2">
-            <div>
-              <label className="text-xs font-semibold text-zinc-300 block mb-1">Email Address</label>
-              <Input
-                type="email"
-                value={formData.email}
-                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                placeholder="contact@yourdomain.com"
-                className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
-                required
-              />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Username</label>
+                <Input
+                  value={formData.username}
+                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                  placeholder="info"
+                  className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
+                  required
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-zinc-300 block mb-1">Domain</label>
+                <select
+                  value={formData.domain}
+                  onChange={(e) => setFormData({ ...formData, domain: e.target.value })}
+                  className="w-full h-10 bg-zinc-900 border border-zinc-800 text-xs rounded-xl font-mono text-white px-3"
+                  required
+                >
+                  {allDomains.length === 0 && <option value="">No domains</option>}
+                  {allDomains.map((d) => (
+                    <option key={d} value={d}>@{d}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div>
@@ -1204,16 +1264,25 @@ export default function EmailManager({ showToast }) {
                   onClick={generatePassword}
                   className="text-[11px] text-sky-400 hover:text-sky-300 font-semibold"
                 >
-                  Generate Strong
+                  Generate
                 </button>
               </div>
-              <Input
-                type="text"
-                value={formData.password}
-                onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
-                required
-              />
+              <div className="relative">
+                <Input
+                  type={showCreatePassword ? 'text' : 'password'}
+                  value={formData.password}
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                  className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono pr-10"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowCreatePassword((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+                >
+                  {showCreatePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
             <div>

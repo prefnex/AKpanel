@@ -76,6 +76,8 @@ func NewUserAccountService() *UserAccountService {
 			nginxService:    NewNginxService(),
 		}
 		s.initDefaultUsers()
+		EnsureSSHJail()
+		EnsureAccountStatusPage()
 		userAccountServiceInstance = s
 	})
 	return userAccountServiceInstance
@@ -166,6 +168,8 @@ func (s *UserAccountService) ListUsers() []UserAccount {
 				}
 			}
 		}
+
+		RefreshAccountHold(*u)
 	}
 
 	_ = s.writeUsers(list)
@@ -269,7 +273,16 @@ func (s *UserAccountService) SuspendUser(username, reason string) error {
 	_ = exec.Command("usermod", "-L", username).Run()
 	_ = exec.Command("usermod", "-s", "/usr/sbin/nologin", username).Run()
 
-	return s.writeUsers(list)
+	if err := s.writeUsers(list); err != nil {
+		return err
+	}
+	for _, u := range list {
+		if u.Username == username {
+			RefreshAccountHold(u)
+			break
+		}
+	}
+	return nil
 }
 
 // UnsuspendUser unlocks user account
@@ -295,11 +308,18 @@ func (s *UserAccountService) UnsuspendUser(username string) error {
 
 	// Unlock Linux OS User
 	_ = exec.Command("usermod", "-U", username).Run()
-	if userShell {
-		_ = exec.Command("usermod", "-s", "/bin/bash", username).Run()
-	}
+	ApplySSHJailToUser(username, userShell)
 
-	return s.writeUsers(list)
+	if err := s.writeUsers(list); err != nil {
+		return err
+	}
+	for _, u := range list {
+		if u.Username == username {
+			RefreshAccountHold(u)
+			break
+		}
+	}
+	return nil
 }
 
 type UserUpdateRequest struct {

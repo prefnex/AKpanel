@@ -125,7 +125,7 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 		fwdProto = "https"
 	}
 	proxyReq.Header.Set("X-Forwarded-Proto", fwdProto)
-	proxyReq.Header.Set("X-Forwarded-Prefix", "/webmail")
+	proxyReq.Header.Set("X-Forwarded-Prefix", "/roundcube")
 	proxyReq.Header.Set("X-Forwarded-For", req.RemoteAddr)
 
 	resp, err := r.client.Do(proxyReq)
@@ -189,4 +189,32 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 	}
 
 	return response.Status(resp.StatusCode).Data(contentType, bodyBytes)
+}
+
+// SSO renders an auto-submit Roundcube login using the Dovecot master user.
+func (r *WebmailController) SSO(ctx goravelhttp.Context) goravelhttp.Response {
+	token := ctx.Request().Query("token", "")
+	email, err := services.ConsumeWebmailSSOToken(token)
+	if err != nil {
+		return ctx.Response().Status(400).String("Webmail login link expired. Open webmail again from the panel.")
+	}
+	imapUser, imapPass := services.GetMailAuthService().MasterLoginIdentity(email)
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Opening webmail</title></head>
+<body style="font-family:sans-serif;background:#09090b;color:#fff;text-align:center;padding:48px">
+<p>Signing in to webmail for %s…</p>
+<form id="rc" method="post" action="/roundcube/?_task=login">
+<input type="hidden" name="_task" value="login">
+<input type="hidden" name="_action" value="login">
+<input type="hidden" name="_user" value="%s">
+<input type="hidden" name="_pass" value="%s">
+</form>
+<script>document.getElementById('rc').submit();</script>
+</body></html>`, email, htmlEscape(imapUser), htmlEscape(imapPass))
+	return ctx.Response().Status(200).Data("text/html; charset=utf-8", []byte(html))
+}
+
+func htmlEscape(s string) string {
+	replacer := strings.NewReplacer(`&`, "&amp;", `"`, "&quot;", `<`, "&lt;", `>`, "&gt;")
+	return replacer.Replace(s)
 }

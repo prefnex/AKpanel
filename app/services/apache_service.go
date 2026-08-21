@@ -149,7 +149,7 @@ func (a *ApacheService) generateApacheConfig(cfg WebsiteConfig, port int) string
     ServerName %s
     ServerAlias www.%s
     DocumentRoot %s
-
+%s
     <Directory %s>
         Options -Indexes +FollowSymLinks +MultiViews
         AllowOverride All
@@ -163,5 +163,5 @@ func (a *ApacheService) generateApacheConfig(cfg WebsiteConfig, port int) string
     ErrorLog /var/log/apache2/%s_error.log
     CustomLog /var/log/apache2/%s_access.log combined
 </VirtualHost>
-`, port, cfg.Domain, cfg.Domain, cfg.RootPath, cfg.RootPath, cfg.PHPVersion, cfg.Domain, cfg.Domain)
+`, port, cfg.Domain, cfg.Domain, cfg.RootPath, ApacheAccountHoldSnippet(cfg.OwnerUsername), cfg.RootPath, cfg.PHPVersion, cfg.Domain, cfg.Domain)
 }

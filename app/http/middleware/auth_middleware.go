@@ -27,7 +27,7 @@ func (m *AuthMiddleware) Handle(ctx goravelhttp.Context) {
 	path := "/" + strings.TrimPrefix(rawPath, "/")
 
 	// 1. Whitelist public auth endpoints, client APIs (handled by ClientAuthMiddleware), phpMyAdmin & its assets, and static build files
-	if strings.HasPrefix(path, "/phpmyadmin") || path == "/index.php" || path == "/url.php" || strings.HasPrefix(path, "/themes/") || strings.HasPrefix(path, "/js/") || strings.HasPrefix(path, "/api/client/") || path == "/api/auth/login" || path == "/login" || strings.HasPrefix(path, "/public/") || strings.HasPrefix(path, "/build/") || strings.HasPrefix(path, "/assets/") {
+	if strings.HasPrefix(path, "/phpmyadmin") || path == "/index.php" || path == "/url.php" || strings.HasPrefix(path, "/themes/") || strings.HasPrefix(path, "/js/") || strings.HasPrefix(path, "/api/client/") || path == "/api/auth/login" || path == "/login" || strings.HasPrefix(path, "/public/") || strings.HasPrefix(path, "/build/") || strings.HasPrefix(path, "/assets/") || strings.HasPrefix(path, "/webmail") || strings.HasPrefix(path, "/roundcube") {
 		ctx.Request().Next()
 		return
 	}

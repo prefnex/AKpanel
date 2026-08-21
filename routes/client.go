@@ -56,6 +56,10 @@ func registerClientRoutes(clientController *controllers.ClientController) {
 	// Email & Backups APIs
 	facades.Route().Get("/api/client/emails", clientController.Emails)
 	facades.Route().Post("/api/client/emails", clientController.StoreEmail)
+	facades.Route().Delete("/api/client/emails", clientController.DestroyEmail)
+	facades.Route().Post("/api/client/emails/delete", clientController.DestroyEmail)
+	facades.Route().Post("/api/client/emails/password", clientController.ChangeEmailPassword)
+	facades.Route().Get("/api/client/emails/webmail-sso", clientController.WebmailSSO)
 	facades.Route().Get("/api/client/backups", clientController.Backups)
 	facades.Route().Post("/api/client/backups/generate", clientController.GenerateBackup)
 }

@@ -791,11 +791,19 @@ func (c *ClientController) Emails(ctx http.Context) http.Response {
 func (c *ClientController) StoreEmail(ctx http.Context) http.Response {
 	username := c.getUsername(ctx)
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-		QuotaMB  int    `json:"quota_mb"`
+		Email     string `json:"email"`
+		EmailUser string `json:"email_user"`
+		Domain    string `json:"domain"`
+		Password  string `json:"password"`
+		QuotaMB   int    `json:"quota_mb"`
 	}
-	if err := ctx.Request().Bind(&req); err != nil || req.Email == "" || req.Password == "" {
+	if err := ctx.Request().Bind(&req); err != nil {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Invalid request payload."})
+	}
+	if req.Email == "" && req.EmailUser != "" && req.Domain != "" {
+		req.Email = strings.TrimSpace(req.EmailUser) + "@" + strings.TrimSpace(req.Domain)
+	}
+	if req.Email == "" || req.Password == "" {
 		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Email address and password are required."})
 	}
 
@@ -811,6 +819,70 @@ func (c *ClientController) StoreEmail(ctx http.Context) http.Response {
 		"status":  true,
 		"message": fmt.Sprintf("Mailbox '%s' created successfully!", req.Email),
 	})
+}
+
+func (c *ClientController) DestroyEmail(ctx http.Context) http.Response {
+	username := c.getUsername(ctx)
+	email := ctx.Request().Query("email", "")
+	if email == "" {
+		email = ctx.Request().Input("email")
+	}
+	if email == "" {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Email address is required."})
+	}
+	if err := c.clientService.DeleteEmail(username, email); err != nil {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": err.Error()})
+	}
+	return ctx.Response().Success().Json(http.Json{"status": true, "message": "Mailbox deleted."})
+}
+
+func (c *ClientController) ChangeEmailPassword(ctx http.Context) http.Response {
+	username := c.getUsername(ctx)
+	var req struct {
+		Email       string `json:"email"`
+		NewPassword string `json:"new_password"`
+	}
+	_ = ctx.Request().Bind(&req)
+	if req.Email == "" {
+		req.Email = ctx.Request().Input("email")
+	}
+	if req.NewPassword == "" {
+		req.NewPassword = ctx.Request().Input("new_password")
+	}
+	if req.Email == "" || req.NewPassword == "" {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Email and new_password are required."})
+	}
+	if err := c.clientService.ChangeEmailPassword(username, req.Email, req.NewPassword); err != nil {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": err.Error()})
+	}
+	return ctx.Response().Success().Json(http.Json{"status": true, "message": "Mailbox password updated."})
+}
+
+func (c *ClientController) WebmailSSO(ctx http.Context) http.Response {
+	username := c.getUsername(ctx)
+	email := ctx.Request().Query("email", "")
+	if email == "" {
+		email = ctx.Request().Input("email")
+	}
+	owned, err := c.clientService.GetEmails(username)
+	if err != nil {
+		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
+	}
+	ok := false
+	for _, e := range owned {
+		if e.Email == email {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": "Mailbox not found on this account."})
+	}
+	token, err := services.NewEmailService().IssueWebmailSSOToken(email)
+	if err != nil {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": err.Error()})
+	}
+	return ctx.Response().Success().Json(http.Json{"status": true, "url": "/webmail/sso?token=" + token})
 }
 
 // GET /api/client/backups

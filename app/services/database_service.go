@@ -171,52 +171,27 @@ func (d *DatabaseService) EnsurePhpMyAdminDaemon() {
 
 		// 4. Ensure auto-login signon configuration file exists
 		_ = os.MkdirAll("/etc/phpmyadmin/conf.d", 0755)
-		pmaConf := `<?php
+		pmaSecret := persistSecret("pma_blowfish", 32)
+		pmaConf := fmt.Sprintf(`<?php
 $cfg['PmaAbsoluteUri'] = '/phpmyadmin/';
-$cfg['blowfish_secret'] = 'akpanel_enterprise_super_secret_key_32bytes_long!';
-$cfg['Servers'][1]['auth_type'] = 'signon';
+$cfg['blowfish_secret'] = '%s';
+$cfg['Servers'][1]['auth_type'] = 'cookie';
 $cfg['Servers'][1]['host'] = '127.0.0.1';
 $cfg['Servers'][1]['port'] = 3306;
-$cfg['Servers'][1]['SignonSession'] = 'AKpanelPMA';
-$cfg['Servers'][1]['SignonURL'] = '/phpmyadmin/signon.php';
 $cfg['Servers'][1]['AllowNoPassword'] = false;
 $cfg['Servers'][1]['controluser'] = 'pma';
 $cfg['Servers'][1]['controlpass'] = 'pma_akpanel_secret_pass';
 $cfg['Servers'][1]['pmadb'] = 'phpmyadmin';
-$cfg['Servers'][1]['bookmarktable'] = 'pma__bookmark';
-$cfg['Servers'][1]['relation'] = 'pma__relation';
-$cfg['Servers'][1]['table_info'] = 'pma__table_info';
-$cfg['Servers'][1]['table_coords'] = 'pma__table_coords';
-$cfg['Servers'][1]['pdf_pages'] = 'pma__pdf_pages';
-$cfg['Servers'][1]['column_info'] = 'pma__column_info';
-$cfg['Servers'][1]['history'] = 'pma__history';
-$cfg['Servers'][1]['table_uiprefs'] = 'pma__table_uiprefs';
-$cfg['Servers'][1]['tracking'] = 'pma__tracking';
-$cfg['Servers'][1]['userconfig'] = 'pma__userconfig';
-$cfg['Servers'][1]['recent'] = 'pma__recent';
-$cfg['Servers'][1]['favorite'] = 'pma__favorite';
-$cfg['Servers'][1]['users'] = 'pma__users';
-$cfg['Servers'][1]['usergroups'] = 'pma__usergroups';
-$cfg['Servers'][1]['navigationhiding'] = 'pma__navigationhiding';
-$cfg['Servers'][1]['savedsearches'] = 'pma__savedsearches';
-$cfg['Servers'][1]['central_columns'] = 'pma__central_columns';
-$cfg['Servers'][1]['designer_settings'] = 'pma__designer_settings';
-$cfg['Servers'][1]['export_templates'] = 'pma__export_templates';
-$cfg['Servers'][1]['SessionTimeToLive'] = 86400;
-
 $cfg['PmaNoRelation_DisableWarning'] = true;
-$cfg['ServerLibraryDifference_DisableWarning'] = true;
 $cfg['SessionSavePath'] = '/var/lib/phpmyadmin/sessions';
 $cfg['CookieSameSite'] = 'Lax';
-$cfg['CookieSecure'] = false;
-$cfg['CookiePath'] = '/';
+$cfg['CookiePath'] = '/phpmyadmin/';
 $cfg['VersionCheck'] = false;
 $cfg['SendErrorReports'] = 'never';
 $cfg['CheckConfigurationPermissions'] = false;
 $cfg['LoginCookieValidity'] = 86400;
-$cfg['LoginCookieValidityDisableWarning'] = true;
 $cfg['ExecTimeLimit'] = 300;
-`
+`, pmaSecret)
 		_ = os.WriteFile("/etc/phpmyadmin/conf.d/01-akpanel.php", []byte(pmaConf), 0644)
 
 		// 5. Ensure signon.php script exists in /usr/share/phpmyadmin
@@ -244,12 +219,13 @@ if (!empty($token)) {
 }
 
 if (!empty($user) && !empty($pass)) {
-    $_SESSION['PMA_single_signon_user'] = $user;
-    $_SESSION['PMA_single_signon_password'] = $pass;
-    $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
-    $_SESSION['PMA_single_signon_port'] = 3306;
-    session_write_close();
-    header('Location: /phpmyadmin/index.php');
+    $u = htmlspecialchars($user, ENT_QUOTES, 'UTF-8');
+    $p = htmlspecialchars($pass, ENT_QUOTES, 'UTF-8');
+    echo '<!DOCTYPE html><html><body><form id="p" method="post" action="/phpmyadmin/index.php">';
+    echo '<input type="hidden" name="pma_username" value="'.$u.'">';
+    echo '<input type="hidden" name="pma_password" value="'.$p.'">';
+    echo '<input type="hidden" name="server" value="1">';
+    echo '</form><script>document.getElementById("p").submit();</script></body></html>';
     exit;
 }
 
@@ -269,26 +245,13 @@ if (!empty($token)) {
     exit;
 }
 
-header('Location: /login');
+header('Location: /phpmyadmin/index.php');
 exit;
 `
 		_ = os.WriteFile("/usr/share/phpmyadmin/signon.php", []byte(signonPhp), 0644)
-		_ = os.Symlink("/usr/share/phpmyadmin", "/usr/share/phpmyadmin/phpmyadmin")
-
-		// 6. Ensure background daemon is running on port 8085 with 8 concurrent workers
-		psCmd := exec.Command("pgrep", "-f", "8085")
-		if err := psCmd.Run(); err != nil {
-			phpBin := "php8.1"
-			if _, err := exec.LookPath(phpBin); err != nil {
-				phpBin = "php"
-			}
-			pmaPath := "/usr/share/phpmyadmin"
-			if _, err := os.Stat(pmaPath); err == nil {
-				_ = os.MkdirAll("/var/log/akpanel", 0755)
-				cmd := exec.Command("bash", "-c", fmt.Sprintf("PHP_CLI_SERVER_WORKERS=8 nohup %s -d session.gc_maxlifetime=86400 -d session.save_path=%s -d upload_max_filesize=256M -d post_max_size=266M -d max_execution_time=300 -S 0.0.0.0:8085 -t %s > /var/log/akpanel/pma.log 2>&1 &", phpBin, sessDir, pmaPath))
-				_ = cmd.Run()
-			}
-		}
+		_ = os.Remove("/usr/share/phpmyadmin/phpmyadmin")
+		_ = exec.Command("pkill", "-f", "php -S 0.0.0.0:8085").Run()
+		_ = NewNginxService().EnsurePhpMyAdminListener()
 	}()
 }
 
@@ -1231,18 +1194,8 @@ $cfg['ExecTimeLimit'] = 300;
 		return err
 	}
 
-	// Restart PMA daemon with 8 concurrent workers
-	_ = exec.Command("pkill", "-f", "8085").Run()
-	sessDir := "/var/lib/phpmyadmin/sessions"
-	phpBin := "php8.1"
-	if _, err := exec.LookPath(phpBin); err != nil {
-		phpBin = "php"
-	}
-	pmaPath := "/usr/share/phpmyadmin"
-	if _, err := os.Stat(pmaPath); err == nil {
-		_ = exec.Command("bash", "-c", fmt.Sprintf("PHP_CLI_SERVER_WORKERS=8 nohup %s -d session.gc_maxlifetime=86400 -d session.save_path=%s -d upload_max_filesize=%dM -d post_max_size=%dM -d max_execution_time=300 -S 0.0.0.0:8085 -t %s > /var/log/akpanel/pma.log 2>&1 &", phpBin, sessDir, maxUploadMB, maxUploadMB+10, pmaPath)).Run()
-	}
-	return nil
+	_ = exec.Command("pkill", "-f", "php -S 0.0.0.0:8085").Run()
+	return NewNginxService().EnsurePhpMyAdminListener()
 }
 
 // SwitchEngineVersion starts a live task to switch/upgrade database engine version

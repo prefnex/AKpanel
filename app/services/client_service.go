@@ -1317,6 +1317,41 @@ func (c *ClientService) CreateEmail(username, emailAddr, password string, quotaM
 	return NewEmailService().CreateAccount(emailAddr, password, quotaMB)
 }
 
+func (c *ClientService) DeleteEmail(username, emailAddr string) error {
+	owned, err := c.mailboxOwnedBy(username, emailAddr)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return fmt.Errorf("mailbox does not belong to your account")
+	}
+	return NewEmailService().DeleteAccount(emailAddr)
+}
+
+func (c *ClientService) ChangeEmailPassword(username, emailAddr, password string) error {
+	owned, err := c.mailboxOwnedBy(username, emailAddr)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return fmt.Errorf("mailbox does not belong to your account")
+	}
+	return NewEmailService().ChangePassword(emailAddr, password)
+}
+
+func (c *ClientService) mailboxOwnedBy(username, emailAddr string) (bool, error) {
+	list, err := c.GetEmails(username)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range list {
+		if e.Email == emailAddr {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (c *ClientService) GenerateBackup(username string) (string, error) {
 	backupDir := "/var/akpanel/backups"
 	_ = os.MkdirAll(backupDir, 0755)

@@ -4,11 +4,17 @@ import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { usePHPRuntime } from './PHPRuntimeContext';
+import PHPSectionIntro from './PHPSectionIntro';
 
 export default function PHPAddonsPage() {
   const { selectedVer, setPreviewItem } = usePHPRuntime();
 
   return (
+    <div className="space-y-4">
+      <PHPSectionIntro
+        title="System addons"
+        goal="Install server-side tools sites often need next to PHP: FFMPEG, IonCube, and PECL extras. These are not PHP version switches."
+      />
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       <Card className="bg-[#121215] border-zinc-800/80 rounded-3xl p-6">
         <div className="flex items-center justify-between">
@@ -55,6 +61,7 @@ export default function PHPAddonsPage() {
           Install Swoole
         </Button>
       </Card>
+    </div>
     </div>
   );
 }
