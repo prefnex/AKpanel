@@ -224,6 +224,20 @@ build_php_package_list() {
     echo "$PKG_LIST"
 }
 
+relocate_apache_ports() {
+    # Nginx owns :80/:443. Move Apache before phpmyadmin/roundcube postinst restarts it.
+    if [ -f /etc/apache2/ports.conf ]; then
+        sed -i 's/^[[:space:]]*Listen[[:space:]]\+80[[:space:]]*$/Listen 127.0.0.1:8081/' /etc/apache2/ports.conf
+        sed -i 's/^[[:space:]]*Listen[[:space:]]\+443[[:space:]]*$/Listen 127.0.0.1:8444/' /etc/apache2/ports.conf
+        rm -f /etc/apache2/sites-enabled/000-default.conf /etc/apache2/sites-enabled/default-ssl.conf
+        echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf
+        a2enconf servername >> "$LOG_FILE" 2>&1 || true
+    fi
+    if [ "$AKPANEL_WEB_PROFILE" = "nginx_phpfpm" ] || [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_phpfpm" ]; then
+        systemctl disable --now apache2 varnish >> "$LOG_FILE" 2>&1 || true
+    fi
+}
+
 write_install_metadata() {
     mkdir -p /etc/akpanel
     echo "$AKPANEL_WEB_PROFILE" > /etc/akpanel/server_profile.conf
@@ -880,30 +894,26 @@ task_step3() {
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
             dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers
-        apt-get install $APT_OPTS $(build_php_package_list) \
-            roundcube roundcube-core roundcube-mysql phpmyadmin || apt-get install $APT_OPTS php-cli php-fpm php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin
+        relocate_apache_ports
+        echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | debconf-set-selections || true
+        echo "roundcube-core roundcube/reconfigure-webserver multiselect none" | debconf-set-selections || true
+        apt-get install $APT_OPTS --no-install-recommends $(build_php_package_list) \
+            roundcube roundcube-core roundcube-mysql phpmyadmin || apt-get install $APT_OPTS --no-install-recommends $(build_php_package_list)
     else
         akp_crawl 36 38 "Refreshing apt after PHP repo" apt-get update -y
         akp_crawl 38 48 "Installing nginx, BIND, MariaDB, mail" apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
             dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
-        akp_crawl 48 55 "Installing PHP, Roundcube, phpMyAdmin" apt-get install $APT_OPTS $(build_php_package_list) \
+        relocate_apache_ports
+        echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | debconf-set-selections >> "$LOG_FILE" 2>&1 || true
+        echo "roundcube-core roundcube/reconfigure-webserver multiselect none" | debconf-set-selections >> "$LOG_FILE" 2>&1 || true
+        akp_crawl 48 55 "Installing PHP, Roundcube, phpMyAdmin" apt-get install $APT_OPTS --no-install-recommends $(build_php_package_list) \
             roundcube roundcube-core roundcube-mysql phpmyadmin || \
-        akp_crawl 48 55 "Installing PHP fallback packages" apt-get install $APT_OPTS \
-            php-cli php-fpm php-common php-mysql php-curl php-mbstring php-xml php-zip php-gd roundcube roundcube-core roundcube-mysql phpmyadmin
+        akp_crawl 48 55 "Installing PHP packages" apt-get install $APT_OPTS --no-install-recommends $(build_php_package_list)
     fi
 
-    akp_progress 55 "Moving Apache off port 80"
-
-    # Nginx owns the public HTTP/HTTPS ports. Apache is an internal PHP/
-    # .htaccess backend on 127.0.0.1:8081; otherwise both daemons compete for
-    # port 80 and hosted domains cannot be served reliably.
-    if [ -f /etc/apache2/ports.conf ]; then
-        sed -i 's/^[[:space:]]*Listen[[:space:]]\+80[[:space:]]*$/Listen 127.0.0.1:8081/' /etc/apache2/ports.conf
-        sed -i 's/^[[:space:]]*Listen[[:space:]]\+443[[:space:]]*$/Listen 127.0.0.1:8444/' /etc/apache2/ports.conf
-        rm -f /etc/apache2/sites-enabled/000-default.conf /etc/apache2/sites-enabled/default-ssl.conf
-    fi
+    akp_progress 55 "Apache already off public port 80"
 
     akp_progress 56 "Installing acme.sh"
     if [ ! -f /root/.acme.sh/acme.sh ]; then

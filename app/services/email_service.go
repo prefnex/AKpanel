@@ -722,8 +722,6 @@ $config['temp_dir'] = '/var/lib/roundcube/temp/';
 // EnsureRoundcubeWebmail points nginx at the Debian Roundcube tree and aligns
 // the MariaDB password with /etc/roundcube (apt's dbconfig password otherwise 1045s).
 func (s *EmailService) EnsureRoundcubeWebmail() {
-	_ = exec.Command("bash", "-c", "which apt-get >/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq roundcube roundcube-core roundcube-mysql roundcube-plugins php-mysql php-mbstring php-xml 2>/dev/null").Run()
-
 	dbPass := persistSecret("roundcube_db_pass", 24)
 	desKey := persistSecret("roundcube_des_key", 24)
 	mysqlRootExec(fmt.Sprintf(

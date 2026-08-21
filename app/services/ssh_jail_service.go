@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,15 +10,26 @@ import (
 )
 
 const (
-	sshJailBinDir   = "/usr/local/lib/akpanel/jailbin"
-	sshJailShell    = "/usr/local/bin/akpanel-ssh-shell"
-	sshJailGroup    = "akpanel-clients"
-	sshdJailConf    = "/etc/ssh/sshd_config.d/akpanel-jail.conf"
-	rmWrapperPath   = "/usr/local/lib/akpanel/jailbin/rm"
+	sshJailBinDir = "/usr/local/lib/akpanel/jailbin"
+	sshJailShell  = "/usr/local/bin/akpanel-ssh-shell"
+	sshJailGroup  = "akpanel-clients"
+	sshdJailConf  = "/etc/ssh/sshd_config.d/akpanel-jail.conf"
 )
 
+var jailWrapped = map[string]bool{
+	"rm": true, "rmdir": true, "mv": true, "chmod": true, "chown": true, "chgrp": true,
+	"dd": true, "mkfs": true, "fdisk": true, "wipefs": true, "mount": true, "umount": true,
+	"sudo": true, "su": true, "passwd": true, "useradd": true, "userdel": true, "visudo": true,
+	"systemctl": true, "service": true, "shutdown": true, "reboot": true,
+	"iptables": true, "nft": true, "ufw": true, "chroot": true, "nsenter": true, "docker": true,
+	"kill": true, "killall": true, "pkill": true, "crontab": true,
+}
+
 // EnsureSSHJail writes the restricted shell, command wrappers, and sshd match block.
+// Wrappers live only under jailbin — never overwrite /usr/bin via symlink follow.
 func EnsureSSHJail() {
+	restoreHijackedCoreutils()
+
 	_ = exec.Command("groupadd", "-f", sshJailGroup).Run()
 	_ = os.MkdirAll(sshJailBinDir, 0755)
 	_ = os.MkdirAll("/usr/local/bin", 0755)
@@ -38,7 +50,6 @@ export LOGNAME="$USER_NAME"
 export PATH=/usr/local/lib/akpanel/jailbin
 export SHELL=/usr/local/bin/akpanel-ssh-shell
 umask 022
-# Restricted bash cannot cd out of $HOME and cannot change PATH.
 exec /bin/bash --restricted -i
 `
 	_ = os.WriteFile(sshJailShell, []byte(shell), 0755)
@@ -60,15 +71,18 @@ Match Group %s
 	allow := []string{
 		"ls", "dir", "cat", "more", "less", "head", "tail", "wc", "sort", "uniq", "cut", "tr",
 		"grep", "egrep", "fgrep", "find", "pwd", "echo", "printf", "date", "clear", "id", "whoami",
-		"nano", "vi", "vim", "touch", "mkdir", "cp", "mv", "ln", "chmod", "stat", "file", "du", "df",
+		"nano", "vi", "vim", "touch", "mkdir", "cp", "stat", "file", "du", "df",
 		"tar", "gzip", "gunzip", "zip", "unzip", "git", "php", "php8.1", "php8.2", "php8.3", "php8.4",
 		"composer", "mysql", "mysqldump", "wget", "curl", "rsync", "scp", "sftp", "python3", "node",
 		"npm", "npx", "ping", "diff", "patch", "make", "basename", "dirname", "realpath", "md5sum",
 		"sha256sum", "sleep", "env", "printenv",
 	}
 	for _, name := range allow {
-		src, err := exec.LookPath(name)
-		if err != nil {
+		if jailWrapped[name] {
+			continue
+		}
+		src := realSystemBin(name)
+		if src == "" {
 			continue
 		}
 		dest := filepath.Join(sshJailBinDir, name)
@@ -76,7 +90,6 @@ Match Group %s
 		_ = os.Symlink(src, dest)
 	}
 
-	// Overwrite dangerous tools with wrappers (never symlink real rm/dd/sudo).
 	writeJailWrapper("rm", rmWrapper)
 	writeJailWrapper("rmdir", pathGuardWrapper("rmdir"))
 	writeJailWrapper("mv", pathGuardWrapper("mv"))
@@ -109,22 +122,69 @@ Match Group %s
 	writeJailWrapper("killall", blockedCmd("killall"))
 	writeJailWrapper("pkill", blockedCmd("pkill"))
 	writeJailWrapper("crontab", blockedCmd("crontab"))
-	writeJailWrapper("bash", blockedCmd("bash"))
-	writeJailWrapper("sh", blockedCmd("sh"))
-	writeJailWrapper("dash", blockedCmd("dash"))
+}
+
+func restoreHijackedCoreutils() {
+	markers := [][]byte{
+		[]byte("akpanel: path is outside your home jail"),
+		[]byte("akpanel: refusing dangerous rm"),
+		[]byte("not allowed in the hosting jail"),
+	}
+	bins := []string{
+		"/usr/bin/chmod", "/bin/chmod", "/usr/bin/rm", "/bin/rm",
+		"/usr/bin/mv", "/bin/mv", "/usr/bin/chown", "/bin/chown",
+		"/usr/bin/chgrp", "/usr/bin/rmdir", "/bin/rmdir",
+	}
+	hijacked := false
+	for _, p := range bins {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		for _, m := range markers {
+			if bytes.Contains(b, m) {
+				hijacked = true
+				break
+			}
+		}
+	}
+	if !hijacked {
+		return
+	}
+	_ = exec.Command("apt-get", "install", "-y", "-o", "Dpkg::Options::=--force-confdef", "--reinstall", "coreutils").Run()
 }
 
 func writeJailWrapper(name, body string) {
-	_ = os.WriteFile(filepath.Join(sshJailBinDir, name), []byte(body), 0755)
+	dest := filepath.Join(sshJailBinDir, name)
+	_ = os.Remove(dest)
+	_ = os.WriteFile(dest, []byte(body), 0755)
 }
 
 func blockedCmd(name string) string {
 	return fmt.Sprintf("#!/bin/bash\necho \"akpanel: '%s' is not allowed in the hosting jail\" >&2\nexit 1\n", name)
 }
 
+func realSystemBin(name string) string {
+	for _, p := range []string{"/usr/bin/" + name, "/bin/" + name, "/usr/sbin/" + name} {
+		st, err := os.Lstat(p)
+		if err != nil || st.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if bytes.HasPrefix(b, []byte("#!")) && bytes.Contains(b, []byte("akpanel:")) {
+			continue
+		}
+		return p
+	}
+	return ""
+}
+
 func pathGuardWrapper(bin string) string {
-	realBin, err := exec.LookPath(bin)
-	if err != nil {
+	realBin := realSystemBin(bin)
+	if realBin == "" {
 		return blockedCmd(bin)
 	}
 	return fmt.Sprintf(`#!/bin/bash
@@ -158,9 +218,6 @@ for arg in "$@"; do
     -*) continue ;;
   esac
   resolved="$(realpath -m -- "$arg" 2>/dev/null || echo "$arg")"
-  case "$arg" in
-    /|/*|/home|/home/*) ;;
-  esac
   case "$resolved" in
     /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/proc|/root|/run|/sbin|/sys|/usr|/var|"$HOME_DIR"/..)
       deny ;;
