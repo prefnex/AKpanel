@@ -14,8 +14,8 @@ func registerProxyRoutes(phpMyAdminController *controllers.PhpMyAdminController,
 	facades.Route().Any("/themes/*path", phpMyAdminController.Proxy)
 	facades.Route().Any("/js/*path", phpMyAdminController.Proxy)
 
-	// Roundcube Webmail Web GUI Reverse Proxy (Forwarding transparently to port 8086)
-	facades.Route().Get("/webmail/sso", webmailController.SSO)
+	// Roundcube Webmail Web GUI Reverse Proxy (Forwarding transparently to port 8086).
+	// Do not register /webmail/sso as a static sibling of /webmail/*path — Gin panics.
 	facades.Route().Any("/roundcube", webmailController.Proxy)
 	facades.Route().Any("/roundcube/*path", webmailController.Proxy)
 	facades.Route().Any("/webmail", webmailController.Proxy)

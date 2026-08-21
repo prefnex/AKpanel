@@ -52,6 +52,10 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 	req := ctx.Request().Origin()
 
 	path := req.URL.Path
+	// Gin cannot register /webmail/sso and /webmail/*path together; handle SSO here.
+	if path == "/webmail/sso" {
+		return r.SSO(ctx)
+	}
 	if path == "/webmail" || path == "/roundcube" {
 		targetRedirect := "/roundcube/"
 		if req.URL.RawQuery != "" {
