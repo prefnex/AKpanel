@@ -115,11 +115,15 @@ func createPanelHandler(targetURL string, port string, scope string) nethttp.Han
 	}
 
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		// If connecting over plain HTTP, automatically redirect to HTTPS
 		if r.TLS == nil {
 			host := r.Host
 			if strings.Contains(host, ":") {
 				host = strings.Split(host, ":")[0]
+			}
+			// IP literals: serve plain HTTP (no cert for IP; avoids broken redirect loops).
+			if net.ParseIP(host) != nil {
+				proxy.ServeHTTP(w, r)
+				return
 			}
 			targetHTTPS := fmt.Sprintf("https://%s:%s%s", host, port, r.URL.RequestURI())
 			nethttp.Redirect(w, r, targetHTTPS, nethttp.StatusMovedPermanently)

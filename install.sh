@@ -62,6 +62,24 @@ akpanel_read() {
     fi
 }
 
+# Keep hostnames ASCII-only (strips accidental Arabic keyboard input / RTL junk).
+sanitize_fqdn() {
+    echo "$1" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:].-' | sed 's/^[.-]*//; s/[.-]*$//'
+}
+
+warn_hostname_dns() {
+    [ -z "$AKPANEL_HOSTNAME" ] && return 0
+    local RESOLVED
+    RESOLVED=$(getent ahostsv4 "$AKPANEL_HOSTNAME" 2>/dev/null | awk '{print $1; exit}')
+    if [ -z "$RESOLVED" ]; then
+        echo -e "${YELLOW}  DNS: ${AKPANEL_HOSTNAME} does not resolve yet (NXDOMAIN).${NC}"
+        echo -e "${DIM}  Add an A record pointing to ${SERVER_IP} at your domain registrar.${NC}"
+        echo -e "${DIM}  Until DNS propagates, open the panel via IP: https://${SERVER_IP}:2087${NC}\n"
+    elif [ "$RESOLVED" != "$SERVER_IP" ]; then
+        echo -e "${YELLOW}  DNS: ${AKPANEL_HOSTNAME} -> ${RESOLVED} (this server is ${SERVER_IP}).${NC}\n"
+    fi
+}
+
 mkdir -p /var/log
 echo "=== AKpanel Installation Started: $(date) ===" > "$LOG_FILE"
 
@@ -142,10 +160,11 @@ if [ "$AUTO_CONFIRM" = false ]; then
     akpanel_read "  Primary Nameserver (e.g. ns1.akpanel.site): " AKPANEL_NS1
     akpanel_read "  Secondary Nameserver (e.g. ns2.akpanel.site): " AKPANEL_NS2
     akpanel_read "  Admin Email (for SSL notifications): " AKPANEL_ADMIN_EMAIL
-    AKPANEL_HOSTNAME=$(echo "$AKPANEL_HOSTNAME" | tr '[:upper:]' '[:lower:]' | xargs)
-    AKPANEL_NS1=$(echo "$AKPANEL_NS1" | tr '[:upper:]' '[:lower:]' | xargs)
-    AKPANEL_NS2=$(echo "$AKPANEL_NS2" | tr '[:upper:]' '[:lower:]' | xargs)
-    AKPANEL_ADMIN_EMAIL=$(echo "$AKPANEL_ADMIN_EMAIL" | xargs)
+    AKPANEL_HOSTNAME=$(sanitize_fqdn "$AKPANEL_HOSTNAME")
+    AKPANEL_NS1=$(sanitize_fqdn "$AKPANEL_NS1")
+    AKPANEL_NS2=$(sanitize_fqdn "$AKPANEL_NS2")
+    AKPANEL_ADMIN_EMAIL=$(echo "$AKPANEL_ADMIN_EMAIL" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    warn_hostname_dns
     echo ""
 fi
 
@@ -995,11 +1014,17 @@ task_step6() {
         fi
     fi
 
-    # Dynamic SSH MOTD Banner
-    mkdir -p /etc/update-motd.d /etc/profile.d
+    # SSH banner via profile.d only. Do not install into /etc/update-motd.d —
+    # PAM MOTD is shown to every SSH user and would duplicate this banner.
+    mkdir -p /etc/profile.d
+    rm -f /etc/update-motd.d/99-akpanel /etc/update-motd.d/99-akpanel.sh 2>/dev/null || true
     cat << 'MOTD_EOF' > /etc/profile.d/00-akpanel-motd.sh
 #!/bin/bash
+# Sourced from /etc/profile — interactive shells only.
 [ -z "$PS1" ] && return
+[ -n "$AKPANEL_MOTD_SHOWN" ] && return
+AKPANEL_MOTD_SHOWN=1
+export AKPANEL_MOTD_SHOWN
 
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
@@ -1009,17 +1034,37 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 [ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
-MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
-MEM_USED=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}')
-DISK_TOTAL=$(df -h / 2>/dev/null | awk 'NR==2{print $2}')
-DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2{print $3}')
 
-if systemctl is-active --quiet akpanel 2>/dev/null || pgrep -f "/usr/local/bin/akpanel" >/dev/null; then
-    PANEL_STATUS="${GREEN}ONLINE / ACTIVE ●${NC}"
+PANEL_HOST=""
+for _ak_try in \
+    "$(sed -n 's/.*"hostname"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /etc/akpanel/server_settings.json 2>/dev/null | head -1)" \
+    "$(sed -n 's/.*"hostname"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /etc/akpanel/install.conf 2>/dev/null | head -1)" \
+    "$(sed -n 's/.*"server_hostname"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /etc/akpanel/dns.json 2>/dev/null | head -1)" \
+    "$(hostname -f 2>/dev/null)"; do
+    _ak_try=$(echo "$_ak_try" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    case "$_ak_try" in
+        ""|localhost|localhost.localdomain|*.localdomain) continue ;;
+    esac
+    echo "$_ak_try" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' && continue
+    echo "$_ak_try" | grep -q ':' && continue
+    echo "$_ak_try" | grep -q '\.' || continue
+    PANEL_HOST="$_ak_try"
+    break
+done
+unset _ak_try
+
+if [ -n "$PANEL_HOST" ]; then
+    if [ -f "/etc/akpanel/ssl/${PANEL_HOST}/fullchain.pem" ] || [ -f /etc/akpanel/ssl/server/fullchain.pem ]; then
+        PANEL_SCHEME="https"
+    else
+        PANEL_SCHEME="http"
+    fi
+    ACCESS_HOST="$PANEL_HOST"
 else
-    PANEL_STATUS="${RED}STOPPED ○${NC}"
+    PANEL_SCHEME="http"
+    ACCESS_HOST="$SERVER_IP"
 fi
 
 echo -e "${PURPLE}${BOLD}"
@@ -1032,28 +1077,61 @@ cat << "BANNER"
 BANNER
 echo -e "${CYAN}  Next-Gen Cloud Server & Web Hosting Control Panel${NC}\n"
 
-echo -e "${BOLD}🌐 Access Points & Control Panels:${NC}"
-echo -e "  👑 ${BOLD}Root / WHM Admin :${NC} ${YELLOW}http://${SERVER_IP}:2087${NC}"
-echo -e "  👤 ${BOLD}Client Hosting   :${NC} ${YELLOW}http://${SERVER_IP}:2083${NC}"
-echo -e "  🌐 ${BOLD}Web Sites (HTTP) :${NC} ${YELLOW}http://${SERVER_IP}:80${NC}"
-echo ""
-echo -e "${BOLD}📊 Server Health & Telemetry:${NC}"
-echo -e "  • ${BOLD}Panel Status:${NC} ${PANEL_STATUS}"
-echo -e "  • ${BOLD}Memory Usage:${NC} ${GREEN}${MEM_USED} MB${NC} / ${MEM_TOTAL} MB"
-echo -e "  • ${BOLD}Disk Space  :${NC} ${GREEN}${DISK_USED}${NC} / ${DISK_TOTAL}"
-echo -e "  • ${BOLD}Server IP   :${NC} ${CYAN}${SERVER_IP}${NC}"
+if [ "$(id -u)" -eq 0 ]; then
+    MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+    MEM_USED=$(free -m 2>/dev/null | awk '/^Mem:/{print $3}')
+    DISK_TOTAL=$(df -h / 2>/dev/null | awk 'NR==2{print $2}')
+    DISK_USED=$(df -h / 2>/dev/null | awk 'NR==2{print $3}')
+    if systemctl is-active --quiet akpanel 2>/dev/null || pgrep -f "/usr/local/bin/akpanel" >/dev/null; then
+        PANEL_STATUS="${GREEN}ONLINE / ACTIVE ●${NC}"
+    else
+        PANEL_STATUS="${RED}STOPPED ○${NC}"
+    fi
+    echo -e "${BOLD}🌐 Access Points & Control Panels:${NC}"
+    echo -e "  👑 ${BOLD}Root / WHM Admin :${NC} ${YELLOW}${PANEL_SCHEME}://${ACCESS_HOST}:2087${NC}"
+    echo -e "  👤 ${BOLD}Client Hosting   :${NC} ${YELLOW}${PANEL_SCHEME}://${ACCESS_HOST}:2083${NC}"
+    echo -e "  🌐 ${BOLD}Web Sites (HTTP) :${NC} ${YELLOW}http://${ACCESS_HOST}${NC}"
+    echo ""
+    echo -e "${BOLD}📊 Server Health & Telemetry:${NC}"
+    echo -e "  • ${BOLD}Panel Status:${NC} ${PANEL_STATUS}"
+    echo -e "  • ${BOLD}Memory Usage:${NC} ${GREEN}${MEM_USED} MB${NC} / ${MEM_TOTAL} MB"
+    echo -e "  • ${BOLD}Disk Space  :${NC} ${GREEN}${DISK_USED}${NC} / ${DISK_TOTAL}"
+    if [ -n "$PANEL_HOST" ]; then
+        echo -e "  • ${BOLD}Hostname    :${NC} ${CYAN}${PANEL_HOST}${NC}"
+    fi
+    echo -e "  • ${BOLD}Server IP   :${NC} ${CYAN}${SERVER_IP}${NC}"
+else
+    LOGIN_USER=$(id -un 2>/dev/null || echo "$USER")
+    HOME_DIR="${HOME:-/home/${LOGIN_USER}}"
+    SITES_DIR="${HOME_DIR}/domains"
+    echo -e "${BOLD}👤 Account:${NC}"
+    echo -e "  • ${BOLD}Username        :${NC} ${CYAN}${LOGIN_USER}${NC}"
+    echo -e "  • ${BOLD}Home Directory  :${NC} ${CYAN}${HOME_DIR}${NC}"
+    if [ -d "$SITES_DIR" ]; then
+        echo -e "  • ${BOLD}Websites Path   :${NC} ${CYAN}${SITES_DIR}${NC}"
+    fi
+    echo ""
+    echo -e "${BOLD}🌐 Your Access Points:${NC}"
+    echo -e "  👤 ${BOLD}Client Hosting :${NC} ${YELLOW}${PANEL_SCHEME}://${ACCESS_HOST}:2083${NC}"
+    echo -e "  🌐 ${BOLD}Web Sites      :${NC} ${YELLOW}http://${ACCESS_HOST}${NC}"
+    if [ -n "$PANEL_HOST" ]; then
+        echo -e "  • ${BOLD}Hostname       :${NC} ${CYAN}${PANEL_HOST}${NC}"
+    fi
+fi
 echo ""
 echo -e "${PURPLE}───────────────────────────────────────────────────────────────────────────────${NC}\n"
+
+unset CYAN GREEN YELLOW PURPLE RED BOLD NC SERVER_IP PANEL_HOST ACCESS_HOST
+unset PANEL_SCHEME PANEL_STATUS MEM_TOTAL MEM_USED DISK_TOTAL DISK_USED
+unset LOGIN_USER HOME_DIR SITES_DIR
 MOTD_EOF
 
-    chmod +x /etc/profile.d/00-akpanel-motd.sh 2>/dev/null || true
-    cp /etc/profile.d/00-akpanel-motd.sh /etc/update-motd.d/99-akpanel 2>/dev/null || true
-    chmod +x /etc/update-motd.d/99-akpanel 2>/dev/null || true
+    chmod 644 /etc/profile.d/00-akpanel-motd.sh 2>/dev/null || true
 
     # Health Verification on Port 2087 & 2083
     local verified=false
     for ((i=1; i<=15; i++)); do
-        if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:2087/ | grep -qE "200|302|401|403|404"; then
+        if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:2087/ | grep -qE "200|301|302|401|403|404"; then
             verified=true
             break
         fi
@@ -1072,7 +1150,7 @@ run_task "Firewall, SSH MOTD & Health Verification" 90 100 task_step6
 
 # Final Verification Status
 PANEL_ONLINE=false
-if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:2087/ | grep -qE "200|302|401|403|404"; then
+if curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 http://127.0.0.1:2087/ | grep -qE "200|301|302|401|403|404"; then
     PANEL_ONLINE=true
 fi
 
@@ -1083,11 +1161,13 @@ else
     echo -e "${YELLOW} ⚠️ AKpanel is installed. Starting up... (Check: systemctl status akpanel)${NC}"
 fi
 echo -e "${GREEN}==============================================================================${NC}"
-echo -e "  🌐 Root WHM Panel  : ${YELLOW}http://${SERVER_IP}:2087${NC}"
+echo -e "  Root WHM (IP)      : ${YELLOW}https://${SERVER_IP}:2087${NC}"
+echo -e "  ${DIM}                     Plain http://${SERVER_IP}:2087 also works (no redirect on IP)${NC}"
 if [ -n "$AKPANEL_HOSTNAME" ]; then
-    echo -e "  🔒 Hostname Panel  : ${YELLOW}https://${AKPANEL_HOSTNAME}:2087${NC} ${DIM}(or https://${AKPANEL_HOSTNAME})${NC}"
+    echo -e "  Hostname (HTTPS)   : ${YELLOW}https://${AKPANEL_HOSTNAME}:2087${NC}"
+    echo -e "  ${DIM}                     Needs DNS A record ${AKPANEL_HOSTNAME} -> ${SERVER_IP}${NC}"
 fi
-echo -e "  🌐 Client User URL : ${YELLOW}http://${SERVER_IP}:2083${NC}"
+echo -e "  Client Portal (IP) : ${YELLOW}https://${SERVER_IP}:2083${NC}"
 echo -e "  👤 Admin Username  : ${YELLOW}root${NC}"
 echo -e "  🔑 Generated Pass  : ${BOLD}${RED}${ROOT_ADMIN_PASS}${NC} ${GREEN}(Randomly Generated)${NC}"
 echo -e "  💾 Credentials File: ${CYAN}/etc/akpanel/credentials.txt${NC}"
