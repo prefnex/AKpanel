@@ -892,7 +892,8 @@ task_step3() {
         apt-get update -y
         apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd
+            dovecot-core dovecot-imapd dovecot-pop3d dovecot-sieve dovecot-managesieved \
+            opendkim opendkim-tools spamassassin spamc spamass-milter redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers
         relocate_apache_ports
         echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | debconf-set-selections || true
@@ -903,7 +904,8 @@ task_step3() {
         akp_crawl 36 38 "Refreshing apt after PHP repo" apt-get update -y
         akp_crawl 38 48 "Installing nginx, BIND, MariaDB, mail" apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-            dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools spamassassin redis-server pure-ftpd
+            dovecot-core dovecot-imapd dovecot-pop3d dovecot-sieve dovecot-managesieved \
+            opendkim opendkim-tools spamassassin spamc spamass-milter redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
         relocate_apache_ports
         echo "phpmyadmin phpmyadmin/reconfigure-webserver multiselect none" | debconf-set-selections >> "$LOG_FILE" 2>&1 || true
@@ -925,8 +927,11 @@ task_step3() {
         /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt >> "$LOG_FILE" 2>&1 || true
     fi
     mkdir -p /etc/cron.d /var/www/html/.well-known/acme-challenge
-    chmod -R 777 /var/www/html/.well-known 2>/dev/null || true
-    echo "0 2 * * * root /root/.acme.sh/acme.sh --cron --home /root/.acme.sh > /var/log/akpanel-ssl-renew.log 2>&1" > /etc/cron.d/akpanel-ssl-renew
+    chown -R www-data:www-data /var/www/html/.well-known 2>/dev/null || true
+    chmod -R 755 /var/www/html/.well-known 2>/dev/null || true
+    # Renewed certificates are also used for SMTP/IMAP TLS, so postfix and dovecot must
+    # pick them up too — reloading nginx alone leaves mail on the expired chain.
+    echo "0 2 * * * root /root/.acme.sh/acme.sh --cron --home /root/.acme.sh > /var/log/akpanel-ssl-renew.log 2>&1; systemctl reload postfix dovecot >/dev/null 2>&1" > /etc/cron.d/akpanel-ssl-renew
     chmod 644 /etc/cron.d/akpanel-ssl-renew 2>/dev/null || true
 
     akp_progress 58 "Configuring BIND 9"
@@ -1021,10 +1026,8 @@ MYCNF
     run_mysql -e "CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}'; ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;"
     run_mysql -e "DROP USER IF EXISTS 'ak_admin'@'%'; DROP USER IF EXISTS 'ak_admin'@'localhost'; DROP USER IF EXISTS 'ak_admin'@'127.0.0.1'; FLUSH PRIVILEGES;"
 
-    run_mysql -e "CREATE DATABASE IF NOT EXISTS phpmyadmin DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'pma'@'localhost'; CREATE USER IF NOT EXISTS 'phpmyadmin'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'phpmyadmin'@'localhost'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
-    if [ -f /usr/share/phpmyadmin/sql/create_tables.sql ]; then
-        run_mysql phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql >> "$LOG_FILE" 2>&1 || true
-    fi
+    # phpMyAdmin control DB/user, config and signon.php are provisioned by
+    # `akpanel --bootstrap-services` (see task_step5) using generated secrets.
 
     # Roundcube: apt's dbconfig-common creates user roundcube with a random
     # password. CREATE USER IF NOT EXISTS would leave that password in place
@@ -1048,126 +1051,22 @@ MYCNF
         run_mysql roundcubemail < /usr/share/roundcube/SQL/mysql/initial.sql >> "$LOG_FILE" 2>&1 || true
     fi
 
+    # /etc/roundcube/config.inc.php and the akpanel_sso plugin are written by
+    # `akpanel --bootstrap-services`, which owns the DES key and DSN secrets.
     mkdir -p /etc/roundcube /var/log/roundcube /var/lib/roundcube/temp
     chown www-data:www-data /var/log/roundcube /var/lib/roundcube/temp 2>/dev/null || true
-    cat << EOF > /etc/roundcube/config.inc.php
-<?php
-\$config = [];
-\$config['db_dsnw'] = 'mysql://roundcube:${RC_DB_PASS}@127.0.0.1/roundcubemail';
-\$config['default_host'] = '127.0.0.1';
-\$config['imap_host'] = '127.0.0.1:143';
-\$config['default_port'] = 143;
-\$config['smtp_server'] = '127.0.0.1';
-\$config['smtp_host'] = '127.0.0.1:587';
-\$config['smtp_port'] = 587;
-\$config['smtp_user'] = '%u';
-\$config['smtp_pass'] = '%p';
-\$config['support_url'] = '';
-\$config['product_name'] = 'AKpanel Webmail';
-\$config['des_key'] = '${RC_DES_KEY}';
-\$config['plugins'] = ['akpanel_sso'];
-\$config['skin'] = 'elastic';
-\$config['ip_check'] = false;
-\$config['enable_spellcheck'] = false;
-\$config['auto_create_user'] = true;
-\$config['force_https'] = false;
-\$config['use_https'] = false;
-\$config['log_dir'] = '/var/log/roundcube/';
-\$config['temp_dir'] = '/var/lib/roundcube/temp/';
-EOF
-    chown root:www-data /etc/roundcube/config.inc.php 2>/dev/null || true
-    chmod 640 /etc/roundcube/config.inc.php 2>/dev/null || true
     if [ -d /var/lib/roundcube ] && [ ! -L /var/www/roundcube ]; then
         rm -rf /var/www/roundcube
         ln -sfn /var/lib/roundcube /var/www/roundcube
     fi
 
-    cat << 'EOF' > /etc/phpmyadmin/config-db.php
-<?php
-$dbuser='pma';
-$dbpass='pma_akpanel_secret_pass';
-$basepath='';
-$dbname='phpmyadmin';
-$dbserver='localhost';
-$dbport='3306';
-$dbtype='mysql';
-EOF
-    chmod 644 /etc/phpmyadmin/config-db.php 2>/dev/null || true
-    chmod 644 /etc/phpmyadmin/config-db.php 2>/dev/null || true
-
+    # /etc/phpmyadmin/{config-db.php,conf.d/01-akpanel.php} and signon.php are written by
+    # `akpanel --bootstrap-services` so the blowfish secret, control password and signon
+    # session name stay in a single place instead of drifting between installer and panel.
     mkdir -p /etc/phpmyadmin/conf.d /var/lib/phpmyadmin/sessions
-    chmod 1777 /var/lib/phpmyadmin/sessions 2>/dev/null || true
-    cat << 'EOF' > /etc/phpmyadmin/conf.d/01-akpanel.php
-<?php
-$cfg['PmaAbsoluteUri'] = '/phpmyadmin/';
-$cfg['blowfish_secret'] = 'akpanel_enterprise_super_secret_key_32bytes_long!';
-$cfg['Servers'][1]['auth_type'] = 'signon';
-$cfg['Servers'][1]['host'] = '127.0.0.1';
-$cfg['Servers'][1]['port'] = 3306;
-$cfg['Servers'][1]['SignonSession'] = 'AKpanelPMA';
-$cfg['Servers'][1]['SignonURL'] = '/phpmyadmin/signon.php';
-$cfg['Servers'][1]['AllowNoPassword'] = false;
-$cfg['Servers'][1]['controluser'] = 'pma';
-$cfg['Servers'][1]['controlpass'] = 'pma_akpanel_secret_pass';
-$cfg['Servers'][1]['pmadb'] = 'phpmyadmin';
-$cfg['Servers'][1]['SessionTimeToLive'] = 86400;
-$cfg['SessionSavePath'] = '/var/lib/phpmyadmin/sessions';
-$cfg['CookieSameSite'] = 'Lax';
-$cfg['CookieSecure'] = false;
-$cfg['CookiePath'] = '/';
-$cfg['LoginCookieValidity'] = 86400;
-$cfg['LoginCookieValidityDisableWarning'] = true;
-$cfg['ExecTimeLimit'] = 300;
-EOF
-
-    cat << 'EOF' > /usr/share/phpmyadmin/signon.php
-<?php
-session_name('AKpanelPMA');
-session_save_path('/var/lib/phpmyadmin/sessions');
-@session_start();
-
-$token = isset($_GET['token']) ? $_GET['token'] : (isset($_POST['token']) ? $_POST['token'] : '');
-$user = '';
-$pass = '';
-
-if (!empty($token)) {
-    $tokenClean = preg_replace('/[^a-zA-Z0-9_-]/', '', $token);
-    $tokenFile = '/var/lib/phpmyadmin/sessions/sso_' . $tokenClean . '.json';
-    if (file_exists($tokenFile)) {
-        $content = file_get_contents($tokenFile);
-        $data = json_decode($content, true);
-        if ($data && isset($data['username']) && isset($data['password'])) {
-            $user = $data['username'];
-            $pass = $data['password'];
-            @unlink($tokenFile);
-        }
-    }
-}
-
-if (!empty($user) && !empty($pass)) {
-    $_SESSION['PMA_single_signon_user'] = $user;
-    $_SESSION['PMA_single_signon_password'] = $pass;
-    $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
-    $_SESSION['PMA_single_signon_port'] = 3306;
-    session_write_close();
-    header('Location: /phpmyadmin/index.php');
-    exit;
-}
-
-unset($_SESSION['PMA_single_signon_user']);
-unset($_SESSION['PMA_single_signon_password']);
-session_write_close();
-
-if (!empty($token)) {
-    echo '<!DOCTYPE html><html><head><title>AKpanel - phpMyAdmin SSO</title><meta http-equiv="refresh" content="2;url=/databases"></head><body style="font-family:sans-serif;background:#090a0f;color:#fff;text-align:center;padding:50px;"><h2>SSO Token Expired or Invalid</h2><p>Redirecting back to AKpanel...</p></body></html>';
-    exit;
-}
-
-header('Location: /login');
-exit;
-EOF
-    chmod 644 /usr/share/phpmyadmin/signon.php 2>/dev/null || true
-    ln -sfn /usr/share/phpmyadmin /usr/share/phpmyadmin/phpmyadmin 2>/dev/null || true
+    chown www-data:www-data /var/lib/phpmyadmin/sessions 2>/dev/null || true
+    chmod 770 /var/lib/phpmyadmin/sessions 2>/dev/null || true
+    rm -f /usr/share/phpmyadmin/phpmyadmin 2>/dev/null || true
 
     mkdir -p /etc/akpanel /var/www/sites/default/public /var/log/akpanel /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/bind/zones /etc/opendkim/keys /var/vmail "$INSTALL_DIR"
     chmod 700 /etc/opendkim/keys 2>/dev/null || true
@@ -1417,8 +1316,26 @@ EOF
 
         systemctl daemon-reload >> "$LOG_FILE" 2>&1 || true
         systemctl enable akpanel >> "$LOG_FILE" 2>&1 || true
+
+        # Provision Dovecot auth, Postfix maps, Roundcube, phpMyAdmin and the internal
+        # 8085/8086 listeners *before* the panel accepts requests. Without this the panel
+        # only repairs them from background goroutines and the first /webmail or
+        # /phpmyadmin click returns 502.
+        akp_progress 87 "Bootstrapping webmail & phpMyAdmin"
+        cd "$PROJECT_ROOT" && /usr/local/bin/akpanel --bootstrap-services >> "$LOG_FILE" 2>&1
+        BOOTSTRAP_RC=$?
+        if [ "$BOOTSTRAP_RC" -ne 0 ]; then
+            echo "WARNING: service bootstrap reported errors (rc=$BOOTSTRAP_RC), see $LOG_FILE" >> "$LOG_FILE"
+        fi
+
         systemctl restart akpanel >> "$LOG_FILE" 2>&1 || true
     fi
+
+    for backend in 8086 8085; do
+        if ! curl -sf -o /dev/null --max-time 5 "http://127.0.0.1:${backend}/"; then
+            echo "WARNING: internal backend 127.0.0.1:${backend} is not answering" >> "$LOG_FILE"
+        fi
+    done
 
     if ! pgrep -f "/usr/local/bin/akpanel" > /dev/null; then
         cd "$PROJECT_ROOT"
@@ -1450,9 +1367,22 @@ task_step6() {
         ufw allow 143/tcp comment "IMAP" >> "$LOG_FILE" 2>&1 || true
         ufw allow 993/tcp comment "IMAP SSL" >> "$LOG_FILE" 2>&1 || true
         ufw allow 995/tcp comment "POP3 SSL" >> "$LOG_FILE" 2>&1 || true
-        
+        ufw allow 30000:30009/tcp comment "FTP Passive Range" >> "$LOG_FILE" 2>&1 || true
+        case "$AKPANEL_WEB_PROFILE" in
+            varnish_nginx_apache|varnish_nginx_phpfpm)
+                ufw allow 6081/tcp comment "Varnish Cache" >> "$LOG_FILE" 2>&1 || true
+                ;;
+        esac
+        # MariaDB stays on 127.0.0.1; make the intent explicit so a later profile change
+        # cannot silently expose it.
+        ufw deny 3306/tcp comment "MariaDB localhost only" >> "$LOG_FILE" 2>&1 || true
+
+        # Rules are useless while the firewall is inactive, which is the default on a
+        # fresh VPS. SSH is allowed above, so enabling here cannot lock the operator out.
         if ufw status 2>/dev/null | grep -q "Status: active"; then
             ufw reload >> "$LOG_FILE" 2>&1 || true
+        else
+            ufw --force enable >> "$LOG_FILE" 2>&1 || true
         fi
     fi
 

@@ -1,13 +1,16 @@
 package services
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -219,7 +222,7 @@ func (s *EmailService) GetServiceStatus() MailServiceStatus {
 	isPostfix := s.checkServiceRunning("postfix")
 	isDovecot := s.checkServiceRunning("dovecot")
 	isOpenDKIM := s.checkServiceRunning("opendkim")
-	isSpam := s.checkServiceRunning("spamassassin")
+	isSpam := s.checkServiceRunning(spamdUnit())
 
 	return MailServiceStatus{
 		PostfixRunning:      isPostfix,
@@ -231,15 +234,14 @@ func (s *EmailService) GetServiceStatus() MailServiceStatus {
 	}
 }
 
+// checkServiceRunning asks systemd directly. Parsing `service X status` for the word
+// "active" is unreliable because "Active: inactive (dead)" also contains it.
 func (s *EmailService) checkServiceRunning(name string) bool {
-	cmd := exec.Command("service", name, "status")
-	if out, err := cmd.Output(); err == nil {
-		if strings.Contains(string(out), "running") || strings.Contains(string(out), "active") {
-			return true
-		}
+	out, err := exec.Command("systemctl", "is-active", name).Output()
+	if err == nil && strings.TrimSpace(string(out)) == "active" {
+		return true
 	}
-	psCmd := exec.Command("pgrep", "-f", name)
-	return psCmd.Run() == nil
+	return exec.Command("pgrep", "-x", name).Run() == nil
 }
 
 func (s *EmailService) ControlService(serviceName, action string) error {
@@ -263,8 +265,11 @@ func (s *EmailService) ControlService(serviceName, action string) error {
 		return fmt.Errorf("invalid action: %s", action)
 	}
 
-	cmd := exec.Command("service", serviceName, action)
-	return cmd.Run()
+	unit := serviceName
+	if serviceName == "spamassassin" {
+		unit = spamdUnit()
+	}
+	return exec.Command("systemctl", action, unit).Run()
 }
 
 func (s *EmailService) initDefaultAliases() {
@@ -306,9 +311,13 @@ func (s *EmailService) CreateAlias(source, destination string) error {
 	source = strings.TrimSpace(strings.ToLower(source))
 	destination = strings.TrimSpace(strings.ToLower(destination))
 
+	// A source of "@domain" is a domain-wide catch-all in Postfix virtual maps.
 	parts := strings.Split(source, "@")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return fmt.Errorf("invalid source email address")
+	if len(parts) != 2 || parts[1] == "" {
+		return fmt.Errorf("invalid source address: use user@domain or @domain for a catch-all")
+	}
+	if !strings.Contains(destination, "@") {
+		return fmt.Errorf("invalid destination email address")
 	}
 	domain := parts[1]
 
@@ -367,14 +376,31 @@ func (s *EmailService) syncPostfixVirtualAliases() {
 		_ = json.Unmarshal(content, &list)
 	}
 
-	var lines []string
+	// Multiple destinations for the same source must land on one line, otherwise the
+	// hash map keeps only the last entry.
+	targets := map[string][]string{}
+	var order []string
 	for _, a := range list {
-		lines = append(lines, fmt.Sprintf("%s %s", a.Source, a.Destination))
+		if a.Source == "" || a.Destination == "" {
+			continue
+		}
+		if _, ok := targets[a.Source]; !ok {
+			order = append(order, a.Source)
+		}
+		targets[a.Source] = append(targets[a.Source], a.Destination)
+	}
+	sort.Strings(order)
+
+	lines := make([]string, 0, len(order))
+	for _, src := range order {
+		lines = append(lines, fmt.Sprintf("%s %s", src, strings.Join(targets[src], ", ")))
 	}
 
 	virtualPath := "/etc/postfix/virtual"
 	_ = os.WriteFile(virtualPath, []byte(strings.Join(lines, "\n")+"\n"), 0644)
 	_ = exec.Command("postmap", virtualPath).Run()
+	_ = exec.Command("postconf", "-e", "virtual_alias_maps = hash:"+virtualPath).Run()
+	runTimeout(10*time.Second, "systemctl", "reload", "postfix")
 }
 
 func (s *EmailService) initDefaultEmails() {
@@ -408,10 +434,30 @@ func (s *EmailService) writeEmails(list []EmailAccount) error {
 	return os.WriteFile(s.filePath, bytes, 0644)
 }
 
-// ListAccounts returns all email accounts
-func (s *EmailService) ListAccounts(domain string) []EmailAccount {
+// AccountExists reports whether a mailbox is registered, without touching the disk usage
+// refresh that ListAccounts performs.
+func (s *EmailService) AccountExists(email string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	email = strings.TrimSpace(strings.ToLower(email))
+	list, err := s.readEmails()
+	if err != nil {
+		return false
+	}
+	for _, e := range list {
+		if e.Email == email {
+			return true
+		}
+	}
+	return false
+}
+
+// ListAccounts returns all email accounts
+func (s *EmailService) ListAccounts(domain string) []EmailAccount {
+	// Takes the write lock because the disk-usage refresh below rewrites emails.json.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	list, err := s.readEmails()
 	if err != nil {
@@ -499,29 +545,38 @@ func (s *EmailService) CreateAccount(email, password string, quotaMB int) error 
 		return err
 	}
 
-	// Register in Postfix virtual mailbox
-	vmailFile := "/etc/postfix/vmailbox"
-	entry := fmt.Sprintf("%s %s/%s/Maildir/\n", email, domain, username)
-	if existing, err := os.ReadFile(vmailFile); err == nil {
-		_ = os.WriteFile(vmailFile, append(existing, []byte(entry)...), 0644)
-	} else {
-		_ = os.WriteFile(vmailFile, []byte(entry), 0644)
-	}
-	_ = exec.Command("postmap", vmailFile).Run()
-
-	domFile := "/etc/postfix/vmailbox_domains"
-	domEntry := domain + "\n"
-	if existing, err := os.ReadFile(domFile); err == nil {
-		if !strings.Contains("\n"+string(existing)+"\n", "\n"+domain+"\n") {
-			_ = os.WriteFile(domFile, append(existing, []byte(domEntry)...), 0644)
-		}
-	} else {
-		_ = os.WriteFile(domFile, []byte(domEntry), 0644)
-	}
+	s.syncPostfixMailboxMaps(list)
 	_ = exec.Command("chown", "-R", "vmail:vmail", fmt.Sprintf("/var/vmail/%s", domain)).Run()
 	_ = GetMailAuthService().EnsurePostfixVirtualConfig()
 
 	return nil
+}
+
+// syncPostfixMailboxMaps rebuilds the Postfix delivery maps from emails.json. Rebuilding
+// instead of appending keeps deletions and retried creates from leaving stale entries
+// that would let Postfix keep accepting mail for removed mailboxes.
+func (s *EmailService) syncPostfixMailboxMaps(list []EmailAccount) {
+	mailboxes := make([]string, 0, len(list))
+	domains := make([]string, 0, len(list))
+	seenDomain := map[string]bool{}
+
+	for _, e := range list {
+		if e.Email == "" || e.Domain == "" || e.Username == "" {
+			continue
+		}
+		mailboxes = append(mailboxes, fmt.Sprintf("%s %s/%s/Maildir/", e.Email, e.Domain, e.Username))
+		if !seenDomain[e.Domain] {
+			seenDomain[e.Domain] = true
+			domains = append(domains, e.Domain)
+		}
+	}
+	sort.Strings(mailboxes)
+	sort.Strings(domains)
+
+	vmailFile := "/etc/postfix/vmailbox"
+	_ = os.WriteFile(vmailFile, []byte(strings.Join(mailboxes, "\n")+"\n"), 0644)
+	_ = exec.Command("postmap", vmailFile).Run()
+	_ = os.WriteFile("/etc/postfix/vmailbox_domains", []byte(strings.Join(domains, "\n")+"\n"), 0644)
 }
 
 // ChangePassword updates mailbox password
@@ -565,12 +620,23 @@ func (s *EmailService) DeleteAccount(email string) error {
 		}
 	}
 
-	if mailDir != "" {
-		_ = os.RemoveAll(mailDir)
-		_ = GetMailAuthService().RemoveMailboxPassword(email)
+	if mailDir == "" {
+		return fmt.Errorf("email account not found")
 	}
 
-	return s.writeEmails(updated)
+	_ = os.RemoveAll(mailDir)
+	_ = GetMailAuthService().RemoveMailboxPassword(email)
+	GetMailAuthService().RevokeSSOPassword(email)
+
+	if err := s.writeEmails(updated); err != nil {
+		return err
+	}
+	s.syncPostfixMailboxMaps(updated)
+	_ = GetMailAuthService().EnsurePostfixVirtualConfig()
+	// The Sieve script died with the mailbox directory; drop the panel record too so the
+	// autoresponders tab does not list a mailbox that no longer exists.
+	_ = NewMailSieveService().Delete(email)
+	return nil
 }
 
 // GetMailQueue lists Postfix mail queue
@@ -617,54 +683,140 @@ func (s *EmailService) DeleteQueueItem(queueID string) error {
 	return exec.Command("postsuper", "-d", queueID).Run()
 }
 
-// VerifySecurityHealth inspects SPF, DKIM, DMARC, MX, PTR, and CAA records
+// VerifySecurityHealth resolves the live SPF, DKIM, DMARC, MX, PTR and CAA records for a
+// domain. Everything here is measured, never assumed: a wrong report is worse than none,
+// because it hides the exact misconfiguration that sends mail to spam.
 func (s *EmailService) VerifySecurityHealth(domain string) SecurityHealthReport {
-	zone, err := s.dnsService.GetZone(domain)
-	if err != nil {
-		zone, _ = s.dnsService.CreateZone(domain, s.dnsService.GetSystemIP(), "root", "")
+	domain = strings.TrimSpace(strings.ToLower(domain))
+	report := SecurityHealthReport{Domain: domain}
+	if domain == "" {
+		return report
 	}
 
+	resolver := &net.Resolver{}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	checks := 0
+	passed := 0
+
+	// SPF
+	checks++
+	if txts, err := resolver.LookupTXT(ctx, domain); err == nil {
+		for _, txt := range txts {
+			if strings.HasPrefix(strings.ToLower(txt), "v=spf1") {
+				report.SPFRecord = txt
+				report.SPFValid = true
+				passed++
+				break
+			}
+		}
+	}
+	if report.SPFRecord == "" {
+		report.SPFRecord = "not published"
+	}
+
+	// DKIM (default selector, matching the key OpenDKIM signs with)
+	checks++
+	if txts, err := resolver.LookupTXT(ctx, "default._domainkey."+domain); err == nil {
+		joined := strings.Join(txts, "")
+		if strings.Contains(strings.ToLower(joined), "v=dkim1") {
+			report.DKIMRecord = joined
+			report.DKIMValid = NewMailPolicyService().DKIMSigningActive(domain)
+			if report.DKIMValid {
+				passed++
+			} else {
+				report.DKIMRecord = joined + " (published, but Postfix is not signing with it)"
+			}
+		}
+	}
+	if report.DKIMRecord == "" {
+		report.DKIMRecord = "not published"
+	}
+
+	// DMARC
+	checks++
+	if txts, err := resolver.LookupTXT(ctx, "_dmarc."+domain); err == nil {
+		for _, txt := range txts {
+			if strings.HasPrefix(strings.ToLower(txt), "v=dmarc1") {
+				report.DMARCRecord = txt
+				report.DMARCValid = true
+				passed++
+				break
+			}
+		}
+	}
+	if report.DMARCRecord == "" {
+		report.DMARCRecord = "not published"
+	}
+
+	// MX
+	checks++
+	if mxs, err := resolver.LookupMX(ctx, domain); err == nil && len(mxs) > 0 {
+		parts := make([]string, 0, len(mxs))
+		for _, mx := range mxs {
+			parts = append(parts, fmt.Sprintf("%s (priority %d)", strings.TrimSuffix(mx.Host, "."), mx.Pref))
+		}
+		report.MXRecord = strings.Join(parts, ", ")
+		report.MXValid = true
+		passed++
+	} else {
+		report.MXRecord = "not published"
+	}
+
+	// PTR must resolve to the SMTP banner hostname, not just to anything.
+	checks++
 	serverIP := s.dnsService.GetSystemIP()
-	score := 100
-
-	dkimRec := "v=DKIM1; k=rsa; p=MIIBIjANBgkq..."
-	if zone != nil && len(zone.DKIMPublicKey) > 0 {
-		dkimRec = fmt.Sprintf("v=DKIM1; k=rsa; p=%s...", zone.DKIMPublicKey[:min(24, len(zone.DKIMPublicKey))])
+	expectedHelo := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(postfixParam("myhostname"))), ".")
+	if names, err := resolver.LookupAddr(ctx, serverIP); err == nil && len(names) > 0 {
+		ptr := strings.TrimSuffix(strings.ToLower(names[0]), ".")
+		report.PTRRecord = fmt.Sprintf("%s -> %s", serverIP, ptr)
+		if expectedHelo != "" && ptr == expectedHelo {
+			report.PTRValid = true
+			passed++
+		} else if expectedHelo != "" {
+			report.PTRRecord += fmt.Sprintf(" (does not match SMTP HELO %s)", expectedHelo)
+		}
+	} else {
+		report.PTRRecord = fmt.Sprintf("%s -> no reverse DNS (set it at your provider)", serverIP)
 	}
 
-	spfRec := fmt.Sprintf("v=spf1 +a +mx +ip4:%s ~all", serverIP)
-	if zone != nil && zone.SPFRecord != "" {
-		spfRec = zone.SPFRecord
+	// CAA
+	checks++
+	if txts, err := resolver.LookupTXT(ctx, domain); err == nil {
+		_ = txts // CAA is looked up separately below; TXT lookup keeps the resolver warm.
+	}
+	if records, err := lookupCAA(ctx, resolver, domain); err == nil && records != "" {
+		report.CAARecord = records
+		report.CAAValid = true
+		passed++
+	} else {
+		report.CAARecord = "not published (any CA may issue)"
 	}
 
-	dmarcRec := fmt.Sprintf("v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s", domain)
-	if zone != nil && zone.DMARCRecord != "" {
-		dmarcRec = zone.DMARCRecord
+	if checks > 0 {
+		report.DeliverabilityRate = passed * 100 / checks
 	}
-
-	return SecurityHealthReport{
-		Domain:             domain,
-		DeliverabilityRate: score,
-		SPFValid:           true,
-		SPFRecord:          spfRec,
-		DKIMValid:          true,
-		DKIMRecord:         dkimRec,
-		DMARCValid:         true,
-		DMARCRecord:        dmarcRec,
-		MXValid:            true,
-		MXRecord:           fmt.Sprintf("mail.%s (Priority 10)", domain),
-		PTRValid:           true,
-		PTRRecord:          fmt.Sprintf("%s -> %s", serverIP, domain),
-		CAAValid:           true,
-		CAARecord:          `0 issue "letsencrypt.org"`,
-	}
+	return report
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// lookupCAA reads CAA records via the system resolver. Go has no typed CAA lookup, so the
+// generic host lookup is used through `dig` when available and skipped otherwise.
+func lookupCAA(ctx context.Context, _ *net.Resolver, domain string) (string, error) {
+	cmd := exec.CommandContext(ctx, "dig", "+short", "CAA", domain)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
 	}
-	return b
+	return strings.TrimSpace(strings.ReplaceAll(strings.TrimSpace(string(out)), "\n", "; ")), nil
+}
+
+func postfixParam(name string) string {
+	out, err := exec.Command("postconf", "-h", name).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func randomAlnum(n int) string {
@@ -760,20 +912,65 @@ $config['smtp_conn_options'] = [
 
 func writeRoundcubeSSOPlugin(rcRoot string) {
 	plugin := `<?php
+// AKpanel webmail single sign-on. The panel issues a one-time token that maps to a
+// short-lived Dovecot credential for a single mailbox; this plugin consumes it.
 class akpanel_sso extends rcube_plugin
 {
     public $task = 'login';
+
+    private $token = null;
+    private $tokenDir = '/var/lib/akpanel/webmail-sso';
 
     function init()
     {
         $this->add_hook('startup', array($this, 'startup'));
         $this->add_hook('authenticate', array($this, 'authenticate'));
+        $this->add_hook('login_after', array($this, 'login_after'));
+        $this->add_hook('login_failed', array($this, 'login_failed'));
+    }
+
+    private function token()
+    {
+        if ($this->token === null) {
+            $raw = isset($_GET['sso']) ? (string)$_GET['sso'] : '';
+            $this->token = preg_replace('/[^a-zA-Z0-9]/', '', $raw);
+        }
+        return $this->token;
+    }
+
+    private function tokenFile()
+    {
+        return $this->tokenDir . '/' . $this->token() . '.json';
+    }
+
+    private function record()
+    {
+        if ($this->token() === '') {
+            return null;
+        }
+        $raw = @file_get_contents($this->tokenFile());
+        if ($raw === false) {
+            return null;
+        }
+        $d = json_decode($raw, true);
+        if (!is_array($d) || empty($d['imap_user']) || empty($d['imap_pass'])) {
+            return null;
+        }
+        if ((int)(isset($d['expires_at']) ? $d['expires_at'] : 0) < time()) {
+            return null;
+        }
+        return $d;
+    }
+
+    private function trace($message)
+    {
+        @file_put_contents('/var/log/roundcube/akpanel-sso.log',
+            gmdate('c') . ' ' . $message . "\n", FILE_APPEND);
     }
 
     function startup($args)
     {
-        $t = isset($_GET['sso']) ? (string)$_GET['sso'] : '';
-        if ($t !== '' && $args['task'] === 'login') {
+        if ($this->token() !== '' && $args['task'] === 'login') {
             $args['action'] = 'login';
             $_POST['_task'] = 'login';
             $_POST['_action'] = 'login';
@@ -783,21 +980,38 @@ class akpanel_sso extends rcube_plugin
 
     function authenticate($args)
     {
-        $t = isset($_GET['sso']) ? preg_replace('/[^a-zA-Z0-9]/', '', (string)$_GET['sso']) : '';
-        if ($t === '') {
+        if ($this->token() === '') {
             return $args;
         }
-        $f = '/var/lib/akpanel/webmail-sso/' . $t . '.json';
-        $raw = @file_get_contents($f);
-        @unlink($f);
-        $d = json_decode($raw, true);
-        if (!is_array($d) || empty($d['imap_user']) || empty($d['imap_pass']) || (int)($d['expires_at'] ?? 0) < time()) {
+        $d = $this->record();
+        if ($d === null) {
+            $this->trace('token rejected (missing, malformed or expired)');
             return $args;
         }
+        // Plain mailbox address as username: Roundcube passes it through
+        // idn_to_ascii(), which would blank out a "user*master" style login.
         $args['user'] = $d['imap_user'];
         $args['pass'] = $d['imap_pass'];
         $args['valid'] = true;
         $args['cookiecheck'] = false;
+        return $args;
+    }
+
+    function login_after($args)
+    {
+        if ($this->token() !== '') {
+            @unlink($this->tokenFile());
+        }
+        return $args;
+    }
+
+    function login_failed($args)
+    {
+        if ($this->token() !== '') {
+            @unlink($this->tokenFile());
+            $this->trace('IMAP login failed for ' . (isset($args['user']) ? $args['user'] : '?')
+                . ' code=' . (isset($args['code']) ? $args['code'] : '?'));
+        }
         return $args;
     }
 }
@@ -913,22 +1127,18 @@ type webmailSSORecord struct {
 
 func (s *EmailService) IssueWebmailSSOToken(email string) (string, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
-	found := false
-	for _, acc := range s.ListAccounts("all") {
-		if acc.Email == email {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !s.AccountExists(email) {
 		return "", fmt.Errorf("mailbox not found")
 	}
 	dir := "/var/lib/akpanel/webmail-sso"
 	_ = os.MkdirAll(dir, 0750)
 	_ = exec.Command("chown", "root:www-data", dir).Run()
 	token := randomAlnum(32)
-	imapUser, imapPass := GetMailAuthService().MasterLoginIdentity(email)
-	rec := webmailSSORecord{Email: email, IMAPUser: imapUser, IMAPPass: imapPass, ExpiresAt: time.Now().Add(2 * time.Minute).Unix()}
+	imapPass, err := GetMailAuthService().IssueSSOPassword(email)
+	if err != nil {
+		return "", err
+	}
+	rec := webmailSSORecord{Email: email, IMAPUser: email, IMAPPass: imapPass, ExpiresAt: time.Now().Add(2 * time.Minute).Unix()}
 	bytes, _ := json.Marshal(rec)
 	if err := os.WriteFile(filepath.Join(dir, token+".json"), bytes, 0640); err != nil {
 		return "", err

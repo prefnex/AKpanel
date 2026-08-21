@@ -309,6 +309,151 @@ func (c *EmailController) WebmailURL(ctx goravelhttp.Context) goravelhttp.Respon
 	})
 }
 
+// Autoresponders lists Sieve vacation rules
+func (c *EmailController) Autoresponders(ctx goravelhttp.Context) goravelhttp.Response {
+	domain := ctx.Request().Query("domain", "all")
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status": "success",
+		"data":   services.NewMailSieveService().List(domain),
+	})
+}
+
+// StoreAutoresponder creates or updates the vacation rule for a mailbox
+func (c *EmailController) StoreAutoresponder(ctx goravelhttp.Context) goravelhttp.Response {
+	var req services.Autoresponder
+	if err := ctx.Request().Bind(&req); err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Invalid autoresponder payload",
+		})
+	}
+	if err := services.NewMailSieveService().Save(req); err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "Autoresponder saved and activated for " + req.Email,
+	})
+}
+
+// DestroyAutoresponder removes the vacation rule for a mailbox
+func (c *EmailController) DestroyAutoresponder(ctx goravelhttp.Context) goravelhttp.Response {
+	email := ctx.Request().Input("email")
+	if email == "" {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Email address is required",
+		})
+	}
+	if err := services.NewMailSieveService().Delete(email); err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "Autoresponder removed successfully!",
+	})
+}
+
+// AntiSpam returns the live SpamAssassin policy
+func (c *EmailController) AntiSpam(ctx goravelhttp.Context) goravelhttp.Response {
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status": "success",
+		"data":   services.NewMailPolicyService().GetAntiSpam(),
+	})
+}
+
+// SaveAntiSpam applies the SpamAssassin policy and milter wiring
+func (c *EmailController) SaveAntiSpam(ctx goravelhttp.Context) goravelhttp.Response {
+	var req services.AntiSpamSettings
+	if err := ctx.Request().Bind(&req); err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Invalid anti-spam payload",
+		})
+	}
+	if err := services.NewMailPolicyService().SaveAntiSpam(req); err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "Anti-spam policy applied to Postfix and SpamAssassin!",
+		"data":    services.NewMailPolicyService().GetAntiSpam(),
+	})
+}
+
+// UpdateSpamRules runs sa-update and restarts SpamAssassin
+func (c *EmailController) UpdateSpamRules(ctx goravelhttp.Context) goravelhttp.Response {
+	if err := services.NewMailPolicyService().UpdateSpamRules(); err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "SpamAssassin rule set updated!",
+	})
+}
+
+// Routing lists per-domain mail transport rules
+func (c *EmailController) Routing(ctx goravelhttp.Context) goravelhttp.Response {
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status": "success",
+		"data":   services.NewMailPolicyService().ListRoutes(),
+	})
+}
+
+// SaveRouting writes a transport rule for one domain
+func (c *EmailController) SaveRouting(ctx goravelhttp.Context) goravelhttp.Response {
+	var req services.MailRoute
+	if err := ctx.Request().Bind(&req); err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Invalid routing payload",
+		})
+	}
+	if err := services.NewMailPolicyService().SaveRoute(req); err != nil {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "Mail routing for " + req.Domain + " applied to Postfix transport map!",
+	})
+}
+
+// DestroyRouting drops a transport rule
+func (c *EmailController) DestroyRouting(ctx goravelhttp.Context) goravelhttp.Response {
+	domain := ctx.Request().Input("domain")
+	if domain == "" {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": "Domain is required",
+		})
+	}
+	if err := services.NewMailPolicyService().DeleteRoute(domain); err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "Mail routing rule removed successfully!",
+	})
+}
+
 // WebmailSSO issues a one-time auto-login URL for a mailbox.
 func (c *EmailController) WebmailSSO(ctx goravelhttp.Context) goravelhttp.Response {
 	email := ctx.Request().Query("email", "")

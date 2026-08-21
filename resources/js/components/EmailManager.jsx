@@ -67,15 +67,13 @@ export default function EmailManager({ showToast }) {
 
   const [emails, setEmails] = useState([]);
   const [aliases, setAliases] = useState([]);
-  const [autoresponders, setAutoresponders] = useState([
-    { email: 'support@server.akpanel.site', subject: 'Thank you for contacting support', body: 'We have received your message and will reply within 24 hours.', start_date: '2026-08-18', end_date: '2026-12-31', is_active: true }
-  ]);
+  const [autoresponders, setAutoresponders] = useState([]);
   const [queue, setQueue] = useState([]);
   const [servicesStatus, setServicesStatus] = useState({
-    postfix_running: true,
-    dovecot_running: true,
-    opendkim_running: true,
-    spamassassin_running: true
+    postfix_running: false,
+    dovecot_running: false,
+    opendkim_running: false,
+    spamassassin_running: false
   });
   const [mailConfig, setMailConfig] = useState({
     smtp_port: 25,
@@ -100,7 +98,11 @@ export default function EmailManager({ showToast }) {
   });
   const [securityReport, setSecurityReport] = useState(null);
   const [selectedDomain, setSelectedDomain] = useState(window.location.hostname);
+  const [routes, setRoutes] = useState([]);
+  const [routingDomain, setRoutingDomain] = useState('');
   const [mailRoutingMode, setMailRoutingMode] = useState('local'); // 'local' | 'backup' | 'remote'
+  const [routingDestination, setRoutingDestination] = useState('');
+  const [isSavingRouting, setIsSavingRouting] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -119,115 +121,130 @@ export default function EmailManager({ showToast }) {
   const [showCreatePassword, setShowCreatePassword] = useState(false);
   const [allDomains, setAllDomains] = useState([]);
   const [aliasData, setAliasData] = useState({ source: '', destination: '' });
-  const [autoRespData, setAutoRespData] = useState({ email: '', subject: 'Out of Office / Automated Reply', body: 'I am currently away and will respond to your email as soon as possible.', start_date: '2026-08-19', end_date: '2026-09-19' });
+  const [autoRespData, setAutoRespData] = useState({
+    email: '',
+    subject: 'Out of Office / Automated Reply',
+    body: 'I am currently away and will respond to your email as soon as possible.',
+    interval_days: 1,
+  });
+  const [catchAllData, setCatchAllData] = useState({ domain: '', destination: '' });
+  const [isSavingCatchAll, setIsSavingCatchAll] = useState(false);
 
-  // Antispam State
-  const [spamScore, setSpamScore] = useState(5.0);
-  const [blacklistedSenders, setBlacklistedSenders] = useState(['spammer@badhost.com', '*@tempmail.ninja']);
+  // Antispam State (mirrors /api/emails/antispam)
+  const [antiSpam, setAntiSpam] = useState({
+    enabled: true,
+    required_score: 5.0,
+    rewrite_subject: true,
+    subject_tag: '[SPAM]',
+    blacklist: [],
+    whitelist: [],
+    last_update: '',
+  });
   const [newBlacklist, setNewBlacklist] = useState('');
+  const [isSavingSpam, setIsSavingSpam] = useState(false);
+  const [isUpdatingRules, setIsUpdatingRules] = useState(false);
+
+  // Single place where a GET is turned into state, so a failing endpoint surfaces to the
+  // user instead of silently leaving the tab looking empty but healthy.
+  const loadJson = async (url, label) => {
+    try {
+      const res = await fetch(url);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(json.message || `Failed to load ${label}`, 'error');
+        return null;
+      }
+      return json;
+    } catch (e) {
+      showToast(`Failed to load ${label}: ${e.message}`, 'error');
+      return null;
+    }
+  };
 
   const fetchEmails = async () => {
     setLoading(true);
-    try {
-      const res = await fetch('/api/emails');
-      if (res.ok) {
-        const json = await res.json();
-        const list = json.data || [];
-        setEmails(list);
-        if (list.length > 0 && !selectedDomain) {
-          setSelectedDomain(list[0].domain);
-        }
+    const json = await loadJson('/api/emails', 'mailboxes');
+    if (json) {
+      const list = json.data || [];
+      setEmails(list);
+      if (list.length > 0 && !selectedDomain) {
+        setSelectedDomain(list[0].domain);
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   };
 
   const fetchAliases = async () => {
-    try {
-      const res = await fetch('/api/emails/aliases');
-      if (res.ok) {
-        const json = await res.json();
-        setAliases(json.data || []);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    const json = await loadJson('/api/emails/aliases', 'forwarders');
+    if (json) setAliases(json.data || []);
+  };
+
+  const fetchAutoresponders = async () => {
+    const json = await loadJson('/api/emails/autoresponders', 'autoresponders');
+    if (json) setAutoresponders(json.data || []);
   };
 
   const fetchQueue = async () => {
-    try {
-      const res = await fetch('/api/emails/queue');
-      if (res.ok) {
-        const json = await res.json();
-        setQueue(json.data || []);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    const json = await loadJson('/api/emails/queue', 'mail queue');
+    if (json) setQueue(json.data || []);
   };
 
   const fetchServicesStatus = async () => {
-    try {
-      const res = await fetch('/api/emails/services-status');
-      if (res.ok) {
-        const json = await res.json();
-        setServicesStatus(json.data || null);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    const json = await loadJson('/api/emails/services', 'mail service status');
+    if (json && json.data) setServicesStatus(json.data);
   };
 
   const fetchMailConfig = async () => {
-    try {
-      const res = await fetch('/api/emails/config');
-      if (res.ok) {
-        const json = await res.json();
-        if (json.data) setMailConfig(json.data);
-      }
-    } catch (e) {
-      console.error(e);
+    const json = await loadJson('/api/emails/config', 'mail server settings');
+    if (json && json.data) setMailConfig(json.data);
+  };
+
+  const fetchAntiSpam = async () => {
+    const json = await loadJson('/api/emails/antispam', 'anti-spam policy');
+    if (json && json.data) {
+      setAntiSpam({
+        ...json.data,
+        blacklist: json.data.blacklist || [],
+        whitelist: json.data.whitelist || [],
+      });
     }
+  };
+
+  const fetchRoutes = async () => {
+    const json = await loadJson('/api/emails/routing', 'mail routing');
+    if (json) setRoutes(json.data || []);
   };
 
   const fetchSecurityReport = async (domain) => {
     if (!domain) return;
-    try {
-      const res = await fetch(`/api/emails/security-report?domain=${encodeURIComponent(domain)}`);
-      if (res.ok) {
-        const json = await res.json();
-        setSecurityReport(json.data || null);
-      }
-    } catch (e) {
-      console.error(e);
-    }
+    const json = await loadJson(
+      `/api/emails/security-report?domain=${encodeURIComponent(domain)}`,
+      'deliverability report'
+    );
+    if (json) setSecurityReport(json.data || null);
   };
 
   const fetchDomains = async () => {
-    try {
-      const res = await fetch('/api/websites');
-      if (res.ok) {
-        const json = await res.json();
-        const list = (json.data || []).map((w) => w.domain).filter(Boolean);
-        setAllDomains(list);
-        if (list.length > 0) {
-          setFormData((prev) => ({ ...prev, domain: prev.domain || list[0] }));
-        }
-      }
-    } catch (e) {
-      console.error(e);
+    const json = await loadJson('/api/websites', 'domains');
+    if (!json) return;
+    const list = (json.data || []).map((w) => w.domain).filter(Boolean);
+    setAllDomains(list);
+    if (list.length > 0) {
+      setFormData((prev) => ({ ...prev, domain: prev.domain || list[0] }));
+      setRoutingDomain((prev) => prev || list[0]);
+      setCatchAllData((prev) => ({ ...prev, domain: prev.domain || list[0] }));
     }
   };
 
   useEffect(() => {
     fetchEmails();
     fetchAliases();
+    fetchAutoresponders();
     fetchQueue();
     fetchServicesStatus();
     fetchMailConfig();
+    fetchAntiSpam();
+    fetchRoutes();
     fetchDomains();
   }, []);
 
@@ -287,118 +304,235 @@ export default function EmailManager({ showToast }) {
     }
   };
 
+  // Shared POST helper: every mail mutation endpoint answers with {status, message}.
+  const postJson = async (url, body, fallbackError) => {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast(data.message || fallbackError, 'error');
+        return null;
+      }
+      return data;
+    } catch (err) {
+      showToast(err.message || fallbackError, 'error');
+      return null;
+    }
+  };
+
   const handleDeleteEmail = async (email) => {
     if (!confirm(`Are you sure you want to permanently delete mailbox ${email}?`)) return;
-    try {
-      const res = await fetch(`/api/emails?email=${encodeURIComponent(email)}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        showToast('Mailbox deleted successfully!');
-        fetchEmails();
-      } else {
-        showToast('Failed to delete mailbox', 'error');
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
+    const data = await postJson('/api/emails/delete', { email }, 'Failed to delete mailbox');
+    if (data) {
+      showToast(data.message || 'Mailbox deleted successfully!');
+      fetchEmails();
+      fetchAutoresponders();
     }
   };
 
   const handleDeleteAlias = async (source, destination) => {
-    try {
-      const res = await fetch(`/api/emails/aliases?source=${encodeURIComponent(source)}&destination=${encodeURIComponent(destination)}`, {
-        method: 'DELETE',
-      });
-      if (res.ok) {
-        showToast('Alias removed successfully!');
-        fetchAliases();
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
+    const data = await postJson(
+      '/api/emails/aliases/delete',
+      { source, destination },
+      'Failed to remove forwarder'
+    );
+    if (data) {
+      showToast(data.message || 'Alias removed successfully!');
+      fetchAliases();
     }
   };
 
   const handleChangePassword = async (e) => {
     e.preventDefault();
-    try {
-      const res = await fetch('/api/emails/password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: targetEmail, password: newPassword }),
-      });
-      if (res.ok) {
-        showToast('Password updated successfully!');
-        setIsChangePassOpen(false);
-        setNewPassword('');
-      } else {
-        showToast('Failed to update password', 'error');
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
+    const data = await postJson(
+      '/api/emails/password',
+      { email: targetEmail, new_password: newPassword },
+      'Failed to update password'
+    );
+    if (data) {
+      showToast(data.message || 'Password updated successfully!');
+      setIsChangePassOpen(false);
+      setNewPassword('');
     }
   };
 
   const handleFlushQueue = async () => {
     setIsFlushLoading(true);
-    try {
-      const res = await fetch('/api/emails/queue/flush', { method: 'POST' });
-      if (res.ok) {
-        showToast('Postfix mail queue delivery triggered!');
-        fetchQueue();
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setIsFlushLoading(false);
+    const data = await postJson('/api/emails/queue/flush', {}, 'Failed to flush mail queue');
+    if (data) {
+      showToast(data.message || 'Postfix mail queue delivery triggered!');
+      fetchQueue();
     }
+    setIsFlushLoading(false);
   };
 
   const handleDeleteQueue = async (id) => {
-    try {
-      const res = await fetch(`/api/emails/queue?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (res.ok) {
-        showToast(id === 'ALL' ? 'All mail queue purged!' : 'Message removed from queue');
-        fetchQueue();
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
+    const data = await postJson(
+      '/api/emails/queue/delete',
+      { queue_id: id },
+      'Failed to remove message from queue'
+    );
+    if (data) {
+      showToast(id === 'ALL' ? 'All mail queue purged!' : 'Message removed from queue');
+      fetchQueue();
     }
   };
+
+  const handleSaveAutoresponder = async (e) => {
+    e.preventDefault();
+    const data = await postJson(
+      '/api/emails/autoresponders',
+      {
+        email: autoRespData.email,
+        subject: autoRespData.subject,
+        body: autoRespData.body,
+        interval_days: Number(autoRespData.interval_days) || 1,
+        enabled: true,
+      },
+      'Failed to save autoresponder'
+    );
+    if (data) {
+      showToast(data.message || 'Autoresponder activated!');
+      setIsAutoResponderOpen(false);
+      fetchAutoresponders();
+    }
+  };
+
+  const handleDeleteAutoresponder = async (email) => {
+    const data = await postJson(
+      '/api/emails/autoresponders/delete',
+      { email },
+      'Failed to remove autoresponder'
+    );
+    if (data) {
+      showToast(data.message || 'Autoresponder removed!');
+      fetchAutoresponders();
+    }
+  };
+
+  const handleSaveAntiSpam = async (override) => {
+    const payload = { ...antiSpam, ...(override || {}) };
+    setIsSavingSpam(true);
+    const data = await postJson('/api/emails/antispam', payload, 'Failed to apply anti-spam policy');
+    if (data) {
+      showToast(data.message || 'Anti-spam policy applied!');
+      if (data.data) {
+        setAntiSpam({
+          ...data.data,
+          blacklist: data.data.blacklist || [],
+          whitelist: data.data.whitelist || [],
+        });
+      }
+    }
+    setIsSavingSpam(false);
+  };
+
+  const handleUpdateSpamRules = async () => {
+    setIsUpdatingRules(true);
+    const data = await postJson('/api/emails/antispam/update-rules', {}, 'Failed to update rule set');
+    if (data) {
+      showToast(data.message || 'SpamAssassin rule set updated!');
+      fetchAntiSpam();
+    }
+    setIsUpdatingRules(false);
+  };
+
+  const handleSaveRouting = async () => {
+    setIsSavingRouting(true);
+    const data = await postJson(
+      '/api/emails/routing',
+      { domain: routingDomain, mode: mailRoutingMode, destination: routingDestination },
+      'Failed to apply mail routing'
+    );
+    if (data) {
+      showToast(data.message || 'Mail routing applied!');
+      fetchRoutes();
+    }
+    setIsSavingRouting(false);
+  };
+
+  const handleDeleteRoute = async (domain) => {
+    const data = await postJson('/api/emails/routing/delete', { domain }, 'Failed to remove route');
+    if (data) {
+      showToast(data.message || 'Routing rule removed!');
+      fetchRoutes();
+    }
+  };
+
+  // A catch-all is just a Postfix virtual alias whose source is the bare domain.
+  const handleSaveCatchAll = async (e) => {
+    if (e) e.preventDefault();
+    if (!catchAllData.domain || !catchAllData.destination) {
+      showToast('Select a domain and a destination mailbox', 'error');
+      return;
+    }
+    setIsSavingCatchAll(true);
+    const source = `@${catchAllData.domain}`;
+    const existing = aliases.find((a) => a.source === source);
+    if (existing) {
+      await postJson(
+        '/api/emails/aliases/delete',
+        { source, destination: existing.destination },
+        'Failed to replace catch-all'
+      );
+    }
+    const data = await postJson(
+      '/api/emails/aliases',
+      { source, destination: catchAllData.destination },
+      'Failed to set catch-all'
+    );
+    if (data) {
+      showToast(`Catch-all for ${catchAllData.domain} now delivers to ${catchAllData.destination}`);
+      fetchAliases();
+    }
+    setIsSavingCatchAll(false);
+  };
+
+  const handleRemoveCatchAll = async (domain) => {
+    const source = `@${domain}`;
+    const existing = aliases.find((a) => a.source === source);
+    if (!existing) return;
+    await handleDeleteAlias(source, existing.destination);
+  };
+
+  const catchAllAliases = aliases.filter((a) => a.source && a.source.startsWith('@'));
+
+  const deliverabilityChecks = [
+    { key: 'mx', label: 'MX (Mail Exchanger)', ok: !!securityReport?.mx_valid, value: securityReport?.mx_record || '' },
+    { key: 'spf', label: 'SPF (Sender Policy Framework)', ok: !!securityReport?.spf_valid, value: securityReport?.spf_record || '' },
+    { key: 'dkim', label: 'DKIM (DomainKeys Identified Mail)', ok: !!securityReport?.dkim_valid, value: securityReport?.dkim_record || '' },
+    { key: 'dmarc', label: 'DMARC (Reporting & Alignment Policy)', ok: !!securityReport?.dmarc_valid, value: securityReport?.dmarc_record || '' },
+    { key: 'ptr', label: 'PTR (Reverse DNS of the sending IP)', ok: !!securityReport?.ptr_valid, value: securityReport?.ptr_record || '' },
+    { key: 'caa', label: 'CAA (Certificate Authority Authorization)', ok: !!securityReport?.caa_valid, value: securityReport?.caa_record || '' },
+  ];
+  const passedChecks = deliverabilityChecks.filter((c) => c.ok);
+  const deliverabilityScore =
+    securityReport?.deliverability_rate ??
+    Math.round((passedChecks.length / deliverabilityChecks.length) * 100);
 
   const handleSaveConfig = async (e) => {
     if (e) e.preventDefault();
     setIsSavingConfig(true);
-    try {
-      const res = await fetch('/api/emails/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(mailConfig),
-      });
-      if (res.ok) {
-        showToast('Mail server configuration saved & reloaded!');
-      } else {
-        showToast('Failed to save mail configuration', 'error');
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setIsSavingConfig(false);
+    const data = await postJson('/api/emails/config', mailConfig, 'Failed to save mail configuration');
+    if (data) {
+      showToast(data.message || 'Mail server configuration saved & reloaded!');
     }
+    setIsSavingConfig(false);
   };
 
   const handleControlService = async (service, action) => {
-    try {
-      const res = await fetch('/api/emails/services/control', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service, action }),
-      });
-      if (res.ok) {
-        showToast(`Service ${service} ${action} successful!`);
-        fetchServicesStatus();
-      }
-    } catch (err) {
-      showToast(err.message, 'error');
+    const data = await postJson(
+      '/api/emails/services/action',
+      { service, action },
+      `Failed to ${action} ${service}`
+    );
+    if (data) {
+      showToast(data.message || `Service ${service} ${action} successful!`);
+      fetchServicesStatus();
     }
   };
 
@@ -602,11 +736,17 @@ export default function EmailManager({ showToast }) {
                             {e.quota_mb === 0 ? 'Unlimited' : `${e.quota_mb} MB`}
                           </td>
                           <td className="py-3.5 px-4">
-                            <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-md font-bold text-[10px]">
-                              Active
-                            </span>
+                            {e.status === 'suspended' ? (
+                              <span className="bg-rose-500/10 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded-md font-bold text-[10px]">
+                                Suspended
+                              </span>
+                            ) : (
+                              <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-md font-bold text-[10px]">
+                                Active
+                              </span>
+                            )}
                           </td>
-                          <td className="py-3.5 px-4 text-zinc-400 font-mono">{e.created_at || '2026-08-18'}</td>
+                          <td className="py-3.5 px-4 text-zinc-400 font-mono">{e.created_at || '—'}</td>
                           <td className="py-3.5 px-4 text-right space-x-1.5">
                             <Button
                               onClick={async () => {
@@ -735,7 +875,7 @@ export default function EmailManager({ showToast }) {
                   <th className="py-3.5 px-4">Email Account</th>
                   <th className="py-3.5 px-4">Reply Subject</th>
                   <th className="py-3.5 px-4">Message Excerpt</th>
-                  <th className="py-3.5 px-4">Schedule Window</th>
+                  <th className="py-3.5 px-4">Repeat Interval</th>
                   <th className="py-3.5 px-4">Status</th>
                   <th className="py-3.5 px-4 text-right">Actions</th>
                 </tr>
@@ -753,19 +893,40 @@ export default function EmailManager({ showToast }) {
                       <td className="py-3.5 px-4 font-bold text-white">{ar.email}</td>
                       <td className="py-3.5 px-4 text-cyan-400 font-medium">{ar.subject}</td>
                       <td className="py-3.5 px-4 text-zinc-400 truncate max-w-xs">{ar.body}</td>
-                      <td className="py-3.5 px-4 text-zinc-400 font-mono text-[11px]">{ar.start_date} → {ar.end_date}</td>
-                      <td className="py-3.5 px-4">
-                        <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Active</Badge>
+                      <td className="py-3.5 px-4 text-zinc-400 font-mono text-[11px]">
+                        Every {ar.interval_days || 1} day(s) per sender
                       </td>
-                      <td className="py-3.5 px-4 text-right">
+                      <td className="py-3.5 px-4">
+                        {ar.enabled ? (
+                          <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Active</Badge>
+                        ) : (
+                          <Badge className="bg-zinc-500/10 text-zinc-400 border-zinc-500/30">Disabled</Badge>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-4 text-right space-x-1.5">
                         <Button
                           onClick={() => {
-                            setAutoresponders(autoresponders.filter((_, i) => i !== idx));
-                            showToast('AutoResponder deleted!');
+                            setAutoRespData({
+                              email: ar.email,
+                              subject: ar.subject,
+                              body: ar.body,
+                              interval_days: ar.interval_days || 1,
+                            });
+                            setIsAutoResponderOpen(true);
                           }}
                           variant="ghost"
                           size="sm"
+                          className="text-zinc-400 hover:text-white p-1.5 h-auto rounded-lg"
+                          title="Edit autoresponder"
+                        >
+                          <Settings2 className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          onClick={() => handleDeleteAutoresponder(ar.email)}
+                          variant="ghost"
+                          size="sm"
                           className="text-zinc-500 hover:text-rose-400 p-1.5 h-auto rounded-lg"
+                          title="Delete autoresponder"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </Button>
@@ -791,12 +952,20 @@ export default function EmailManager({ showToast }) {
                 <p className="text-xs text-zinc-400">Select how incoming emails for domain are handled by MTA daemons</p>
               </div>
               <select
-                value={selectedDomain}
-                onChange={(e) => setSelectedDomain(e.target.value)}
+                value={routingDomain}
+                onChange={(e) => {
+                  const domain = e.target.value;
+                  setRoutingDomain(domain);
+                  const existing = routes.find((r) => r.domain === domain);
+                  setMailRoutingMode(existing ? existing.mode : 'local');
+                  setRoutingDestination(existing ? existing.destination || '' : '');
+                }}
                 className="bg-zinc-900 border border-zinc-800 text-xs text-white rounded-xl px-3 py-1.5"
               >
-                <option value="server.akpanel.site">server.akpanel.site</option>
-                {emails.map((e, idx) => e.domain && <option key={idx} value={e.domain}>{e.domain}</option>)}
+                <option value="">Select a domain…</option>
+                {allDomains.map((d, idx) => (
+                  <option key={`site-${idx}`} value={d}>{d}</option>
+                ))}
               </select>
             </div>
 
@@ -835,15 +1004,81 @@ export default function EmailManager({ showToast }) {
               </div>
             </div>
 
+            {mailRoutingMode !== 'local' && (
+              <div className="pt-2">
+                <label className="text-xs font-medium text-zinc-300 block mb-1.5">
+                  Destination mail server (hostname or IP)
+                </label>
+                <Input
+                  value={routingDestination}
+                  onChange={(e) => setRoutingDestination(e.target.value)}
+                  placeholder="aspmx.l.google.com"
+                  className="bg-zinc-900 border-zinc-800 text-white text-xs h-9 rounded-xl"
+                />
+                <p className="text-[11px] text-zinc-500 mt-1.5">
+                  Written to the Postfix transport map as
+                  <span className="font-mono text-zinc-400">
+                    {' '}{routingDomain || 'domain'} {mailRoutingMode === 'backup' ? 'relay' : 'smtp'}:[{routingDestination || 'host'}]
+                  </span>
+                </p>
+              </div>
+            )}
+
             <div className="pt-3 border-t border-zinc-800 flex justify-between items-center">
-              <span className="text-xs text-zinc-400 font-mono">Configured MX records for: <b>{selectedDomain}</b></span>
+              <span className="text-xs text-zinc-400 font-mono">
+                Transport rule for: <b>{routingDomain || 'no domain selected'}</b>
+              </span>
               <Button
-                onClick={() => showToast('Mail routing configuration updated successfully!')}
+                onClick={handleSaveRouting}
+                disabled={!routingDomain || isSavingRouting}
                 className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold h-8 px-4 rounded-xl shadow-md"
               >
-                Save Routing Mode
+                {isSavingRouting ? 'Applying…' : 'Save Routing Mode'}
               </Button>
             </div>
+          </Card>
+
+          <Card className="bg-[#111217] border-zinc-800/90 rounded-2xl overflow-hidden shadow-sm">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-zinc-800 bg-zinc-950/60 text-zinc-400 font-semibold uppercase">
+                  <th className="py-3.5 px-4">Domain</th>
+                  <th className="py-3.5 px-4">Mode</th>
+                  <th className="py-3.5 px-4">Destination</th>
+                  <th className="py-3.5 px-4">Updated</th>
+                  <th className="py-3.5 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
+                {routes.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-10 text-center text-zinc-500 font-medium">
+                      No explicit transport rules. All hosted domains deliver locally by default.
+                    </td>
+                  </tr>
+                ) : (
+                  routes.map((r, idx) => (
+                    <tr key={idx} className="hover:bg-zinc-800/30 transition">
+                      <td className="py-3.5 px-4 font-bold text-white">{r.domain}</td>
+                      <td className="py-3.5 px-4 text-blue-400 font-medium capitalize">{r.mode}</td>
+                      <td className="py-3.5 px-4 font-mono text-zinc-400">{r.destination || 'this server'}</td>
+                      <td className="py-3.5 px-4 font-mono text-[11px] text-zinc-500">{r.updated_at || '—'}</td>
+                      <td className="py-3.5 px-4 text-right">
+                        <Button
+                          onClick={() => handleDeleteRoute(r.domain)}
+                          variant="ghost"
+                          size="sm"
+                          className="text-zinc-500 hover:text-rose-400 p-1.5 h-auto rounded-lg"
+                          title="Remove transport rule"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
           </Card>
         </div>
       )}
@@ -973,7 +1208,9 @@ export default function EmailManager({ showToast }) {
             <Card className="bg-[#111217] border-zinc-800/90 p-4 rounded-2xl space-y-3 shadow-sm">
               <div className="flex justify-between items-center">
                 <span className="font-bold text-white text-xs">OpenDKIM Milter</span>
-                <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Active</Badge>
+                <Badge className={servicesStatus?.opendkim_running ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}>
+                  {servicesStatus?.opendkim_running ? 'Running' : 'Stopped'}
+                </Badge>
               </div>
               <div className="text-[11px] text-zinc-400 font-mono">Port: 8891 (Local Milter)</div>
               <div className="flex gap-2 pt-1">
@@ -986,7 +1223,9 @@ export default function EmailManager({ showToast }) {
             <Card className="bg-[#111217] border-zinc-800/90 p-4 rounded-2xl space-y-3 shadow-sm">
               <div className="flex justify-between items-center">
                 <span className="font-bold text-white text-xs">SpamAssassin Daemon</span>
-                <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Active</Badge>
+                <Badge className={servicesStatus?.spamassassin_running ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}>
+                  {servicesStatus?.spamassassin_running ? 'Running' : 'Stopped'}
+                </Badge>
               </div>
               <div className="text-[11px] text-zinc-400 font-mono">Port: 783 (Spamd)</div>
               <div className="flex gap-2 pt-1">
@@ -1042,6 +1281,74 @@ export default function EmailManager({ showToast }) {
               </div>
             </div>
           </Card>
+
+          <Card className="bg-[#111217] border-zinc-800/90 p-6 rounded-2xl shadow-sm space-y-4">
+            <div className="border-b border-zinc-800 pb-3">
+              <h3 className="text-sm font-bold text-white">Domain Catch-All Delivery</h3>
+              <p className="text-xs text-zinc-400">
+                Deliver mail addressed to any non-existent mailbox on a domain into one inbox. Written to
+                the Postfix <span className="font-mono">virtual_alias_maps</span> as
+                <span className="font-mono"> @domain</span>.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+              <div>
+                <label className="text-xs font-medium text-zinc-300 block mb-1">Domain</label>
+                <select
+                  value={catchAllData.domain}
+                  onChange={(e) => setCatchAllData({ ...catchAllData, domain: e.target.value })}
+                  className="w-full bg-zinc-900 border border-zinc-800 text-xs text-white rounded-xl px-3 h-9"
+                >
+                  <option value="">Select a domain…</option>
+                  {allDomains.map((d, idx) => (
+                    <option key={idx} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-zinc-300 block mb-1">Destination mailbox</label>
+                <select
+                  value={catchAllData.destination}
+                  onChange={(e) => setCatchAllData({ ...catchAllData, destination: e.target.value })}
+                  className="w-full bg-zinc-900 border border-zinc-800 text-xs text-white rounded-xl px-3 h-9"
+                >
+                  <option value="">Select a mailbox…</option>
+                  {emails.map((e, idx) => (
+                    <option key={idx} value={e.email}>{e.email}</option>
+                  ))}
+                </select>
+              </div>
+              <Button
+                onClick={handleSaveCatchAll}
+                disabled={isSavingCatchAll}
+                className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs h-9 px-5 rounded-xl shadow-md"
+              >
+                {isSavingCatchAll ? 'Applying…' : 'Set Catch-All'}
+              </Button>
+            </div>
+
+            {catchAllAliases.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-zinc-800">
+                {catchAllAliases.map((a, idx) => (
+                  <div key={idx} className="flex items-center justify-between bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5">
+                    <span className="text-xs font-mono text-zinc-300">
+                      {a.source} <ArrowUpRight className="w-3 h-3 inline text-zinc-500" /> {a.destination}
+                    </span>
+                    <Button
+                      onClick={() => handleRemoveCatchAll(a.source.replace('@', ''))}
+                      variant="ghost"
+                      size="sm"
+                      className="text-zinc-500 hover:text-rose-400 p-1.5 h-auto rounded-lg"
+                      title="Remove catch-all"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
         </div>
       )}
 
@@ -1052,84 +1359,68 @@ export default function EmailManager({ showToast }) {
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <Card className="bg-[#111217] border-zinc-800/90 p-6 rounded-2xl shadow-sm flex flex-col justify-center items-center text-center space-y-3">
-              <div className="w-20 h-20 rounded-full bg-emerald-500/10 border-2 border-emerald-500/40 flex items-center justify-center text-emerald-400">
-                <ShieldCheck className="w-10 h-10" />
+              <div className={`w-20 h-20 rounded-full flex items-center justify-center border-2 ${
+                deliverabilityScore >= 80
+                  ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
+                  : deliverabilityScore >= 50
+                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
+                  : 'bg-rose-500/10 border-rose-500/40 text-rose-400'
+              }`}>
+                {deliverabilityScore >= 80 ? <ShieldCheck className="w-10 h-10" /> : <AlertTriangle className="w-10 h-10" />}
               </div>
               <div>
-                <div className="text-3xl font-black text-white">100 / 100</div>
-                <div className="text-xs font-bold text-emerald-400 mt-0.5">Maximum Deliverability Rate</div>
+                <div className="text-3xl font-black text-white">{deliverabilityScore} / 100</div>
+                <div className="text-xs font-bold text-zinc-400 mt-0.5">Live Deliverability Score</div>
               </div>
-              <p className="text-xs text-zinc-400">DKIM RSA-2048, SPF, and DMARC records are fully generated.</p>
+              <p className="text-xs text-zinc-400">
+                {securityReport
+                  ? `${passedChecks.length} of ${deliverabilityChecks.length} DNS checks passing for ${selectedDomain}.`
+                  : 'Resolving DNS records…'}
+              </p>
+              <Button
+                onClick={() => fetchSecurityReport(selectedDomain)}
+                size="sm"
+                variant="outline"
+                className="border-zinc-800 bg-zinc-900 text-xs h-8 rounded-xl"
+              >
+                <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                <span>Re-check DNS</span>
+              </Button>
             </Card>
 
             <Card className="lg:col-span-2 bg-[#111217] border-zinc-800/90 p-6 rounded-2xl shadow-sm space-y-4">
               <h3 className="text-sm font-bold text-white">Security DNS Records for {selectedDomain}</h3>
               <div className="space-y-3 text-xs">
-                <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between">
-                  <div className="space-y-1">
-                    <div className="font-bold text-white flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      <span>SPF (Sender Policy Framework)</span>
+                {deliverabilityChecks.map((check) => (
+                  <div key={check.key} className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between gap-3">
+                    <div className="space-y-1 min-w-0">
+                      <div className="font-bold text-white flex items-center gap-1.5">
+                        {check.ok ? (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        )}
+                        <span>{check.label}</span>
+                      </div>
+                      <code className="text-[11px] text-zinc-400 font-mono block break-all">
+                        {check.value || 'Not published on DNS yet'}
+                      </code>
                     </div>
-                    <code className="text-[11px] text-zinc-400 font-mono block">{securityReport?.spf_record || 'v=spf1 +a +mx ~all'}</code>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={!check.value}
+                      onClick={() => {
+                        navigator.clipboard.writeText(check.value);
+                        showToast(`${check.label} value copied!`);
+                      }}
+                      className="text-cyan-400 hover:text-cyan-300 shrink-0"
+                    >
+                      <Copy className="w-3.5 h-3.5 mr-1" />
+                      <span>Copy</span>
+                    </Button>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      navigator.clipboard.writeText('v=spf1 +a +mx ~all');
-                      showToast('SPF record copied to clipboard!');
-                    }}
-                    className="text-cyan-400 hover:text-cyan-300"
-                  >
-                    <Copy className="w-3.5 h-3.5 mr-1" />
-                    <span>Copy</span>
-                  </Button>
-                </div>
-
-                <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between">
-                  <div className="space-y-1">
-                    <div className="font-bold text-white flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      <span>DKIM (DomainKeys Identified Mail - 2048 bit)</span>
-                    </div>
-                    <code className="text-[11px] text-zinc-400 font-mono block">default._domainkey.{selectedDomain} TXT "v=DKIM1; k=rsa; p=MIIBIjANBg..."</code>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      navigator.clipboard.writeText(`v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...`);
-                      showToast('DKIM public key copied!');
-                    }}
-                    className="text-cyan-400 hover:text-cyan-300"
-                  >
-                    <Copy className="w-3.5 h-3.5 mr-1" />
-                    <span>Copy</span>
-                  </Button>
-                </div>
-
-                <div className="p-3.5 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between">
-                  <div className="space-y-1">
-                    <div className="font-bold text-white flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      <span>DMARC (Domain-based Message Authentication)</span>
-                    </div>
-                    <code className="text-[11px] text-zinc-400 font-mono block">_dmarc.{selectedDomain} TXT "v=DMARC1; p=none; sp=none;"</code>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      navigator.clipboard.writeText('v=DMARC1; p=none; sp=none;');
-                      showToast('DMARC record copied!');
-                    }}
-                    className="text-cyan-400 hover:text-cyan-300"
-                  >
-                    <Copy className="w-3.5 h-3.5 mr-1" />
-                    <span>Copy</span>
-                  </Button>
-                </div>
+                ))}
               </div>
             </Card>
           </div>
@@ -1145,33 +1436,91 @@ export default function EmailManager({ showToast }) {
             <Card className="bg-[#111217] border-zinc-800/90 p-5 rounded-2xl shadow-sm space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-white uppercase font-mono">SpamAssassin Master Filtering</span>
-                <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Enabled</Badge>
+                <Badge className={antiSpam.enabled ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-zinc-500/10 text-zinc-400 border-zinc-500/30'}>
+                  {antiSpam.enabled ? 'Enabled' : 'Disabled'}
+                </Badge>
               </div>
-              <p className="text-xs text-zinc-400">Scans all incoming SMTP transmissions and tags spam scores.</p>
-              <div className="pt-2">
-                <label className="text-xs font-medium text-zinc-300 block mb-1.5">Spam Score Rejection Threshold: <b>{spamScore}</b></label>
+              <p className="text-xs text-zinc-400">
+                Wired into Postfix through <span className="font-mono">spamass-milter</span>; every inbound
+                message is scored before delivery.
+              </p>
+
+              <label className="flex items-center gap-2 text-xs text-zinc-300 pt-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={antiSpam.enabled}
+                  onChange={(e) => setAntiSpam({ ...antiSpam, enabled: e.target.checked })}
+                  className="accent-blue-500"
+                />
+                <span>Enable spam scanning for all inbound mail</span>
+              </label>
+
+              <div className="pt-1">
+                <label className="text-xs font-medium text-zinc-300 block mb-1.5">
+                  Spam Score Threshold: <b>{antiSpam.required_score}</b>
+                </label>
                 <input
                   type="range"
                   min="1"
                   max="10"
                   step="0.5"
-                  value={spamScore}
-                  onChange={(e) => setSpamScore(parseFloat(e.target.value))}
+                  value={antiSpam.required_score}
+                  onChange={(e) => setAntiSpam({ ...antiSpam, required_score: parseFloat(e.target.value) })}
                   className="w-full accent-blue-500"
                 />
+              </div>
+
+              <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={antiSpam.rewrite_subject}
+                  onChange={(e) => setAntiSpam({ ...antiSpam, rewrite_subject: e.target.checked })}
+                  className="accent-blue-500"
+                />
+                <span>Tag the subject of flagged messages</span>
+              </label>
+
+              {antiSpam.rewrite_subject && (
+                <Input
+                  value={antiSpam.subject_tag}
+                  onChange={(e) => setAntiSpam({ ...antiSpam, subject_tag: e.target.value })}
+                  placeholder="[SPAM]"
+                  className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono h-9"
+                />
+              )}
+
+              <div className="pt-2 flex justify-end">
+                <Button
+                  onClick={() => handleSaveAntiSpam()}
+                  disabled={isSavingSpam}
+                  className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs h-9 px-5 rounded-xl shadow-md"
+                >
+                  {isSavingSpam ? 'Applying…' : 'Apply Anti-Spam Policy'}
+                </Button>
               </div>
             </Card>
 
             <Card className="bg-[#111217] border-zinc-800/90 p-5 rounded-2xl shadow-sm space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-white uppercase font-mono">ClamAV Antivirus Mail Scanner</span>
-                <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30">Enabled</Badge>
+                <span className="text-xs font-bold text-white uppercase font-mono">SpamAssassin Rule Set</span>
+                <Badge className={servicesStatus?.spamassassin_running ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-rose-500/10 text-rose-400 border-rose-500/30'}>
+                  {servicesStatus?.spamassassin_running ? 'Running' : 'Stopped'}
+                </Badge>
               </div>
-              <p className="text-xs text-zinc-400">Inspects all attachments for trojans, worms, and ransomware.</p>
+              <p className="text-xs text-zinc-400">
+                Runs <span className="font-mono">sa-update</span> and restarts the scanner so refreshed
+                rules take effect immediately.
+              </p>
               <div className="pt-2 flex justify-between items-center text-xs text-zinc-400 font-mono">
-                <span>Signatures: 8,650,220 definitions</span>
-                <Button size="sm" variant="outline" className="text-xs border-zinc-800 h-7" onClick={() => showToast('ClamAV virus signatures updated!')}>
-                  Update DB
+                <span>Last update: {antiSpam.last_update || 'never'}</span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isUpdatingRules}
+                  className="text-xs border-zinc-800 h-7"
+                  onClick={handleUpdateSpamRules}
+                >
+                  {isUpdatingRules ? 'Updating…' : 'Update Rules'}
                 </Button>
               </div>
             </Card>
@@ -1188,10 +1537,11 @@ export default function EmailManager({ showToast }) {
               />
               <Button
                 onClick={() => {
-                  if (!newBlacklist) return;
-                  setBlacklistedSenders([...blacklistedSenders, newBlacklist]);
+                  if (!newBlacklist.trim()) return;
+                  const next = [...(antiSpam.blacklist || []), newBlacklist.trim()];
+                  setAntiSpam({ ...antiSpam, blacklist: next });
                   setNewBlacklist('');
-                  showToast('Sender added to spam blacklist!');
+                  handleSaveAntiSpam({ blacklist: next });
                 }}
                 className="bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs px-4 rounded-xl shadow-md"
               >
@@ -1200,17 +1550,25 @@ export default function EmailManager({ showToast }) {
             </div>
 
             <div className="flex flex-wrap gap-2 pt-2">
-              {blacklistedSenders.map((item, idx) => (
-                <span key={idx} className="bg-zinc-900 border border-zinc-800 px-3 py-1 rounded-xl text-xs font-mono text-rose-300 flex items-center gap-2">
-                  <span>{item}</span>
-                  <button
-                    onClick={() => setBlacklistedSenders(blacklistedSenders.filter((_, i) => i !== idx))}
-                    className="text-zinc-500 hover:text-white"
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
+              {(antiSpam.blacklist || []).length === 0 ? (
+                <span className="text-xs text-zinc-500">No blacklisted senders configured yet.</span>
+              ) : (
+                (antiSpam.blacklist || []).map((item, idx) => (
+                  <span key={idx} className="bg-zinc-900 border border-zinc-800 px-3 py-1 rounded-xl text-xs font-mono text-rose-300 flex items-center gap-2">
+                    <span>{item}</span>
+                    <button
+                      onClick={() => {
+                        const next = (antiSpam.blacklist || []).filter((_, i) => i !== idx);
+                        setAntiSpam({ ...antiSpam, blacklist: next });
+                        handleSaveAntiSpam({ blacklist: next });
+                      }}
+                      className="text-zinc-500 hover:text-white"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))
+              )}
             </div>
           </Card>
         </div>
@@ -1368,22 +1726,20 @@ export default function EmailManager({ showToast }) {
             </DialogTitle>
           </DialogHeader>
 
-          <form onSubmit={(e) => {
-            e.preventDefault();
-            setAutoresponders([...autoresponders, { ...autoRespData, is_active: true }]);
-            setIsAutoResponderOpen(false);
-            showToast('AutoResponder configured successfully!');
-          }} className="space-y-4 mt-2">
+          <form onSubmit={handleSaveAutoresponder} className="space-y-4 mt-2">
             <div>
               <label className="text-xs font-semibold text-zinc-300 block mb-1">Email Account</label>
-              <Input
-                type="email"
+              <select
                 value={autoRespData.email}
                 onChange={(e) => setAutoRespData({ ...autoRespData, email: e.target.value })}
-                placeholder="support@server.akpanel.site"
-                className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
+                className="w-full h-10 bg-zinc-900 border border-zinc-800 text-xs rounded-xl font-mono text-white px-3"
                 required
-              />
+              >
+                <option value="">Select a mailbox…</option>
+                {emails.map((e, idx) => (
+                  <option key={idx} value={e.email}>{e.email}</option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -1408,25 +1764,21 @@ export default function EmailManager({ showToast }) {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="text-xs font-semibold text-zinc-300 block mb-1">Start Date</label>
-                <Input
-                  type="date"
-                  value={autoRespData.start_date}
-                  onChange={(e) => setAutoRespData({ ...autoRespData, start_date: e.target.value })}
-                  className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-semibold text-zinc-300 block mb-1">End Date</label>
-                <Input
-                  type="date"
-                  value={autoRespData.end_date}
-                  onChange={(e) => setAutoRespData({ ...autoRespData, end_date: e.target.value })}
-                  className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
-                />
-              </div>
+            <div>
+              <label className="text-xs font-semibold text-zinc-300 block mb-1">
+                Repeat interval (days per sender)
+              </label>
+              <Input
+                type="number"
+                min="1"
+                max="30"
+                value={autoRespData.interval_days}
+                onChange={(e) => setAutoRespData({ ...autoRespData, interval_days: parseInt(e.target.value) || 1 })}
+                className="bg-zinc-900 border-zinc-800 text-xs rounded-xl font-mono"
+              />
+              <p className="text-[11px] text-zinc-500 mt-1.5">
+                Dovecot Sieve will not reply to the same sender again within this window.
+              </p>
             </div>
 
             <DialogFooter className="pt-2">

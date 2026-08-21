@@ -168,6 +168,15 @@ func startPanelListener(addr string, port string, scope string, targetURL string
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--bootstrap-services" {
+		if err := services.BootstrapPanelServices(); err != nil {
+			log.Printf("⚠️ [AKpanel] bootstrap finished with errors: %v", err)
+			os.Exit(1)
+		}
+		log.Println("✅ [AKpanel] service bootstrap complete")
+		return
+	}
+
 	services.EnsurePanelMariaDB()
 	app := bootstrap.Boot()
 

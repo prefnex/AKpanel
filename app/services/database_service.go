@@ -111,7 +111,10 @@ func LoadAccountMySQLPassword(username string) string {
 }
 
 const pmaSignonPHP = `<?php
+// The signon session must land in the same directory phpMyAdmin reads
+// ($cfg['SessionSavePath']); otherwise the handover is silently lost.
 session_name('SignonSession');
+session_save_path('/var/lib/phpmyadmin/sessions');
 session_start();
 if (isset($_GET['logout'])) {
     $_SESSION = [];
@@ -129,6 +132,8 @@ if ($token !== '') {
         $_SESSION['PMA_single_signon_user'] = $d['user'];
         $_SESSION['PMA_single_signon_password'] = $d['pass'];
         $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
+        $_SESSION['PMA_single_signon_port'] = 3306;
+        session_write_close();
         header('Location: index.php');
         exit;
     }
@@ -137,6 +142,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
     $_SESSION['PMA_single_signon_user'] = (string)($_POST['pma_username'] ?? '');
     $_SESSION['PMA_single_signon_password'] = (string)($_POST['pma_password'] ?? '');
     $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
+    $_SESSION['PMA_single_signon_port'] = 3306;
+    session_write_close();
     header('Location: index.php');
     exit;
 }
@@ -213,7 +220,13 @@ func ExecMySQL(sqlStr string) error {
 }
 
 func (d *DatabaseService) EnsurePhpMyAdminDaemon() {
-	go func() {
+	go d.EnsurePhpMyAdminSetup()
+}
+
+// EnsurePhpMyAdminSetup provisions the control DB, config overlay, signon endpoint and
+// internal listener. Runs synchronously so the installer can guarantee it finished.
+func (d *DatabaseService) EnsurePhpMyAdminSetup() {
+	{
 		sessDir := "/var/lib/phpmyadmin/sessions"
 		_ = os.MkdirAll(sessDir, 0770)
 		_ = exec.Command("chown", "www-data:www-data", sessDir).Run()
@@ -281,7 +294,7 @@ $cfg['AllowThirdPartyFraming'] = false;
 		_ = os.Remove("/usr/share/phpmyadmin/phpmyadmin")
 		_ = exec.Command("pkill", "-f", "php -S 0.0.0.0:8085").Run()
 		_ = NewNginxService().EnsurePhpMyAdminListener()
-	}()
+	}
 }
 
 func (d *DatabaseService) initMetaDB() {

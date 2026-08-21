@@ -22,5 +22,21 @@ func registerEmailsRoutes(emailController *controllers.EmailController) {
 	facades.Route().Post("/api/emails/queue/flush", emailController.FlushQueue)
 	facades.Route().Post("/api/emails/queue/delete", emailController.DeleteQueue)
 	facades.Route().Get("/api/emails/webmail-sso", emailController.WebmailSSO)
+	facades.Route().Get("/api/emails/webmail-url", emailController.WebmailURL)
 	facades.Route().Get("/api/emails/security-report", emailController.SecurityReport)
+
+	// Sieve autoresponders
+	facades.Route().Get("/api/emails/autoresponders", emailController.Autoresponders)
+	facades.Route().Post("/api/emails/autoresponders", emailController.StoreAutoresponder)
+	facades.Route().Post("/api/emails/autoresponders/delete", emailController.DestroyAutoresponder)
+
+	// SpamAssassin policy
+	facades.Route().Get("/api/emails/antispam", emailController.AntiSpam)
+	facades.Route().Post("/api/emails/antispam", emailController.SaveAntiSpam)
+	facades.Route().Post("/api/emails/antispam/update-rules", emailController.UpdateSpamRules)
+
+	// Postfix transport routing
+	facades.Route().Get("/api/emails/routing", emailController.Routing)
+	facades.Route().Post("/api/emails/routing", emailController.SaveRouting)
+	facades.Route().Post("/api/emails/routing/delete", emailController.DestroyRouting)
 }

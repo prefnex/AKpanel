@@ -149,10 +149,12 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 
 	response := ctx.Response()
 	for _, cookie := range resp.Cookies() {
+		// Roundcube runs with request_path=/roundcube, so its session cookie must be
+		// scoped there; a "/" path makes the browser drop the session after login.
 		response.Cookie(goravelhttp.Cookie{
 			Name:     cookie.Name,
 			Value:    cookie.Value,
-			Path:     "/",
+			Path:     "/roundcube",
 			Domain:   "",
 			Expires:  cookie.Expires,
 			MaxAge:   cookie.MaxAge,

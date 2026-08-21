@@ -36,7 +36,14 @@ func (f *FTPService) EnsureConfigured() error {
 
 	_ = os.MkdirAll("/etc/pure-ftpd", 0755)
 	if _, err := os.Stat(pureFTPdConf); err == nil {
-		return nil
+		return f.ensurePassiveIPLocked()
+	}
+
+	// Passive mode advertises this address to the client, so it has to be the public IP;
+	// 127.0.0.1 makes every passive transfer from outside the server hang.
+	passiveIP := strings.TrimSpace(NewDNSService().GetSystemIP())
+	if passiveIP == "" {
+		passiveIP = "127.0.0.1"
 	}
 
 	conf := `ChrootEveryone               yes
@@ -49,13 +56,46 @@ AnonymousOnly                no
 NoAnonymous                  yes
 UnixAuthentication           yes
 PassivePortRange             30000 30009
-ForcePassiveIP               127.0.0.1
+ForcePassiveIP               ` + passiveIP + `
 PureDB                       /etc/pure-ftpd/pureftpd.pdb
 CreateHomeDir                yes
 MaxDiskUsage                   99
 CustomerProof                yes
 `
 	return os.WriteFile(pureFTPdConf, []byte(conf), 0644)
+}
+
+// ensurePassiveIPLocked repairs an existing config that still advertises the loopback.
+func (f *FTPService) ensurePassiveIPLocked() error {
+	body, err := os.ReadFile(pureFTPdConf)
+	if err != nil {
+		return nil
+	}
+	publicIP := strings.TrimSpace(NewDNSService().GetSystemIP())
+	if publicIP == "" || publicIP == "127.0.0.1" {
+		return nil
+	}
+
+	lines := strings.Split(string(body), "\n")
+	changed := false
+	for i, line := range lines {
+		if !strings.HasPrefix(strings.TrimSpace(line), "ForcePassiveIP") {
+			continue
+		}
+		if strings.Contains(line, publicIP) {
+			return nil
+		}
+		lines[i] = "ForcePassiveIP               " + publicIP
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	if err := os.WriteFile(pureFTPdConf, []byte(strings.Join(lines, "\n")), 0644); err != nil {
+		return err
+	}
+	_ = exec.Command("systemctl", "restart", "pure-ftpd").Run()
+	return nil
 }
 
 func (f *FTPService) SetPrimaryPassword(username, password string) error {

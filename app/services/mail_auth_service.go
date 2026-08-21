@@ -3,14 +3,26 @@ package services
 import (
 	"context"
 	"crypto/sha512"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+)
+
+// Dovecot reads one-time webmail SSO credentials from a dedicated passwd-file so
+// Roundcube can log in with the plain mailbox address. Master-user logins ("user*master")
+// cannot be used: Roundcube runs the username through idn_to_ascii(), which rejects "*"
+// and turns the whole username into an empty string.
+const (
+	dovecotSSOPasswdFile = "/etc/dovecot/akpanel-sso-passwd"
+	dovecotSSOIndexFile  = "/etc/dovecot/akpanel-sso-index.json"
+	ssoPasswordTTL       = 3 * time.Minute
 )
 
 // MailAuthService manages Dovecot passwd-file authentication for virtual mailboxes.
@@ -45,6 +57,9 @@ func (m *MailAuthService) EnsureDovecotConfig() error {
 	if _, err := os.Stat(m.passwdFile); os.IsNotExist(err) {
 		_ = os.WriteFile(m.passwdFile, []byte(""), 0600)
 	}
+	if _, err := os.Stat(dovecotSSOPasswdFile); os.IsNotExist(err) {
+		_ = os.WriteFile(dovecotSSOPasswdFile, []byte(""), 0600)
+	}
 
 	conf := fmt.Sprintf(`auth_master_user_separator = *
 
@@ -52,6 +67,12 @@ passdb {
   driver = passwd-file
   args = scheme=SHA512-CRYPT username_format=%%u /etc/dovecot/akpanel-master-users
   master = yes
+}
+
+# One-time webmail SSO credentials (pruned on every issue, entries expire in minutes).
+passdb {
+  driver = passwd-file
+  args = scheme=SHA512-CRYPT username_format=%%u %s
 }
 
 passdb {
@@ -62,8 +83,14 @@ userdb {
   driver = static
   args = uid=%s gid=%s home=/var/vmail/%%d/%%n
 }
-`, uid, gid)
+
+# Postfix delivers Maildir into /var/vmail/<domain>/<user>/Maildir. Without this the
+# Debian default (mbox in /var/mail/%%u) applies and IMAP shows an empty INBOX.
+mail_location = maildir:~/Maildir
+mail_privileged_group = vmail
+`, dovecotSSOPasswdFile, uid, gid)
 	m.ensureMasterUserLocked()
+	m.pruneSSOPasswordsLocked()
 	authChanged := writeIfChanged(m.confFile, conf, 0644)
 	listenChanged := m.writeDovecotListenersLocked()
 	m.ensurePostfixMailStackLocked(uid, gid)
@@ -155,8 +182,17 @@ func (m *MailAuthService) writeDovecotListenersLocked() bool {
 ssl = yes
 ssl_cert = <%s
 ssl_key = <%s
-disable_plaintext_auth = no
+# Cleartext credentials are only tolerated from the loopback (Roundcube talks to
+# 127.0.0.1:143); remote clients must negotiate STARTTLS or use the SSL ports.
+disable_plaintext_auth = yes
 auth_mechanisms = plain login
+
+remote 127.0.0.1 {
+  disable_plaintext_auth = no
+}
+remote ::1 {
+  disable_plaintext_auth = no
+}
 
 service auth {
   unix_listener /var/spool/postfix/private/auth {
@@ -164,6 +200,28 @@ service auth {
     user = postfix
     group = postfix
   }
+}
+
+# Delivery goes through Dovecot LMTP instead of the Postfix virtual agent so Sieve
+# scripts (autoresponders, filters) are actually executed on incoming mail.
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    mode = 0600
+    user = postfix
+    group = postfix
+  }
+}
+
+protocol lmtp {
+  mail_plugins = $mail_plugins sieve
+}
+protocol lda {
+  mail_plugins = $mail_plugins sieve
+}
+
+plugin {
+  sieve = /var/vmail/%%d/%%n/.dovecot.sieve
+  sieve_dir = /var/vmail/%%d/%%n/sieve
 }
 `, cert, key)
 	for _, p := range mailTLSDomainPairs() {
@@ -225,11 +283,48 @@ func (m *MailAuthService) ensurePostfixMailStackLocked(uid, gid string) {
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_base = /var/vmail").Run()
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_domains = /etc/postfix/vmailbox_domains").Run()
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_maps = hash:/etc/postfix/vmailbox").Run()
+	// Without virtual_alias_maps Postfix ignores /etc/postfix/virtual entirely, so
+	// forwarders and catch-alls written by the panel would never take effect.
+	_ = exec.Command("postconf", "-e", "virtual_alias_maps = hash:/etc/postfix/virtual").Run()
 	_ = exec.Command("postconf", "-e", "virtual_uid_maps = static:"+uid).Run()
 	_ = exec.Command("postconf", "-e", "virtual_gid_maps = static:"+gid).Run()
+	// Hand delivery to Dovecot LMTP so Sieve autoresponders and filters run.
+	_ = exec.Command("postconf", "-e", "virtual_transport = lmtp:unix:private/dovecot-lmtp").Run()
+	ensurePostfixVirtualAliasMapFile()
 	writePostfixSNIMap()
 	ensurePostfixMasterServices()
 	runTimeout(8*time.Second, "systemctl", "reload", "postfix")
+}
+
+// ensurePostfixVirtualAliasMapFile guarantees /etc/postfix/virtual and its .db exist,
+// otherwise Postfix refuses to start once virtual_alias_maps points at them.
+func ensurePostfixVirtualAliasMapFile() {
+	path := "/etc/postfix/virtual"
+	if _, err := os.Stat(path); err != nil {
+		_ = os.WriteFile(path, []byte("\n"), 0644)
+	}
+	if _, err := os.Stat(path + ".db"); err != nil {
+		_ = exec.Command("postmap", path).Run()
+	}
+}
+
+// EnsureMailIdentity pins the SMTP identity. A missing or bogus myhostname is one of the
+// most common reasons remote MTAs reject or spam-folder outbound mail.
+func (m *MailAuthService) EnsureMailIdentity() {
+	host := strings.TrimSpace(NewDNSService().GetSystemHostname())
+	if host == "" || !strings.Contains(host, ".") {
+		return
+	}
+	domain := host
+	if parts := strings.SplitN(host, ".", 2); len(parts) == 2 && strings.Contains(parts[1], ".") {
+		domain = parts[1]
+	}
+	_ = exec.Command("postconf", "-e", "myhostname = "+host).Run()
+	_ = exec.Command("postconf", "-e", "mydomain = "+domain).Run()
+	_ = exec.Command("postconf", "-e", "myorigin = $myhostname").Run()
+	_ = exec.Command("postconf", "-e", "smtp_helo_name = $myhostname").Run()
+	_ = exec.Command("postconf", "-e", "smtpd_banner = $myhostname ESMTP").Run()
+	runTimeout(10*time.Second, "systemctl", "reload", "postfix")
 }
 
 func writePostfixSNIMap() {
@@ -326,9 +421,82 @@ func (m *MailAuthService) ensureMasterUserLocked() {
 	_ = os.WriteFile("/etc/dovecot/akpanel-master-users", []byte("akpanel-sso:"+hash+"\n"), 0600)
 }
 
-// MasterLoginIdentity returns Roundcube IMAP login using the Dovecot master user.
-func (m *MailAuthService) MasterLoginIdentity(email string) (user, pass string) {
-	return email + "*akpanel-sso", persistSecret("dovecot_master_pass", 24)
+type ssoPasswordEntry struct {
+	Hash      string `json:"hash"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// IssueSSOPassword mints a short-lived password that authenticates only the given
+// mailbox, so Roundcube can auto-login with the plain email address as username.
+func (m *MailAuthService) IssueSSOPassword(email string) (string, error) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	if email == "" || !strings.Contains(email, "@") {
+		return "", fmt.Errorf("invalid mailbox address")
+	}
+	password := randomAlnum(32)
+	hash, err := m.hashPassword(password)
+	if err != nil {
+		return "", err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	index := m.readSSOIndexLocked()
+	index[email] = ssoPasswordEntry{Hash: hash, ExpiresAt: time.Now().Add(ssoPasswordTTL).Unix()}
+	if err := m.writeSSOIndexLocked(index); err != nil {
+		return "", err
+	}
+	return password, nil
+}
+
+// RevokeSSOPassword drops any pending one-time credential for a mailbox.
+func (m *MailAuthService) RevokeSSOPassword(email string) {
+	email = strings.TrimSpace(strings.ToLower(email))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	index := m.readSSOIndexLocked()
+	if _, ok := index[email]; !ok {
+		return
+	}
+	delete(index, email)
+	_ = m.writeSSOIndexLocked(index)
+}
+
+func (m *MailAuthService) pruneSSOPasswordsLocked() {
+	_ = m.writeSSOIndexLocked(m.readSSOIndexLocked())
+}
+
+func (m *MailAuthService) readSSOIndexLocked() map[string]ssoPasswordEntry {
+	index := map[string]ssoPasswordEntry{}
+	b, err := os.ReadFile(dovecotSSOIndexFile)
+	if err != nil {
+		return index
+	}
+	_ = json.Unmarshal(b, &index)
+	now := time.Now().Unix()
+	for email, entry := range index {
+		if entry.ExpiresAt <= now || entry.Hash == "" {
+			delete(index, email)
+		}
+	}
+	return index
+}
+
+func (m *MailAuthService) writeSSOIndexLocked(index map[string]ssoPasswordEntry) error {
+	body, err := json.Marshal(index)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dovecotSSOIndexFile, body, 0600); err != nil {
+		return err
+	}
+	lines := make([]string, 0, len(index))
+	for email, entry := range index {
+		lines = append(lines, fmt.Sprintf("%s:%s", email, entry.Hash))
+	}
+	sort.Strings(lines)
+	return os.WriteFile(dovecotSSOPasswdFile, []byte(strings.Join(lines, "\n")+"\n"), 0600)
 }
 
 // SetMailboxPassword adds or updates a mailbox password in Dovecot passwd-file.
