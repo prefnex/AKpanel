@@ -47,14 +47,20 @@ func ProvisionMySQLUser(username, password string) error {
 	if rootPass != "" {
 		cmd := exec.Command("mysql", "-u", "root", "-p"+rootPass, "-e", scopedSQL)
 		if err := cmd.Run(); err == nil {
+			services.PersistAccountMySQLPassword(username, password)
 			return nil
 		}
 	}
 	cmd2 := exec.Command("mysql", "-u", "ak_admin", "-e", scopedSQL)
 	if err := cmd2.Run(); err == nil {
+		services.PersistAccountMySQLPassword(username, password)
 		return nil
 	}
-	return services.ExecMySQL(scopedSQL)
+	if err := services.ExecMySQL(scopedSQL); err != nil {
+		return err
+	}
+	services.PersistAccountMySQLPassword(username, password)
+	return nil
 }
 
 // ProvisionPostgreSQLUser creates a PostgreSQL role and default database.

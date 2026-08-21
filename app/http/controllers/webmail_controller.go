@@ -195,22 +195,8 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 // SSO renders an auto-submit Roundcube login using the Dovecot master user.
 func (r *WebmailController) SSO(ctx goravelhttp.Context) goravelhttp.Response {
 	token := ctx.Request().Query("token", "")
-	email, err := services.ConsumeWebmailSSOToken(token)
-	if err != nil {
+	if !services.PeekWebmailSSOToken(token) {
 		return ctx.Response().Status(400).String("Webmail login link expired. Open webmail again from the panel.")
 	}
-	html := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Opening webmail</title>
-<meta http-equiv="refresh" content="0;url=/roundcube/?_task=login&amp;_user=%s">
-</head>
-<body style="font-family:sans-serif;background:#09090b;color:#fff;text-align:center;padding:48px">
-<p>Opening webmail for %s — enter the mailbox password to sign in.</p>
-<p><a href="/roundcube/?_task=login&amp;_user=%s" style="color:#818cf8">Continue to Roundcube</a></p>
-</body></html>`, url.QueryEscape(email), htmlEscape(email), url.QueryEscape(email))
-	return ctx.Response().Status(200).Data("text/html; charset=utf-8", []byte(html))
-}
-
-func htmlEscape(s string) string {
-	replacer := strings.NewReplacer(`&`, "&amp;", `"`, "&quot;", `<`, "&lt;", `>`, "&gt;")
-	return replacer.Replace(s)
+	return ctx.Response().Redirect(302, "/roundcube/?_task=login&sso="+url.QueryEscape(token))
 }

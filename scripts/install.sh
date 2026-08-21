@@ -219,7 +219,7 @@ fi
 build_php_package_list() {
     local PKG_LIST=""
     for ver in $AKPANEL_PHP_VERSIONS; do
-        PKG_LIST="$PKG_LIST php${ver}-cli php${ver}-fpm php${ver}-common php${ver}-mysql php${ver}-curl php${ver}-mbstring php${ver}-xml php${ver}-zip php${ver}-gd"
+        PKG_LIST="$PKG_LIST php${ver}-cli php${ver}-fpm php${ver}-common php${ver}-mysql php${ver}-curl php${ver}-mbstring php${ver}-xml php${ver}-zip php${ver}-gd php${ver}-intl php${ver}-imap"
     done
     echo "$PKG_LIST"
 }
@@ -1143,6 +1143,9 @@ EOF
 
     mkdir -p /etc/akpanel /var/www/sites/default/public /var/log/akpanel /etc/nginx/sites-available /etc/nginx/sites-enabled /etc/bind/zones /etc/opendkim/keys /var/vmail "$INSTALL_DIR"
     chmod 700 /etc/opendkim/keys 2>/dev/null || true
+    getent group vmail >/dev/null 2>&1 || groupadd -g 5000 vmail 2>/dev/null || groupadd vmail 2>/dev/null || true
+    id vmail >/dev/null 2>&1 || useradd -g vmail -u 5000 -d /var/vmail -M -s /usr/sbin/nologin vmail 2>/dev/null || useradd -g vmail -d /var/vmail -M -s /usr/sbin/nologin vmail 2>/dev/null || true
+    chown -R vmail:vmail /var/vmail 2>/dev/null || true
     chmod 755 /var/vmail 2>/dev/null || true
 
     cat << 'HTML' > /var/www/sites/default/public/index.html

@@ -472,7 +472,7 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 			_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0777)
 			cmdHTTP := exec.Command(a.acmeBin, "--issue",
 				"-d", domain, "-d", "www."+domain,
-				"-d", "webmail."+domain, "-d", "cpanel."+domain,
+				"-d", "webmail."+domain, "-d", "cpanel."+domain, "-d", "mail."+domain,
 				"-w", "/var/www/html", "--server", "letsencrypt", "--force")
 			out2, err2 := cmdHTTP.CombinedOutput()
 			acmeOutput += "\n[HTTP-01 fallback]\n" + string(out2)
@@ -484,7 +484,7 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 		if err == nil {
 			cmdInstall := exec.Command(a.acmeBin, "--install-cert", "-d", domain,
 				"--key-file", keyPath, "--fullchain-file", certPath,
-				"--reloadcmd", "service nginx reload 2>/dev/null || true; service apache2 reload 2>/dev/null || true")
+				"--reloadcmd", "service nginx reload 2>/dev/null || true; service apache2 reload 2>/dev/null || true; service dovecot reload 2>/dev/null || true; service postfix reload 2>/dev/null || true")
 			if cmdInstall.Run() == nil {
 				issueSuccess = true
 			}
@@ -501,6 +501,7 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 	}
 
 	if issueSuccess {
+		_ = GetMailAuthService().EnsureDovecotConfig()
 		return &SSLStatus{
 			Domain: domain, Issuer: "Let's Encrypt (wildcard)", Status: "Active",
 			CertPath: certPath, KeyPath: keyPath, IsSelfSigned: false,
@@ -512,6 +513,7 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 	if err != nil {
 		return nil, err
 	}
+	_ = GetMailAuthService().EnsureDovecotConfig()
 	return &SSLStatus{
 		Domain: domain, Issuer: "Self-Signed", Status: "Self-Signed Fallback",
 		CertPath: certPath, KeyPath: keyPath, IsSelfSigned: true,
@@ -569,4 +571,3 @@ func (a *ACMEService) EnsureBindACMETSIG() {
 	_ = exec.Command("systemctl", "reload", "named").Run()
 	_ = exec.Command("systemctl", "reload", "bind9").Run()
 }
-

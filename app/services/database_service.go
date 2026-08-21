@@ -89,10 +89,105 @@ func NewDatabaseService() *DatabaseService {
 	return s
 }
 
+func mysqlUserSecretPath(username string) string {
+	return filepath.Join(paths.EtcAKpanelSecrets, "mysql_user_"+username)
+}
+
+func PersistAccountMySQLPassword(username, password string) {
+	username = strings.TrimSpace(username)
+	if username == "" || username == "root" || strings.Contains(username, "/") || password == "" {
+		return
+	}
+	_ = os.MkdirAll(paths.EtcAKpanelSecrets, 0700)
+	_ = os.WriteFile(mysqlUserSecretPath(username), []byte(password), 0600)
+}
+
+func LoadAccountMySQLPassword(username string) string {
+	b, err := os.ReadFile(mysqlUserSecretPath(username))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+const pmaSignonPHP = `<?php
+session_name('SignonSession');
+session_start();
+if (isset($_GET['logout'])) {
+    $_SESSION = [];
+    session_destroy();
+    header('Location: /');
+    exit;
+}
+$token = isset($_GET['token']) ? preg_replace('/[^a-zA-Z0-9]/', '', (string)$_GET['token']) : '';
+if ($token !== '') {
+    $f = '/var/lib/akpanel/pma-sso/' . $token . '.json';
+    $raw = @file_get_contents($f);
+    @unlink($f);
+    $d = json_decode($raw, true);
+    if (is_array($d) && !empty($d['user']) && !empty($d['pass']) && (int)($d['expires'] ?? 0) > time()) {
+        $_SESSION['PMA_single_signon_user'] = $d['user'];
+        $_SESSION['PMA_single_signon_password'] = $d['pass'];
+        $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
+        header('Location: index.php');
+        exit;
+    }
+}
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
+    $_SESSION['PMA_single_signon_user'] = (string)($_POST['pma_username'] ?? '');
+    $_SESSION['PMA_single_signon_password'] = (string)($_POST['pma_password'] ?? '');
+    $_SESSION['PMA_single_signon_host'] = '127.0.0.1';
+    header('Location: index.php');
+    exit;
+}
+header('Content-Type: text/html; charset=UTF-8');
+?>
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>phpMyAdmin</title>
+<style>body{font-family:sans-serif;background:#09090b;color:#fafafa;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+form{background:#12141a;padding:1.5rem;border-radius:16px;border:1px solid #27272a;width:min(360px,92vw)}
+input{width:100%;box-sizing:border-box;margin:.4rem 0 1rem;padding:.6rem;border-radius:8px;border:1px solid #3f3f46;background:#09090b;color:#fff}
+button{width:100%;padding:.7rem;border:0;border-radius:8px;background:#6366f1;color:#fff;font-weight:700;cursor:pointer}</style>
+</head><body>
+<form method="post">
+  <h2>phpMyAdmin</h2>
+  <label>Username</label><input name="pma_username" autocomplete="username" required>
+  <label>Password</label><input name="pma_password" type="password" autocomplete="current-password" required>
+  <button type="submit">Sign in</button>
+</form>
+</body></html>
+`
+
 func (d *DatabaseService) CreatePmaSsoSession(username, password string) (string, error) {
-	_ = username
-	_ = password
-	return "/phpmyadmin/", nil
+	user := strings.TrimSpace(username)
+	pass := password
+	if user == "" {
+		user = "root"
+		if b, err := os.ReadFile(filepath.Join(paths.EtcAKpanelSecrets, "mysql_root")); err == nil {
+			pass = strings.TrimSpace(string(b))
+		}
+		if pass == "" {
+			pass = facades.Config().GetString("akpanel.mysql_root_password")
+		}
+	}
+	if pass == "" {
+		pass = LoadAccountMySQLPassword(user)
+	}
+	if user == "" || pass == "" {
+		return "/phpmyadmin/signon.php", nil
+	}
+	dir := "/var/lib/akpanel/pma-sso"
+	_ = os.MkdirAll(dir, 0750)
+	_ = exec.Command("chown", "root:www-data", dir).Run()
+	token := randomAlnum(32)
+	rec := map[string]any{"user": user, "pass": pass, "expires": time.Now().Add(2 * time.Minute).Unix()}
+	bytes, _ := json.Marshal(rec)
+	p := filepath.Join(dir, token+".json")
+	if err := os.WriteFile(p, bytes, 0640); err != nil {
+		return "", err
+	}
+	_ = exec.Command("chown", "root:www-data", p).Run()
+	return "/phpmyadmin/signon.php?token=" + token, nil
 }
 
 // ExecMySQL runs a SQL statement against local MariaDB using configured credentials.
@@ -122,6 +217,8 @@ func (d *DatabaseService) EnsurePhpMyAdminDaemon() {
 		sessDir := "/var/lib/phpmyadmin/sessions"
 		_ = os.MkdirAll(sessDir, 0770)
 		_ = exec.Command("chown", "www-data:www-data", sessDir).Run()
+		_ = os.MkdirAll("/var/lib/akpanel/pma-sso", 0750)
+		_ = exec.Command("chown", "root:www-data", "/var/lib/akpanel/pma-sso").Run()
 		_ = os.Chmod(sessDir, 0770)
 
 		pmaPass := persistSecret("pma_control_pass", 24)
@@ -152,7 +249,10 @@ $cfg['PmaAbsoluteUri'] = '';
 $cfg['ForceSSL'] = false;
 $cfg['is_https'] = $https;
 $cfg['blowfish_secret'] = '%s';
-$cfg['Servers'][1]['auth_type'] = 'cookie';
+$cfg['Servers'][1]['auth_type'] = 'signon';
+$cfg['Servers'][1]['SignonSession'] = 'SignonSession';
+$cfg['Servers'][1]['SignonURL'] = 'signon.php';
+$cfg['Servers'][1]['LogoutURL'] = 'signon.php?logout=1';
 $cfg['Servers'][1]['host'] = '127.0.0.1';
 $cfg['Servers'][1]['port'] = 3306;
 $cfg['Servers'][1]['AllowNoPassword'] = false;
@@ -177,7 +277,7 @@ $cfg['AllowThirdPartyFraming'] = false;
 		_ = os.WriteFile("/etc/phpmyadmin/conf.d/01-akpanel.php", []byte(pmaConf), 0640)
 		_ = exec.Command("chown", "root:www-data", "/etc/phpmyadmin/conf.d/01-akpanel.php").Run()
 
-		_ = os.WriteFile("/usr/share/phpmyadmin/signon.php", []byte("<?php\nheader('Location: /phpmyadmin/', true, 302);\nexit;\n"), 0644)
+		_ = os.WriteFile("/usr/share/phpmyadmin/signon.php", []byte(pmaSignonPHP), 0644)
 		_ = os.Remove("/usr/share/phpmyadmin/phpmyadmin")
 		_ = exec.Command("pkill", "-f", "php -S 0.0.0.0:8085").Run()
 		_ = NewNginxService().EnsurePhpMyAdminListener()
@@ -1219,5 +1319,3 @@ func sanitizeSQLIdentifier(s string) string {
 	}
 	return result.String()
 }
-
-

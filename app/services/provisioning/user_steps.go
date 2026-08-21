@@ -162,6 +162,7 @@ func (s *CreateLinuxUserStep) Execute(ctx context.Context, plan *UserProvisionPl
 		cmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", plan.Username, plan.Password))
 		_ = cmd.Run()
 		_ = services.GetRedisService().ProvisionUser(plan.Username, plan.Password)
+		services.PersistAccountMySQLPassword(plan.Username, plan.Password)
 	}
 
 	// Harden /home — no listing of other users

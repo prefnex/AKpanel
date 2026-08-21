@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -468,6 +469,7 @@ func (s *EmailService) CreateAccount(email, password string, quotaMB int) error 
 	_ = os.MkdirAll(fmt.Sprintf("%s/cur", mailDir), 0700)
 	_ = os.MkdirAll(fmt.Sprintf("%s/new", mailDir), 0700)
 	_ = os.MkdirAll(fmt.Sprintf("%s/tmp", mailDir), 0700)
+	_ = GetMailAuthService().EnsureDovecotConfig()
 
 	// Ensure DNS zone has MX, SPF, DKIM, DMARC
 	_, _ = s.dnsService.CreateZone(domain, s.dnsService.GetSystemIP(), "root", "")
@@ -503,6 +505,18 @@ func (s *EmailService) CreateAccount(email, password string, quotaMB int) error 
 		_ = os.WriteFile(vmailFile, []byte(entry), 0644)
 	}
 	_ = exec.Command("postmap", vmailFile).Run()
+
+	domFile := "/etc/postfix/vmailbox_domains"
+	domEntry := domain + "\n"
+	if existing, err := os.ReadFile(domFile); err == nil {
+		if !strings.Contains("\n"+string(existing)+"\n", "\n"+domain+"\n") {
+			_ = os.WriteFile(domFile, append(existing, []byte(domEntry)...), 0644)
+		}
+	} else {
+		_ = os.WriteFile(domFile, []byte(domEntry), 0644)
+	}
+	_ = exec.Command("chown", "-R", "vmail:vmail", fmt.Sprintf("/var/vmail/%s", domain)).Run()
+	_ = GetMailAuthService().EnsurePostfixVirtualConfig()
 
 	return nil
 }
@@ -684,8 +698,7 @@ func persistSecret(name string, n int) string {
 }
 
 func mysqlRootExec(sql string) {
-	cmd := fmt.Sprintf("mysql --protocol=socket -u root -e %s || mysql -u root -e %s", strconv.Quote(sql), strconv.Quote(sql))
-	_ = exec.Command("bash", "-c", cmd).Run()
+	_ = ExecMySQL(sql)
 }
 
 func writeRoundcubePHPConfig(dbPass, desKey string) {
@@ -695,17 +708,22 @@ func writeRoundcubePHPConfig(dbPass, desKey string) {
 	if len(desKey) > 24 {
 		desKey = desKey[:24]
 	}
+	dsnUser := url.QueryEscape(dbPass)
 	cfg := fmt.Sprintf(`<?php
 $config = [];
 $config['db_dsnw'] = 'mysql://roundcube:%s@127.0.0.1/roundcubemail';
+$config['default_host'] = '127.0.0.1';
+$config['default_port'] = 143;
 $config['imap_host'] = '127.0.0.1:143';
+$config['smtp_server'] = '127.0.0.1';
+$config['smtp_port'] = 587;
 $config['smtp_host'] = '127.0.0.1:587';
 $config['smtp_user'] = '%%u';
 $config['smtp_pass'] = '%%p';
 $config['support_url'] = '';
 $config['product_name'] = 'AKpanel Webmail';
 $config['des_key'] = '%s';
-$config['plugins'] = [];
+$config['plugins'] = ['akpanel_sso'];
 $config['skin'] = 'elastic';
 $config['enable_spellcheck'] = false;
 $config['auto_create_user'] = true;
@@ -713,7 +731,12 @@ $config['login_autocomplete'] = 2;
 $config['log_dir'] = '/var/log/roundcube/';
 $config['temp_dir'] = '/var/lib/roundcube/temp/';
 $config['ip_check'] = false;
-$config['request_path'] = '/roundcube';
+$prefix = strtolower(trim((string)($_SERVER['HTTP_X_FORWARDED_PREFIX'] ?? '')));
+if ($prefix === '/roundcube' || $prefix === '/webmail') {
+  $config['request_path'] = $prefix;
+} else {
+  $config['request_path'] = '';
+}
 $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
     || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
 $config['use_https'] = $https;
@@ -726,15 +749,110 @@ $config['imap_conn_options'] = [
 $config['smtp_conn_options'] = [
   'ssl' => ['verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true],
 ];
-`, dbPass, desKey)
+`, dsnUser, desKey)
 	_ = os.MkdirAll("/etc/roundcube", 0755)
 	_ = os.WriteFile("/etc/roundcube/config.inc.php", []byte(cfg), 0640)
 	_ = exec.Command("chown", "root:www-data", "/etc/roundcube/config.inc.php").Run()
 }
 
-// EnsureRoundcubeWebmail points nginx at the Debian Roundcube tree and aligns
-// the MariaDB password with /etc/roundcube (apt's dbconfig password otherwise 1045s).
+func writeRoundcubeSSOPlugin(rcRoot string) {
+	plugin := `<?php
+class akpanel_sso extends rcube_plugin
+{
+    public $task = 'login';
+
+    function init()
+    {
+        $this->add_hook('startup', array($this, 'startup'));
+        $this->add_hook('authenticate', array($this, 'authenticate'));
+    }
+
+    function startup($args)
+    {
+        $t = isset($_GET['sso']) ? (string)$_GET['sso'] : '';
+        if ($t !== '' && $args['task'] === 'login') {
+            $args['action'] = 'login';
+            $_POST['_task'] = 'login';
+            $_POST['_action'] = 'login';
+        }
+        return $args;
+    }
+
+    function authenticate($args)
+    {
+        $t = isset($_GET['sso']) ? preg_replace('/[^a-zA-Z0-9]/', '', (string)$_GET['sso']) : '';
+        if ($t === '') {
+            return $args;
+        }
+        $f = '/var/lib/akpanel/webmail-sso/' . $t . '.json';
+        $raw = @file_get_contents($f);
+        @unlink($f);
+        $d = json_decode($raw, true);
+        if (!is_array($d) || empty($d['imap_user']) || empty($d['imap_pass']) || (int)($d['expires_at'] ?? 0) < time()) {
+            return $args;
+        }
+        $args['user'] = $d['imap_user'];
+        $args['pass'] = $d['imap_pass'];
+        $args['valid'] = true;
+        $args['cookiecheck'] = false;
+        return $args;
+    }
+}
+`
+	for _, root := range []string{rcRoot, "/usr/share/roundcube"} {
+		dir := filepath.Join(root, "plugins", "akpanel_sso")
+		_ = os.MkdirAll(dir, 0755)
+		_ = os.WriteFile(filepath.Join(dir, "akpanel_sso.php"), []byte(plugin), 0644)
+	}
+}
+
+func importRoundcubeSQL(sqlFile string) {
+	f, err := os.Open(sqlFile)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	rootPass := ""
+	if b, err := os.ReadFile(filepath.Join(paths.EtcAKpanelSecrets, "mysql_root")); err == nil {
+		rootPass = strings.TrimSpace(string(b))
+	}
+	var cmd *exec.Cmd
+	if rootPass != "" {
+		cmd = exec.Command("mysql", "-u", "root", "-p"+rootPass, "roundcubemail")
+	} else {
+		cmd = exec.Command("mysql", "--protocol=socket", "-u", "root", "roundcubemail")
+	}
+	cmd.Stdin = f
+	_ = cmd.Run()
+}
+
+func ensurePHPIntl() {
+	ents, _ := os.ReadDir("/etc/php")
+	installed := false
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		ver := e.Name()
+		if _, err := os.Stat("/etc/php/" + ver + "/mods-available/intl.ini"); err == nil {
+			continue
+		}
+		cmd := exec.Command("apt-get", "install", "-y", "-qq", "php"+ver+"-intl")
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if cmd.Run() == nil {
+			installed = true
+		}
+	}
+	if !installed {
+		return
+	}
+	for _, e := range ents {
+		_ = exec.Command("systemctl", "reload", "php"+e.Name()+"-fpm").Run()
+	}
+}
+
 func (s *EmailService) EnsureRoundcubeWebmail() {
+	ensurePHPIntl()
 	dbPass := persistSecret("roundcube_db_pass", 24)
 	desKey := persistSecret("roundcube_des_key", 24)
 	mysqlRootExec(fmt.Sprintf(
@@ -746,16 +864,20 @@ func (s *EmailService) EnsureRoundcubeWebmail() {
 		"/usr/share/roundcube/SQL/mysql/initial.sql",
 	} {
 		if _, err := os.Stat(sqlFile); err == nil {
-			_ = exec.Command("bash", "-c", fmt.Sprintf("mysql --protocol=socket -u root roundcubemail < %s || true", sqlFile)).Run()
+			importRoundcubeSQL(sqlFile)
 			break
 		}
 	}
 	writeRoundcubePHPConfig(dbPass, desKey)
+	writeRoundcubeSSOPlugin(paths.RoundcubeWebRoot())
+	_ = os.MkdirAll("/var/lib/akpanel/webmail-sso", 0750)
+	_ = exec.Command("chown", "root:www-data", "/var/lib/akpanel/webmail-sso").Run()
 
 	rcRoot := paths.RoundcubeWebRoot()
+	_ = os.MkdirAll("/var/lib/roundcube/temp", 0750)
 	_ = os.MkdirAll(rcRoot+"/temp", 0750)
 	_ = os.MkdirAll("/var/log/roundcube", 0755)
-	_ = exec.Command("chown", "-R", "www-data:www-data", rcRoot+"/temp", "/var/log/roundcube").Run()
+	_ = exec.Command("chown", "-R", "www-data:www-data", "/var/lib/roundcube/temp", rcRoot+"/temp", "/var/log/roundcube").Run()
 
 	nginx := NewNginxService()
 	_ = nginx.EnsureRoundcubeListener()
@@ -802,10 +924,11 @@ Alias /roundcube %s
 
 type webmailSSORecord struct {
 	Email     string `json:"email"`
+	IMAPUser  string `json:"imap_user"`
+	IMAPPass  string `json:"imap_pass"`
 	ExpiresAt int64  `json:"expires_at"`
 }
 
-// IssueWebmailSSOToken creates a one-time auto-login token for Roundcube.
 func (s *EmailService) IssueWebmailSSOToken(email string) (string, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	found := false
@@ -819,14 +942,33 @@ func (s *EmailService) IssueWebmailSSOToken(email string) (string, error) {
 		return "", fmt.Errorf("mailbox not found")
 	}
 	dir := "/var/lib/akpanel/webmail-sso"
-	_ = os.MkdirAll(dir, 0700)
+	_ = os.MkdirAll(dir, 0750)
+	_ = exec.Command("chown", "root:www-data", dir).Run()
 	token := randomAlnum(32)
-	rec := webmailSSORecord{Email: email, ExpiresAt: time.Now().Add(2 * time.Minute).Unix()}
+	imapUser, imapPass := GetMailAuthService().MasterLoginIdentity(email)
+	rec := webmailSSORecord{Email: email, IMAPUser: imapUser, IMAPPass: imapPass, ExpiresAt: time.Now().Add(2 * time.Minute).Unix()}
 	bytes, _ := json.Marshal(rec)
-	if err := os.WriteFile(filepath.Join(dir, token+".json"), bytes, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, token+".json"), bytes, 0640); err != nil {
 		return "", err
 	}
+	_ = exec.Command("chown", "root:www-data", filepath.Join(dir, token+".json")).Run()
 	return token, nil
+}
+
+func PeekWebmailSSOToken(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" || strings.ContainsAny(token, "/.\\") {
+		return false
+	}
+	b, err := os.ReadFile(filepath.Join("/var/lib/akpanel/webmail-sso", token+".json"))
+	if err != nil {
+		return false
+	}
+	var rec webmailSSORecord
+	if json.Unmarshal(b, &rec) != nil || rec.Email == "" || rec.ExpiresAt < time.Now().Unix() {
+		return false
+	}
+	return true
 }
 
 // ConsumeWebmailSSOToken returns mailbox email for a valid one-time token.

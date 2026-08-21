@@ -16,42 +16,42 @@ import (
 )
 
 type UserAccount struct {
-	Username          string `json:"username"`
-	Password          string `json:"password,omitempty"`
-	PasswordHash      string `json:"password_hash,omitempty"`
-	Email             string `json:"email"`
-	MainDomain        string `json:"main_domain"`
-	IPAddress         string `json:"ip_address"`
-	SetupTime         string `json:"setup_time"`
-	PackageID         string `json:"package_id"`
-	PackageName       string `json:"package_name"`
-	IsReseller        bool   `json:"is_reseller"`
-	Language          string `json:"language"`
-	HomeDir           string `json:"home_dir"`
-	Status            string `json:"status"` // active, suspended
-	DiskUsedMB        int    `json:"disk_used_mb"`
-	DiskQuotaMB       int    `json:"disk_quota_mb"`
-	BandwidthUsedMB   int    `json:"bandwidth_used_mb"`
-	BandwidthLimitMB  int    `json:"bandwidth_limit_mb"`
-	InodesUsed        int    `json:"inodes_used"`
-	InodesLimit       int    `json:"inodes_limit"`
-	RAMLimitMB        int    `json:"ram_limit_mb"`
-	ActiveProcesses   int    `json:"active_processes"`
-	MaxProcesses      int    `json:"max_processes"`
-	OpenFilesLimit    int    `json:"open_files_limit"` // nofile
-	AutoSSL           bool   `json:"autossl"`
-	BackupEnabled     bool   `json:"backup_enabled"`
-	DomainsCount      int    `json:"domains_count"`
-	MaxDomains        int    `json:"max_domains"`
-	DatabasesCount    int    `json:"databases_count"`
-	MaxDatabases      int    `json:"max_databases"`
-	FTPCount          int    `json:"ftp_count"`
-	MaxFTP            int    `json:"max_ftp"`
-	ShellAccess       bool   `json:"shell_access"`
-	WebEngine         string `json:"web_engine"`
-	PHPVersion        string `json:"php_version"`
-	CreatedAt         string `json:"created_at"`
-	SuspendedReason   string `json:"suspended_reason"`
+	Username         string `json:"username"`
+	Password         string `json:"password,omitempty"`
+	PasswordHash     string `json:"password_hash,omitempty"`
+	Email            string `json:"email"`
+	MainDomain       string `json:"main_domain"`
+	IPAddress        string `json:"ip_address"`
+	SetupTime        string `json:"setup_time"`
+	PackageID        string `json:"package_id"`
+	PackageName      string `json:"package_name"`
+	IsReseller       bool   `json:"is_reseller"`
+	Language         string `json:"language"`
+	HomeDir          string `json:"home_dir"`
+	Status           string `json:"status"` // active, suspended
+	DiskUsedMB       int    `json:"disk_used_mb"`
+	DiskQuotaMB      int    `json:"disk_quota_mb"`
+	BandwidthUsedMB  int    `json:"bandwidth_used_mb"`
+	BandwidthLimitMB int    `json:"bandwidth_limit_mb"`
+	InodesUsed       int    `json:"inodes_used"`
+	InodesLimit      int    `json:"inodes_limit"`
+	RAMLimitMB       int    `json:"ram_limit_mb"`
+	ActiveProcesses  int    `json:"active_processes"`
+	MaxProcesses     int    `json:"max_processes"`
+	OpenFilesLimit   int    `json:"open_files_limit"` // nofile
+	AutoSSL          bool   `json:"autossl"`
+	BackupEnabled    bool   `json:"backup_enabled"`
+	DomainsCount     int    `json:"domains_count"`
+	MaxDomains       int    `json:"max_domains"`
+	DatabasesCount   int    `json:"databases_count"`
+	MaxDatabases     int    `json:"max_databases"`
+	FTPCount         int    `json:"ftp_count"`
+	MaxFTP           int    `json:"max_ftp"`
+	ShellAccess      bool   `json:"shell_access"`
+	WebEngine        string `json:"web_engine"`
+	PHPVersion       string `json:"php_version"`
+	CreatedAt        string `json:"created_at"`
+	SuspendedReason  string `json:"suspended_reason"`
 }
 
 type UserAccountService struct {
@@ -362,6 +362,7 @@ func (s *UserAccountService) ResetPassword(username, newPassword string) error {
 	// 3. Pure-FTPd virtual map + mkdb (UnixAuthentication still uses shadow from step 1)
 	_ = GetFTPService().SetPrimaryPassword(username, newPassword)
 	_ = GetRedisService().SetUserPassword(username, newPassword)
+	PersistAccountMySQLPassword(username, newPassword)
 
 	// 4. Update AKpanel Client Portal auth hash in users.json
 	list, _ := s.readUsers()

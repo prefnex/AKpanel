@@ -1209,15 +1209,18 @@ func (c *ClientService) SavePHPConfig(username, version string, memoryLimit, upl
 
 // GetPhpMyAdminSSO returns dedicated scoped login link for tenant with active SSO session
 func (c *ClientService) GetPhpMyAdminSSO(username string) (map[string]any, error) {
-	_ = username
+	url, err := NewDatabaseService().CreatePmaSsoSession(username, LoadAccountMySQLPassword(username))
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"url":          "/phpmyadmin/",
-		"redirect_url": "/phpmyadmin/",
-		"username":     "",
+		"url":          url,
+		"redirect_url": url,
+		"username":     username,
 		"server":       "127.0.0.1",
 		"port":         3306,
 		"direct_to":    "index.php",
-		"auto_login":   false,
+		"auto_login":   true,
 	}, nil
 }
 
