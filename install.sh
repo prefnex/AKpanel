@@ -374,6 +374,17 @@ akp_progress() {
     echo "${pct}|${msg}" > "$PROGRESS_FILE"
 }
 
+# Hard cap so ACME/ZeroSSL cannot stall the installer (exit 124 = timeout).
+akp_timeout() {
+    local secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 8 "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 akp_crawl() {
     local from="$1"
     local to="$2"
@@ -762,27 +773,30 @@ EOF
     write_hostname_nginx_vhost "$AKPANEL_HOSTNAME"
 
     if [ ! -f /root/.acme.sh/acme.sh ]; then
-        curl -fsSL https://get.acme.sh | sh -s "email=${ADMIN_EMAIL}" >> "$LOG_FILE" 2>&1 || true
+        akp_timeout 90 bash -c 'curl -fsSL https://get.acme.sh | sh -s "email='"${ADMIN_EMAIL}"'"' >> "$LOG_FILE" 2>&1 || true
     fi
 
     local ACME_BIN="/root/.acme.sh/acme.sh"
     local SSL_OK=false
     if [ -f "$ACME_BIN" ]; then
-        echo "ACME Let's Encrypt for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
+        echo "ACME Let's Encrypt for ${AKPANEL_HOSTNAME} (80s cap)" >> "$LOG_FILE"
         akp_progress 96 "Hostname SSL: Let's Encrypt"
-        if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server letsencrypt --force >> "$LOG_FILE" 2>&1; then
+        if akp_timeout 80 "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server letsencrypt --force >> "$LOG_FILE" 2>&1; then
             SSL_OK=true
         else
-            echo "ACME ZeroSSL fallback for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
+            echo "ACME ZeroSSL fallback for ${AKPANEL_HOSTNAME} (40s cap — EAB must not block install)" >> "$LOG_FILE"
             akp_progress 97 "Hostname SSL: ZeroSSL fallback"
-            if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server zerossl --force >> "$LOG_FILE" 2>&1; then
+            if akp_timeout 40 "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server zerossl --force >> "$LOG_FILE" 2>&1; then
                 SSL_OK=true
+            else
+                echo "ACME timed out or failed. Keeping self-signed; retry Hostname SSL from the panel later." >> "$LOG_FILE"
+                akp_progress 98 "Hostname SSL: self-signed (ACME skipped)"
             fi
         fi
     fi
 
     if [ "$SSL_OK" = true ] && [ -f "$ACME_BIN" ]; then
-        "$ACME_BIN" --install-cert -d "$AKPANEL_HOSTNAME" \
+        akp_timeout 30 "$ACME_BIN" --install-cert -d "$AKPANEL_HOSTNAME" \
             --key-file /etc/akpanel/ssl/server/privkey.pem \
             --fullchain-file /etc/akpanel/ssl/server/fullchain.pem \
             --reloadcmd "service nginx reload 2>/dev/null || true" >> "$LOG_FILE" 2>&1 || SSL_OK=false

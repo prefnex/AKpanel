@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -143,8 +144,13 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 	_ = os.MkdirAll("/var/log/akpanel", 0755)
 
 	if a.isAcmeAvailable() {
+		runAcme := func(timeout time.Duration, args ...string) ([]byte, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			return exec.CommandContext(ctx, a.acmeBin, args...).CombinedOutput()
+		}
 		wwwExtra := strings.Count(domain, ".") == 1 && !strings.HasPrefix(domain, "www.")
-		for attempt := 1; attempt <= 3 && !issueSuccess; attempt++ {
+		for attempt := 1; attempt <= 2 && !issueSuccess; attempt++ {
 			if attempt > 1 {
 				time.Sleep(time.Duration(attempt*8) * time.Second)
 			}
@@ -153,8 +159,7 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 				issueArgs = append(issueArgs, "-d", "www."+domain)
 			}
 			issueArgs = append(issueArgs, "-w", webroot, "--server", "letsencrypt", "--force")
-			cmdIssue := exec.Command(a.acmeBin, issueArgs...)
-			out, err := cmdIssue.CombinedOutput()
+			out, err := runAcme(80*time.Second, issueArgs...)
 			acmeOutput = string(out)
 
 			if err != nil {
@@ -163,8 +168,7 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 					zeroArgs = append(zeroArgs, "-d", "www."+domain)
 				}
 				zeroArgs = append(zeroArgs, "-w", webroot, "--server", "zerossl", "--force")
-				cmdZero := exec.Command(a.acmeBin, zeroArgs...)
-				outZero, errZero := cmdZero.CombinedOutput()
+				outZero, errZero := runAcme(40*time.Second, zeroArgs...)
 				acmeOutput += "\n[Automatic Fallback to ZeroSSL]:\n" + string(outZero)
 				if errZero == nil {
 					err = nil
