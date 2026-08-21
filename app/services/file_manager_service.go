@@ -45,12 +45,66 @@ type GrepResult struct {
 
 type FileManagerService struct {
 	defaultDir string
+	jailRoot   string
 }
 
 func NewFileManagerService() *FileManagerService {
 	return &FileManagerService{
 		defaultDir: paths.SitesRoot,
 	}
+}
+
+// WithJail returns a copy confined to a user home (never / or /home).
+func (f *FileManagerService) WithJail(root string) *FileManagerService {
+	clone := *f
+	clone.jailRoot = filepath.Clean(root)
+	clone.defaultDir = clone.jailRoot
+	return &clone
+}
+
+func pathInsideRoot(root, target string) bool {
+	root = filepath.Clean(root)
+	target = filepath.Clean(target)
+	if target == root {
+		return true
+	}
+	return strings.HasPrefix(target, root+string(os.PathSeparator))
+}
+
+func (f *FileManagerService) resolveManagedPath(targetPath string) (string, error) {
+	if f.jailRoot != "" {
+		return f.ValidateJailPath(targetPath)
+	}
+	return f.ValidateAdminPath(targetPath)
+}
+
+// ValidateJailPath keeps every operation inside jailRoot (no parent of home, no other users).
+func (f *FileManagerService) ValidateJailPath(targetPath string) (string, error) {
+	jail := filepath.Clean(f.jailRoot)
+	if jail == "" || jail == "/" || jail == paths.UserHomes || jail == "/root" {
+		return "", fmt.Errorf("access denied: invalid home jail")
+	}
+	if targetPath == "" || targetPath == "/" {
+		targetPath = jail
+	}
+	clean := filepath.Clean(targetPath)
+	if !filepath.IsAbs(clean) {
+		clean = filepath.Join(jail, clean)
+		clean = filepath.Clean(clean)
+	}
+	if !pathInsideRoot(jail, clean) {
+		return "", fmt.Errorf("access denied: path is outside your home jail")
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		jailResolved := jail
+		if jr, jerr := filepath.EvalSymlinks(jail); jerr == nil {
+			jailResolved = jr
+		}
+		if !pathInsideRoot(jailResolved, resolved) {
+			return "", fmt.Errorf("access denied: path is outside your home jail")
+		}
+	}
+	return clean, nil
 }
 
 // ValidateAdminPath verifies that the requested path falls inside allowed server directories
@@ -107,7 +161,7 @@ func (f *FileManagerService) ValidateAdminPath(targetPath string) (string, error
 
 // ListDirectory lists files and folders with full server inspection
 func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, string, error) {
-	cleanPath, err := f.ValidateAdminPath(targetPath)
+	cleanPath, err := f.resolveManagedPath(targetPath)
 	if err != nil {
 		return nil, targetPath, err
 	}
@@ -181,7 +235,7 @@ func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, strin
 
 // ReadFile reads the text content of a file
 func (f *FileManagerService) ReadFile(filePath string) (string, error) {
-	cleanPath, err := f.ValidateAdminPath(filePath)
+	cleanPath, err := f.resolveManagedPath(filePath)
 	if err != nil {
 		return "", err
 	}
@@ -234,7 +288,7 @@ func chownToParentOrAccount(path string) {
 
 // WriteFile saves text content and automatically creates a .bak snapshot
 func (f *FileManagerService) WriteFile(filePath, content string) error {
-	cleanPath, err := f.ValidateAdminPath(filePath)
+	cleanPath, err := f.resolveManagedPath(filePath)
 	if err != nil {
 		return err
 	}
@@ -271,7 +325,7 @@ func (f *FileManagerService) WriteFile(filePath, content string) error {
 
 // CreateItem creates a new file or directory
 func (f *FileManagerService) CreateItem(itemPath string, isDir bool) error {
-	cleanPath, err := f.ValidateAdminPath(itemPath)
+	cleanPath, err := f.resolveManagedPath(itemPath)
 	if err != nil {
 		return err
 	}
@@ -290,7 +344,7 @@ func (f *FileManagerService) CreateItem(itemPath string, isDir bool) error {
 
 // DeleteItem removes a file or directory
 func (f *FileManagerService) DeleteItem(itemPath string) error {
-	cleanPath, err := f.ValidateAdminPath(itemPath)
+	cleanPath, err := f.resolveManagedPath(itemPath)
 	if err != nil {
 		return err
 	}
@@ -299,11 +353,11 @@ func (f *FileManagerService) DeleteItem(itemPath string) error {
 
 // RenameItem renames or moves a file/directory
 func (f *FileManagerService) RenameItem(oldPath, newPath string) error {
-	cleanOld, err := f.ValidateAdminPath(oldPath)
+	cleanOld, err := f.resolveManagedPath(oldPath)
 	if err != nil {
 		return err
 	}
-	cleanNew, err := f.ValidateAdminPath(newPath)
+	cleanNew, err := f.resolveManagedPath(newPath)
 	if err != nil {
 		return err
 	}
@@ -312,11 +366,17 @@ func (f *FileManagerService) RenameItem(oldPath, newPath string) error {
 
 // CopyItems copies multiple items to destination folder
 func (f *FileManagerService) CopyItems(sources []string, destDir string) error {
-	cleanDest := filepath.Clean(destDir)
+	cleanDest, err := f.resolveManagedPath(destDir)
+	if err != nil {
+		return err
+	}
 	_ = os.MkdirAll(cleanDest, 0755)
 
 	for _, src := range sources {
-		cleanSrc := filepath.Clean(src)
+		cleanSrc, err := f.resolveManagedPath(src)
+		if err != nil {
+			return err
+		}
 		target := filepath.Join(cleanDest, filepath.Base(cleanSrc))
 
 		info, err := os.Stat(cleanSrc)
@@ -329,10 +389,12 @@ func (f *FileManagerService) CopyItems(sources []string, destDir string) error {
 			if err := cmd.Run(); err != nil {
 				return err
 			}
+			chownToParentOrAccount(target)
 		} else {
 			if err := copyFile(cleanSrc, target); err != nil {
 				return err
 			}
+			chownToParentOrAccount(target)
 		}
 	}
 	return nil
@@ -340,14 +402,19 @@ func (f *FileManagerService) CopyItems(sources []string, destDir string) error {
 
 // MoveItems moves multiple items to destination folder
 func (f *FileManagerService) MoveItems(sources []string, destDir string) error {
-	cleanDest := filepath.Clean(destDir)
+	cleanDest, err := f.resolveManagedPath(destDir)
+	if err != nil {
+		return err
+	}
 	_ = os.MkdirAll(cleanDest, 0755)
 
 	for _, src := range sources {
-		cleanSrc := filepath.Clean(src)
+		cleanSrc, err := f.resolveManagedPath(src)
+		if err != nil {
+			return err
+		}
 		target := filepath.Join(cleanDest, filepath.Base(cleanSrc))
 		if err := os.Rename(cleanSrc, target); err != nil {
-			// Fallback to copy + remove if across mount points
 			cmd := exec.Command("mv", cleanSrc, target)
 			if err := cmd.Run(); err != nil {
 				return err
@@ -359,7 +426,10 @@ func (f *FileManagerService) MoveItems(sources []string, destDir string) error {
 
 // ListSubdirectories returns only directories for tree sidebar
 func (f *FileManagerService) ListSubdirectories(targetPath string) ([]string, error) {
-	cleanPath := filepath.Clean(targetPath)
+	cleanPath, err := f.resolveManagedPath(targetPath)
+	if err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(cleanPath)
 	if err != nil {
 		return nil, err
@@ -376,12 +446,14 @@ func (f *FileManagerService) ListSubdirectories(targetPath string) ([]string, er
 
 // DuplicateItem clones a file to filename_copy.ext
 func (f *FileManagerService) DuplicateItem(itemPath string) (string, error) {
-	cleanPath := filepath.Clean(itemPath)
+	cleanPath, err := f.resolveManagedPath(itemPath)
+	if err != nil {
+		return "", err
+	}
 	ext := filepath.Ext(cleanPath)
 	base := strings.TrimSuffix(cleanPath, ext)
 	newPath := fmt.Sprintf("%s_copy%s", base, ext)
 
-	// Ensure unique name
 	counter := 1
 	for {
 		if _, err := os.Stat(newPath); os.IsNotExist(err) {
@@ -391,22 +463,31 @@ func (f *FileManagerService) DuplicateItem(itemPath string) (string, error) {
 		counter++
 	}
 
-	err := copyFile(cleanPath, newPath)
-	return newPath, err
+	if err := copyFile(cleanPath, newPath); err != nil {
+		return "", err
+	}
+	chownToParentOrAccount(newPath)
+	return newPath, nil
 }
 
-// ArchiveItems compresses files/folders into .zip or .tar.gz
 func (f *FileManagerService) ArchiveItems(destArchive string, format string, items []string) error {
-	cleanDest := filepath.Clean(destArchive)
+	cleanDest, err := f.resolveManagedPath(destArchive)
+	if err != nil {
+		return err
+	}
 	workDir := filepath.Dir(cleanDest)
 
 	var relItems []string
 	for _, item := range items {
-		rel, err := filepath.Rel(workDir, filepath.Clean(item))
+		cleanItem, err := f.resolveManagedPath(item)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(workDir, cleanItem)
 		if err == nil {
 			relItems = append(relItems, rel)
 		} else {
-			relItems = append(relItems, filepath.Base(item))
+			relItems = append(relItems, filepath.Base(cleanItem))
 		}
 	}
 
@@ -419,13 +500,22 @@ func (f *FileManagerService) ArchiveItems(destArchive string, format string, ite
 		cmd = exec.Command("zip", args...)
 	}
 	cmd.Dir = workDir
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	chownToParentOrAccount(cleanDest)
+	return nil
 }
 
-// ExtractArchive uncompresses an archive into destination directory
 func (f *FileManagerService) ExtractArchive(archivePath, destDir string) error {
-	cleanArch := filepath.Clean(archivePath)
-	cleanDest := filepath.Clean(destDir)
+	cleanArch, err := f.resolveManagedPath(archivePath)
+	if err != nil {
+		return err
+	}
+	cleanDest, err := f.resolveManagedPath(destDir)
+	if err != nil {
+		return err
+	}
 	_ = os.MkdirAll(cleanDest, 0755)
 
 	var cmd *exec.Cmd
@@ -436,15 +526,21 @@ func (f *FileManagerService) ExtractArchive(archivePath, destDir string) error {
 	} else if strings.HasSuffix(cleanArch, ".tar") {
 		cmd = exec.Command("tar", "-xf", cleanArch, "-C", cleanDest)
 	} else {
-		// Default to unzip
 		cmd = exec.Command("unzip", "-o", cleanArch, "-d", cleanDest)
 	}
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	chownToParentOrAccount(cleanDest)
+	return nil
 }
 
 // RemoteDownload downloads a file from URL directly to VPS
 func (f *FileManagerService) RemoteDownload(downloadURL, destDir, customName string) error {
-	cleanDest := filepath.Clean(destDir)
+	cleanDest, err := f.resolveManagedPath(destDir)
+	if err != nil {
+		return err
+	}
 	_ = os.MkdirAll(cleanDest, 0755)
 
 	fileName := customName
@@ -457,15 +553,29 @@ func (f *FileManagerService) RemoteDownload(downloadURL, destDir, customName str
 			fileName = "downloaded_file"
 		}
 	}
+	fileName = filepath.Base(fileName)
+	if fileName == "" || fileName == "." || fileName == ".." {
+		fileName = "downloaded_file"
+	}
 
 	targetPath := filepath.Join(cleanDest, fileName)
+	if _, err := f.resolveManagedPath(targetPath); err != nil {
+		return err
+	}
 	cmd := exec.Command("curl", "-L", "-o", targetPath, downloadURL)
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+	chownToParentOrAccount(targetPath)
+	return nil
 }
 
 // GrepSearch searches for text across files in a directory
 func (f *FileManagerService) GrepSearch(dirPath, query string) ([]GrepResult, error) {
-	cleanDir := filepath.Clean(dirPath)
+	cleanDir, err := f.resolveManagedPath(dirPath)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.Command("grep", "-rnI", "--max-count=50", query, cleanDir)
 	out, _ := cmd.Output()
 
@@ -487,7 +597,10 @@ func (f *FileManagerService) GrepSearch(dirPath, query string) ([]GrepResult, er
 
 // GetChecksum computes MD5 and SHA256 of a file
 func (f *FileManagerService) GetChecksum(filePath string) (map[string]string, error) {
-	cleanPath := filepath.Clean(filePath)
+	cleanPath, err := f.resolveManagedPath(filePath)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return nil, err
@@ -505,7 +618,10 @@ func (f *FileManagerService) GetChecksum(filePath string) (map[string]string, er
 
 // CalculateDirSize calculates disk usage with du -sh
 func (f *FileManagerService) CalculateDirSize(dirPath string) (string, error) {
-	cleanPath := filepath.Clean(dirPath)
+	cleanPath, err := f.resolveManagedPath(dirPath)
+	if err != nil {
+		return "0 B", err
+	}
 	out, err := exec.Command("du", "-sh", cleanPath).Output()
 	if err != nil {
 		return "0 B", err
@@ -518,8 +634,21 @@ func (f *FileManagerService) CalculateDirSize(dirPath string) (string, error) {
 }
 
 // ChangePermissions updates octal mode and ownership
+func (f *FileManagerService) jailOwner() string {
+	if f.jailRoot == "" {
+		return ""
+	}
+	return filepath.Base(filepath.Clean(f.jailRoot))
+}
+
 func (f *FileManagerService) ChangePermissions(targetPath, mode, owner, group string, recursive bool) error {
-	cleanPath := filepath.Clean(targetPath)
+	cleanPath, err := f.resolveManagedPath(targetPath)
+	if err != nil {
+		return err
+	}
+	if acc := f.jailOwner(); acc != "" {
+		owner, group = acc, acc
+	}
 
 	if mode != "" {
 		args := []string{}
@@ -552,14 +681,31 @@ func (f *FileManagerService) FixPermissions(targetPath string) error {
 	if targetPath == "" {
 		targetPath = f.defaultDir
 	}
-	cleanPath := filepath.Clean(targetPath)
+	cleanPath, err := f.resolveManagedPath(targetPath)
+	if err != nil {
+		return err
+	}
 	owner := "www-data:www-data"
-	if acc := linuxAccountFromPath(cleanPath); acc != "" {
+	if acc := f.jailOwner(); acc != "" {
+		owner = acc + ":" + acc
+	} else if acc := linuxAccountFromPath(cleanPath); acc != "" {
 		owner = acc + ":" + acc
 	}
 	_ = exec.Command("chown", "-R", owner, cleanPath).Run()
 	_ = exec.Command("find", cleanPath, "-type", "d", "-exec", "chmod", "755", "{}", "+").Run()
 	_ = exec.Command("find", cleanPath, "-type", "f", "-exec", "chmod", "644", "{}", "+").Run()
+	return nil
+}
+
+func (f *FileManagerService) FixPermissionsTargets(targets []string) error {
+	if len(targets) == 0 {
+		return f.FixPermissions("")
+	}
+	for _, t := range targets {
+		if err := f.FixPermissions(t); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

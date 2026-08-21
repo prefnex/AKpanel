@@ -111,11 +111,22 @@ func (n *NginxService) phpFastcgiLocation(socket string) string {
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param PATH_INFO $fastcgi_path_info;
-        fastcgi_read_timeout 300;
+		fastcgi_read_timeout 300;
         fastcgi_buffers 16 16k;
         fastcgi_buffer_size 32k;
     }
 `, socket)
+}
+
+func (n *NginxService) phpFastcgiLocationProxied(socket string) string {
+	base := n.phpFastcgiLocation(socket)
+	extra := `        set $ak_https $https;
+        if ($http_x_forwarded_proto = "https") { set $ak_https "on"; }
+        fastcgi_param HTTPS $ak_https;
+        fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
+        fastcgi_param HTTP_X_FORWARDED_HOST $http_x_forwarded_host;
+`
+	return strings.Replace(base, "        fastcgi_buffer_size 32k;\n    }", extra+"        fastcgi_buffer_size 32k;\n    }", 1)
 }
 
 func (n *NginxService) ensureFastcgiParams() {
@@ -219,11 +230,7 @@ func (n *NginxService) EnsureDefaultNginxConfig() {
 	_ = os.Remove("/etc/nginx/sites-enabled/000-default")
 
 	if _, err := os.Stat("/var/www/html/index.php"); err != nil {
-		_ = os.WriteFile("/var/www/html/index.php", []byte(`<?php
-header('Content-Type: text/html; charset=UTF-8');
-echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>AKpanel</title></head><body>';
-echo '<h1>AKpanel default site</h1><p>PHP '.PHP_VERSION.' via php-fpm is ready.</p></body></html>';
-`), 0644)
+		_ = WriteWelcomeIndex("/var/www/html/index.php", "AKpanel", "server")
 	}
 
 	if err := n.TestConfig(); err == nil {
@@ -305,9 +312,10 @@ func (n *NginxService) CreateWebsite(cfg WebsiteConfig) error {
 
 func (n *NginxService) createNginxVhost(cfg WebsiteConfig, isHybrid bool) error {
 	vhostContent := n.generateVhostConfig(cfg, isHybrid)
-	if hold := NginxAccountHoldSnippet(cfg.OwnerUsername); hold != "" {
-		vhostContent = strings.Replace(vhostContent, "server {", "server {\n"+hold, 1)
+	if cfg.OwnerUsername != "" && cfg.OwnerUsername != "root" && cfg.OwnerUsername != "admin" {
+		vhostContent = "# akpanel-owner: " + cfg.OwnerUsername + "\n" + vhostContent
 	}
+	vhostContent = injectNginxHoldIncludes(vhostContent, cfg.OwnerUsername)
 	availableFile := filepath.Join(n.sitesAvailablePath, fmt.Sprintf("%s.conf", cfg.Domain))
 	enabledFile := filepath.Join(n.sitesEnabledPath, fmt.Sprintf("%s.conf", cfg.Domain))
 
@@ -383,61 +391,8 @@ func (n *NginxService) ReloadNginx() error {
 func (n *NginxService) createStarterFiles(cfg WebsiteConfig) {
 	indexPhpPath := filepath.Join(cfg.RootPath, "index.php")
 	indexHtmlPath := filepath.Join(cfg.RootPath, "index.html")
-
-	if _, err := os.Stat(indexPhpPath); os.IsNotExist(err) {
-		if _, errHtml := os.Stat(indexHtmlPath); os.IsNotExist(errHtml) {
-			if cfg.SiteType == "php" {
-				starterPhp := fmt.Sprintf(`<?php
-// Welcome to %s on AKpanel
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>%s | Hosted on AKpanel</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B0F19; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        .card { background: #111827; padding: 2.5rem; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); text-align: center; max-width: 520px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
-        h1 { color: #818cf8; margin-top: 0; font-size: 1.8rem; }
-        p { color: #94a3b8; line-height: 1.6; }
-        .badge { display: inline-block; background: #312e81; color: #a5b4fc; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 700; margin-bottom: 1.2rem; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="badge">ENGINE: %s | PHP <?php echo phpversion(); ?></div>
-        <h1>%s is Live! 🚀</h1>
-        <p>Template: <strong>%s</strong></p>
-        <p>Document root: <code>%s</code></p>
-    </div>
-</body>
-</html>`, cfg.Domain, cfg.Domain, strings.ToUpper(cfg.ServerEngine), cfg.Domain, cfg.TemplateID, cfg.RootPath)
-				_ = os.WriteFile(indexPhpPath, []byte(starterPhp), 0644)
-			} else {
-				starterHtml := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>%s | Hosted on AKpanel</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B0F19; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        .card { background: #111827; padding: 2.5rem; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); text-align: center; max-width: 520px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
-        h1 { color: #818cf8; margin-top: 0; font-size: 1.8rem; }
-        p { color: #94a3b8; line-height: 1.6; }
-        .badge { display: inline-block; background: #312e81; color: #a5b4fc; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 700; margin-bottom: 1.2rem; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="badge">ENGINE: %s | STATIC / PROXY</div>
-        <h1>%s is Live! 🚀</h1>
-        <p>Template: <strong>%s</strong></p>
-    </div>
-</body>
-</html>`, cfg.Domain, strings.ToUpper(cfg.ServerEngine), cfg.Domain, cfg.TemplateID)
-				_ = os.WriteFile(indexHtmlPath, []byte(starterHtml), 0644)
-			}
-		}
+	if _, err := os.Stat(indexHtmlPath); os.IsNotExist(err) {
+		_ = WriteWelcomeIndex(indexPhpPath, cfg.Domain, cfg.OwnerUsername)
 	}
 }
 
@@ -790,7 +745,7 @@ func (n *NginxService) roundcubePHPLocations() string {
     location ~ /\.(ht|git) {
         deny all;
     }
-`, n.phpFastcgiLocation(sock))
+`, n.phpFastcgiLocationProxied(sock))
 }
 
 // EnsureRoundcubeListener serves Roundcube on 127.0.0.1:8086 for the panel /webmail proxy.
@@ -856,7 +811,7 @@ server {
         deny all;
     }
 }
-`, pmaRoot, n.phpFastcgiLocation(sock))
+`, pmaRoot, n.phpFastcgiLocationProxied(sock))
 
 	availablePath := filepath.Join(n.sitesAvailablePath, "akpanel-pma-internal.conf")
 	if existing, err := os.ReadFile(availablePath); err == nil && string(existing) == conf {

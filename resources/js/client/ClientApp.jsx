@@ -6,7 +6,7 @@ import ClientDashboard from './components/ClientDashboard';
 import ClientWebsitesPage from './components/ClientWebsitesPage';
 import ClientDNSPage from './components/ClientDNSPage';
 import ClientDatabasesPage from './components/ClientDatabasesPage';
-import ClientFileManagerV2 from './components/ClientFileManagerV2';
+import FileManagerV2 from '../components/FileManagerV2';
 import ClientFTPPage from './components/ClientFTPPage';
 import ClientCronPage from './components/ClientCronPage';
 import ClientPHPPage from './components/ClientPHPPage';
@@ -80,7 +80,23 @@ export default function ClientApp() {
           init = { ...init, headers };
         }
       }
-      return originalFetch(input, init);
+      return originalFetch(input, init).then(async (res) => {
+        if (res.status === 403) {
+          try {
+            const clone = res.clone();
+            const body = await clone.json();
+            const msg = String(body?.message || '');
+            if (msg.toLowerCase().includes('suspend')) {
+              localStorage.removeItem('ak_client_token');
+              localStorage.removeItem('akpanel_client_token');
+              localStorage.removeItem('ak_client_user');
+              localStorage.removeItem('akpanel_client_user');
+              window.location.reload();
+            }
+          } catch (e) { /* ignore */ }
+        }
+        return res;
+      });
     };
     return () => {
       window.fetch = originalFetch;
@@ -106,13 +122,28 @@ export default function ClientApp() {
     navigate('/files');
   };
 
+  const isFileManager =
+    location.pathname === '/files' ||
+    location.pathname === '/filemanager' ||
+    location.pathname === '/filemanager/standalone';
+
   // If unauthenticated, show Client Login View
   if (!token) {
     return <ClientLoginView onLoginSuccess={handleLoginSuccess} />;
   }
 
+  const fileManager = (
+    <FileManagerV2
+      showToast={showToast}
+      standalone={true}
+      apiBase="/api/client/files"
+      jailRoot={`/home/${user?.username || 'user'}`}
+      dashboardHref="/"
+    />
+  );
+
   return (
-    <div className="min-h-screen bg-[#07080b] text-zinc-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-white">
+    <div className={`${isFileManager ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-[#07080b] text-zinc-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-white`}>
       {/* Toast Popup */}
       {toastMessage && (
         <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-5">
@@ -134,14 +165,17 @@ export default function ClientApp() {
       />
 
       {/* Main Layout Body */}
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-h-0">
         {/* Navigation Sidebar */}
         <ClientSidebar 
           stats={stats} 
         />
 
         {/* Content Area with Full React Router Multi-Page Switching */}
-        <main className="flex-1 p-6 md:p-8 max-w-7xl mx-auto w-full overflow-y-auto">
+        <main className={isFileManager
+          ? 'flex-1 min-w-0 min-h-0 overflow-hidden'
+          : 'flex-1 p-6 md:p-8 max-w-7xl mx-auto w-full overflow-y-auto'
+        }>
           <Routes>
             <Route 
               path="/" 
@@ -187,24 +221,9 @@ export default function ClientApp() {
                 />
               } 
             />
-            <Route 
-              path="/files" 
-              element={
-                <ClientFileManagerV2 
-                  showToast={showToast} 
-                  username={user?.username || 'user'}
-                />
-              } 
-            />
-            <Route 
-              path="/filemanager" 
-              element={
-                <ClientFileManagerV2 
-                  showToast={showToast} 
-                  username={user?.username || 'user'}
-                />
-              } 
-            />
+            <Route path="/files" element={fileManager} />
+            <Route path="/filemanager" element={fileManager} />
+            <Route path="/filemanager/standalone" element={fileManager} />
             <Route 
               path="/ftp" 
               element={

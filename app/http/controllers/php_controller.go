@@ -293,3 +293,23 @@ func (r *PHPController) SetDefaultCLI(ctx http.Context) http.Response {
 		"cli":     r.phpService.GetCLIOverview(),
 	})
 }
+
+func (r *PHPController) SetDefaultFPM(ctx http.Context) http.Response {
+	version := ctx.Request().Input("version")
+	if version == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "version is required",
+		})
+	}
+	if err := r.phpService.SetDefaultFPM(version); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": fmt.Sprintf("Default PHP-FPM for new sites set to %s", version),
+	})
+}

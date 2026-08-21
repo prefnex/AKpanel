@@ -36,11 +36,11 @@ func EnsureSSHJail() {
 	_ = os.MkdirAll("/etc/ssh/sshd_config.d", 0755)
 
 	shell := `#!/bin/bash
-# AKpanel jailed interactive shell — home only, restricted bash, curated PATH.
-USER_NAME="${USER:-$(id -un)}"
-HOME_DIR="$(getent passwd "$USER_NAME" | cut -d: -f6)"
+# AKpanel jailed login: interactive rbash OR SFTP. Wrappers live only in jailbin.
+USER_NAME="${USER:-$(id -un 2>/dev/null)}"
+HOME_DIR="$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f6)"
 if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR" ]; then
-  echo "akpanel: home directory is not available"
+  echo "akpanel: home directory is not available" >&2
   exit 1
 fi
 cd "$HOME_DIR" || exit 1
@@ -50,7 +50,35 @@ export LOGNAME="$USER_NAME"
 export PATH=/usr/local/lib/akpanel/jailbin
 export SHELL=/usr/local/bin/akpanel-ssh-shell
 umask 022
-exec /bin/bash --restricted -i
+
+sftp_bin=""
+for cand in /usr/lib/openssh/sftp-server /usr/libexec/openssh/sftp-server /usr/lib/ssh/sftp-server; do
+  [ -x "$cand" ] && sftp_bin="$cand" && break
+done
+
+orig="${SSH_ORIGINAL_COMMAND:-}"
+if [ -n "$orig" ]; then
+  case "$orig" in
+    internal-sftp*|sftp-server*|/usr/lib/openssh/sftp-server*|/usr/libexec/openssh/sftp-server*|/usr/lib/ssh/sftp-server*)
+      if [ -n "$sftp_bin" ]; then
+        exec "$sftp_bin" -d "$HOME_DIR"
+      fi
+      echo "akpanel: sftp-server is not installed" >&2
+      exit 1
+      ;;
+    scp\ -t*|scp\ -f*)
+      echo "akpanel: use SFTP for file transfer" >&2
+      exit 1
+      ;;
+    *)
+      echo "akpanel: remote command is not allowed" >&2
+      exit 1
+      ;;
+  esac
+fi
+
+# Skip /etc/profile and ~/.bashrc (they need /usr/bin on PATH).
+exec /bin/bash --restricted --noprofile --norc -i
 `
 	_ = os.WriteFile(sshJailShell, []byte(shell), 0755)
 
@@ -71,11 +99,12 @@ Match Group %s
 	allow := []string{
 		"ls", "dir", "cat", "more", "less", "head", "tail", "wc", "sort", "uniq", "cut", "tr",
 		"grep", "egrep", "fgrep", "find", "pwd", "echo", "printf", "date", "clear", "id", "whoami",
+		"groups", "uname", "true", "false", "which", "tty", "basename", "dirname", "realpath",
 		"nano", "vi", "vim", "touch", "mkdir", "cp", "stat", "file", "du", "df",
 		"tar", "gzip", "gunzip", "zip", "unzip", "git", "php", "php8.1", "php8.2", "php8.3", "php8.4",
 		"composer", "mysql", "mysqldump", "wget", "curl", "rsync", "scp", "sftp", "python3", "node",
-		"npm", "npx", "ping", "diff", "patch", "make", "basename", "dirname", "realpath", "md5sum",
-		"sha256sum", "sleep", "env", "printenv",
+		"npm", "npx", "ping", "diff", "patch", "make", "md5sum",
+		"sha256sum", "sleep", "env", "printenv", "getent", "lesspipe", "dircolors",
 	}
 	for _, name := range allow {
 		if jailWrapped[name] {
@@ -167,17 +196,25 @@ func blockedCmd(name string) string {
 func realSystemBin(name string) string {
 	for _, p := range []string{"/usr/bin/" + name, "/bin/" + name, "/usr/sbin/" + name} {
 		st, err := os.Lstat(p)
-		if err != nil || st.Mode()&os.ModeSymlink != 0 {
+		if err != nil {
 			continue
 		}
-		b, err := os.ReadFile(p)
+		target := p
+		if st.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(p)
+			if err != nil {
+				continue
+			}
+			target = resolved
+		}
+		b, err := os.ReadFile(target)
 		if err != nil {
 			continue
 		}
 		if bytes.HasPrefix(b, []byte("#!")) && bytes.Contains(b, []byte("akpanel:")) {
 			continue
 		}
-		return p
+		return target
 	}
 	return ""
 }

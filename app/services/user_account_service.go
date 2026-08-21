@@ -346,18 +346,22 @@ func (s *UserAccountService) ResetPassword(username, newPassword string) error {
 		return fmt.Errorf("password must be at least 6 characters")
 	}
 
-	// 1. Update Linux OS PAM / Shadow password (SSH / SFTP)
+	// 1. Linux PAM / shadow (SSH, SFTP, Unix FTP)
 	cmd := exec.Command("chpasswd")
 	cmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", username, newPassword))
 	_ = cmd.Run()
 
-	// 2. Update MySQL / MariaDB User password
-	mysqlPassQuery := fmt.Sprintf("ALTER USER '%s'@'localhost' IDENTIFIED BY '%s'; FLUSH PRIVILEGES;", username, newPassword)
-	_ = exec.Command("mysql", "-e", mysqlPassQuery).Run()
-	_ = exec.Command("mariadb", "-e", mysqlPassQuery).Run()
+	// 2. MySQL / MariaDB account with the same password (no shell interpolation)
+	escUser := strings.ReplaceAll(username, "'", "")
+	escPass := strings.ReplaceAll(strings.ReplaceAll(newPassword, `\`, `\\`), "'", "''")
+	_ = ExecMySQL(fmt.Sprintf(
+		"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s'; ALTER USER '%s'@'localhost' IDENTIFIED BY '%s'; CREATE USER IF NOT EXISTS '%s'@'127.0.0.1' IDENTIFIED BY '%s'; ALTER USER '%s'@'127.0.0.1' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON `%s\\_%%`.* TO '%s'@'localhost'; GRANT ALL PRIVILEGES ON `%s\\_%%`.* TO '%s'@'127.0.0.1'; FLUSH PRIVILEGES;",
+		escUser, escPass, escUser, escPass, escUser, escPass, escUser, escPass, escUser, escUser, escUser, escUser,
+	))
 
-	// 3. Update Pure-FTPd virtual user password if exists
-	_ = exec.Command("bash", "-c", fmt.Sprintf("(echo '%s'; echo '%s') | pure-pw passwd %s -m 2>/dev/null || true", newPassword, newPassword, username)).Run()
+	// 3. Pure-FTPd virtual map + mkdb (UnixAuthentication still uses shadow from step 1)
+	_ = GetFTPService().SetPrimaryPassword(username, newPassword)
+	_ = GetRedisService().SetUserPassword(username, newPassword)
 
 	// 4. Update AKpanel Client Portal auth hash in users.json
 	list, _ := s.readUsers()
@@ -487,6 +491,7 @@ func (s *UserAccountService) DeleteUser(username string) error {
 
 	// Delete Linux OS User & clean directories
 	_ = exec.Command("userdel", "-r", username).Run()
+	_ = GetRedisService().DeleteUser(username)
 	if homeDir != "" && (strings.HasPrefix(homeDir, "/home/") || strings.HasPrefix(homeDir, "/var/www/vhosts/")) {
 		_ = os.RemoveAll(homeDir)
 	}

@@ -15,8 +15,8 @@ export default function PHPFPMPage() {
   return (
     <div className="space-y-4">
       <PHPSectionIntro
-        title="PHP FPM selector"
-        goal="Tune the selected PHP-FPM pool (workers, pm mode, request limits). New sites and per-user pools follow this version when it is the server default."
+        title="FPM pool workers"
+        goal="Tune pm mode, max_children, and request limits for the selected PHP-FPM pool. Pick which version is the server default on PHP FPM selector (/php/default)."
       />
     <Card className="bg-[#121215] border-zinc-800/80 rounded-3xl p-6 shadow-sm max-w-2xl">
       <CardHeader className="p-0 pb-5 border-b border-zinc-800/80">

@@ -434,8 +434,13 @@ func (r *FilesController) Chmod(ctx http.Context) http.Response {
 
 // FixPermissions resets web permissions
 func (r *FilesController) FixPermissions(ctx http.Context) http.Response {
-	path := ctx.Request().Input("path", "/var/www/sites")
-	if err := r.fileService.FixPermissions(path); err != nil {
+	targets := ctx.Request().InputArray("paths")
+	if len(targets) == 0 {
+		if p := ctx.Request().Input("path", "/var/www/sites"); p != "" {
+			targets = []string{p}
+		}
+	}
+	if err := r.fileService.FixPermissionsTargets(targets); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
 			"message": err.Error(),
@@ -454,14 +459,20 @@ func (r *FilesController) Download(ctx http.Context) http.Response {
 	if path == "" {
 		return ctx.Response().Status(422).Json(http.Json{"error": "path required"})
 	}
-	cleanPath := filepath.Clean(path)
+	cleanPath, err := r.fileService.ValidateAdminPath(path)
+	if err != nil {
+		return ctx.Response().Status(403).Json(http.Json{"error": err.Error()})
+	}
 	return ctx.Response().Download(cleanPath, filepath.Base(cleanPath))
 }
 
 // Upload handles multipart file upload
 func (r *FilesController) Upload(ctx http.Context) http.Response {
 	destDir := ctx.Request().Input("dest_dir", "/var/www/sites")
-	cleanDest := filepath.Clean(destDir)
+	cleanDest, err := r.fileService.ValidateAdminPath(destDir)
+	if err != nil {
+		return ctx.Response().Status(403).Json(http.Json{"status": "error", "message": err.Error()})
+	}
 	_ = os.MkdirAll(cleanDest, 0755)
 
 	fileHeader, err := ctx.Request().File("file")

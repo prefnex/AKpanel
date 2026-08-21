@@ -101,53 +101,8 @@ func (s *CreateDirectoriesStep) Execute(ctx context.Context, plan *ProvisionPlan
 	// Create starter index file if empty
 	indexPhp := filepath.Join(plan.RootPath, "index.php")
 	indexHtml := filepath.Join(plan.RootPath, "index.html")
-	if _, errPhp := os.Stat(indexPhp); os.IsNotExist(errPhp) {
-		if _, errHtml := os.Stat(indexHtml); os.IsNotExist(errHtml) {
-			if plan.SiteType == "php" {
-				starter := fmt.Sprintf(`<?php
-// Welcome to %s on AKpanel
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>%s | Hosted on AKpanel</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0B0F19; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        .card { background: #111827; padding: 2.5rem; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); text-align: center; max-width: 520px; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }
-        h1 { color: #818cf8; margin-top: 0; font-size: 1.8rem; }
-        p { color: #94a3b8; line-height: 1.6; }
-        .badge { display: inline-block; background: #312e81; color: #a5b4fc; padding: 0.3rem 0.8rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 700; margin-bottom: 1.2rem; }
-    </style>
-</head>
-<body>
-    <div class="card">
-        <div class="badge">ENGINE: %s | PHP <?php echo phpversion(); ?></div>
-        <h1>%s is Live! 🚀</h1>
-        <p>Owner: <strong>%s</strong></p>
-        <p>Document root: <code>%s</code></p>
-    </div>
-</body>
-</html>`, plan.Domain, plan.Domain, strings.ToUpper(string(plan.Engine)), plan.Domain, plan.OwnerUsername, plan.RootPath)
-				_ = os.WriteFile(indexPhp, []byte(starter), 0644)
-			} else {
-				starter := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>%s | Hosted on AKpanel</title>
-    <style>body{background:#09090b;color:#f4f4f5;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style>
-</head>
-<body>
-    <div style="background:#18181b;padding:2rem;border-radius:16px;border:1px solid #27272a;text-align:center;">
-        <h1 style="color:#10b981;">🚀 %s is Online!</h1>
-        <p style="color:#a1a1aa;">Provisioned for owner <strong>%s</strong>.</p>
-    </div>
-</body>
-</html>`, plan.Domain, plan.Domain, plan.OwnerUsername)
-				_ = os.WriteFile(indexHtml, []byte(starter), 0644)
-			}
-		}
+	if _, errHtml := os.Stat(indexHtml); os.IsNotExist(errHtml) {
+		_ = services.WriteWelcomeIndex(indexPhp, plan.Domain, plan.OwnerUsername)
 	}
 
 	// Set ownership

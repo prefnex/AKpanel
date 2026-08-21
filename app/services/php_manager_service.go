@@ -26,6 +26,7 @@ type PHPVersionDetail struct {
 	IsInstalled  bool               `json:"is_installed"`
 	IsFPMRunning bool               `json:"is_fpm_running"`
 	IsDefaultCLI bool               `json:"is_default_cli"`
+	IsDefaultFPM bool               `json:"is_default_fpm"`
 	CLIPath      string             `json:"cli_path"`
 	CLIVersion   string             `json:"cli_version"`
 	CLIniPath    string             `json:"cli_ini_path"`
@@ -109,7 +110,23 @@ func NewPHPManagerService() *PHPManagerService {
 			{Name: "ctype", Category: "Core & String", Description: "Character type checking functions", PackageName: "common"},
 			{Name: "ffi", Category: "Core & String", Description: "Foreign Function Interface to call C libraries", PackageName: "common"},
 			{Name: "gettext", Category: "Core & String", Description: "Native NLS gettext translation library", PackageName: "common"},
+			{Name: "apcu", Category: "Performance", Description: "User-data cache for PHP (APCu)", PackageName: "apcu"},
 			{Name: "igbinary", Category: "Performance", Description: "Compact binary serializer replacement", PackageName: "igbinary"},
+			{Name: "msgpack", Category: "Performance", Description: "MessagePack serializer", PackageName: "msgpack"},
+			{Name: "yaml", Category: "XML & Formats", Description: "YAML parser and emitter", PackageName: "yaml"},
+			{Name: "mongodb", Category: "Database & Cache", Description: "MongoDB driver", PackageName: "mongodb"},
+			{Name: "ssh2", Category: "Network & Web", Description: "SSH2 client functions", PackageName: "ssh2"},
+			{Name: "mailparse", Category: "Network & Web", Description: "Email MIME message parser", PackageName: "mailparse"},
+			{Name: "uuid", Category: "Core & String", Description: "UUID generation (PECL uuid)", PackageName: "uuid"},
+			{Name: "enchant", Category: "Core & String", Description: "Spell-checking via Enchant", PackageName: "enchant"},
+			{Name: "pspell", Category: "Core & String", Description: "Pspell spell checker", PackageName: "pspell"},
+			{Name: "snmp", Category: "Network & Web", Description: "SNMP protocol support", PackageName: "snmp"},
+			{Name: "readline", Category: "Core & String", Description: "GNU readline for interactive CLI", PackageName: "readline"},
+			{Name: "odbc", Category: "Database & Cache", Description: "ODBC database connectivity", PackageName: "odbc"},
+			{Name: "pgsql", Category: "Database & Cache", Description: "Native PostgreSQL extension", PackageName: "pgsql"},
+			{Name: "dba", Category: "Database & Cache", Description: "Berkeley DB style key/value stores", PackageName: "dba"},
+			{Name: "uploadprogress", Category: "Network & Web", Description: "Upload progress tracking", PackageName: "uploadprogress"},
+			{Name: "maxminddb", Category: "Network & Web", Description: "MaxMind GeoIP2 database reader", PackageName: "maxminddb"},
 			{Name: "shmop", Category: "Core & String", Description: "Shared memory segment operations", PackageName: "common"},
 			{Name: "sysvmsg", Category: "Core & String", Description: "System V message queues support", PackageName: "common"},
 			{Name: "sysvsem", Category: "Core & String", Description: "System V semaphores support", PackageName: "common"},
@@ -124,6 +141,7 @@ func NewPHPManagerService() *PHPManagerService {
 func (p *PHPManagerService) GetAllVersionsDetails() []PHPVersionDetail {
 	var details []PHPVersionDetail
 	defaultCLI := p.getDefaultCLIVersion()
+	defaultFPM := p.getDefaultFPMVersion()
 	versions := p.getSupportedVersions()
 
 	for _, ver := range versions {
@@ -134,6 +152,7 @@ func (p *PHPManagerService) GetAllVersionsDetails() []PHPVersionDetail {
 			SocketPath:   fmt.Sprintf("/run/php/php%s-fpm.sock", ver),
 			IniPath:      fmt.Sprintf("/etc/php/%s/fpm/php.ini", ver),
 			IsDefaultCLI: (ver == defaultCLI),
+			IsDefaultFPM: (ver == defaultFPM),
 		}
 
 		if _, err := os.Stat(detail.CLIPath); err == nil {
@@ -534,6 +553,33 @@ func (p *PHPManagerService) SetDefaultCLI(version string) error {
 
 	_ = os.WriteFile("/etc/akpanel/php_default_cli.conf", []byte(version+"\n"), 0644)
 	return nil
+}
+
+// SetDefaultFPM records the PHP-FPM version used for new websites and fallback sockets.
+func (p *PHPManagerService) SetDefaultFPM(version string) error {
+	version = strings.TrimSpace(version)
+	sock := fmt.Sprintf("/run/php/php%s-fpm.sock", version)
+	cli := fmt.Sprintf("/usr/bin/php%s", version)
+	if _, err := os.Stat(cli); err != nil {
+		if _, err2 := os.Stat(sock); err2 != nil {
+			return fmt.Errorf("PHP %s FPM is not installed", version)
+		}
+	}
+	_ = os.MkdirAll("/etc/akpanel", 0755)
+	if err := os.WriteFile("/etc/akpanel/php_default_fpm.conf", []byte(version+"\n"), 0644); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *PHPManagerService) getDefaultFPMVersion() string {
+	if data, err := os.ReadFile("/etc/akpanel/php_default_fpm.conf"); err == nil {
+		v := strings.TrimSpace(string(data))
+		if v != "" {
+			return v
+		}
+	}
+	return p.getDefaultCLIVersion()
 }
 
 // GetCLIOverview returns current system `php -v` output and default version.

@@ -38,6 +38,7 @@ export function PHPRuntimeProvider({ showToast, children }) {
   const [cliOverview, setCliOverview] = useState({ default_version: '', binary_path: '', version_line: '' });
   const [selectedVer, setSelectedVer] = useState('');
   const [settingDefaultCLI, setSettingDefaultCLI] = useState(false);
+  const [settingDefaultFPM, setSettingDefaultFPM] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [phpInfoSections, setPhpInfoSections] = useState([]);
@@ -228,6 +229,27 @@ export function PHPRuntimeProvider({ showToast, children }) {
     }
   };
 
+  const handleSetDefaultFPM = async (version) => {
+    const ver = version || selectedVer;
+    if (!ver) return;
+    setSettingDefaultFPM(true);
+    try {
+      const res = await fetch('/api/php/fpm/default', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: ver }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.message);
+      showToast(json.message || `Default FPM set to PHP ${ver}`);
+      fetchPHPDetails();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setSettingDefaultFPM(false);
+    }
+  };
+
   const handleRestartFPM = async () => {
     try {
       const res = await fetch('/api/php/fpm/restart', {
@@ -264,7 +286,7 @@ export function PHPRuntimeProvider({ showToast, children }) {
     showToast, navigate, installVersion,
     installPkgs, setInstallPkgs,
     phpDetails, cliOverview, selectedVer, setSelectedVer,
-    settingDefaultCLI, searchQuery, setSearchQuery,
+    settingDefaultCLI, settingDefaultFPM, searchQuery, setSearchQuery,
     activeCategory, setActiveCategory,
     phpInfoSections, infoFilter, setInfoFilter,
     rawIni, setRawIni, fpmPool, setFpmPool,
@@ -272,7 +294,7 @@ export function PHPRuntimeProvider({ showToast, children }) {
     iniForm, setIniForm,
     fetchPHPDetails, fetchPHPInfo, fetchRawIni, fetchFpmPool,
     handleStartLiveInstall, handleSaveRawIni, handleSaveFpmPool,
-    handleSaveSimpleIni, handleSetDefaultCLI, handleRestartFPM,
+    handleSaveSimpleIni, handleSetDefaultCLI, handleSetDefaultFPM, handleRestartFPM,
     currentDetail, installedVersions, availableVersions,
     categories, filteredExtensions, installedCount,
   };

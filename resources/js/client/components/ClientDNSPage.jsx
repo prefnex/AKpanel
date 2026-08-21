@@ -6,9 +6,9 @@ import {
   Globe, 
   Copy, 
   Check, 
-  Search, 
   RefreshCw, 
-  ShieldCheck 
+  Pencil,
+  Lock
 } from 'lucide-react';
 import { Card } from '../../components/ui/card';
 import { Button } from '../../components/ui/button';
@@ -28,6 +28,7 @@ export default function ClientDNSPage({ showToast }) {
   const [selectedDomain, setSelectedDomain] = useState('');
   const [loading, setLoading] = useState(false);
   const [isAddRecordOpen, setIsAddRecordOpen] = useState(false);
+  const [editIndex, setEditIndex] = useState(null);
   const [copiedKey, setCopiedKey] = useState('');
 
   const [newRecord, setNewRecord] = useState({
@@ -73,25 +74,27 @@ export default function ClientDNSPage({ showToast }) {
   const handleAddRecord = async (e) => {
     e.preventDefault();
     if (!selectedDomain) return;
-
+    const payload = {
+      domain: selectedDomain,
+      name: newRecord.name,
+      type: newRecord.type,
+      value: newRecord.value,
+      ttl: parseInt(newRecord.ttl, 10) || 14400,
+      priority: parseInt(newRecord.priority, 10) || 10,
+    };
     try {
-      const res = await fetch('/api/client/dns/record', {
+      const url = editIndex === null ? '/api/client/dns/record' : '/api/client/dns/record/update';
+      const body = editIndex === null ? payload : { ...payload, index: editIndex };
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          domain: selectedDomain,
-          name: newRecord.name,
-          type: newRecord.type,
-          value: newRecord.value,
-          ttl: parseInt(newRecord.ttl) || 14400,
-          priority: parseInt(newRecord.priority) || 10,
-        }),
+        body: JSON.stringify(body),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
-
       if (showToast) showToast(json.message);
       setIsAddRecordOpen(false);
+      setEditIndex(null);
       fetchZones();
       setNewRecord({ name: '@', type: 'A', value: '', ttl: 14400, priority: 10 });
     } catch (err) {
@@ -222,14 +225,40 @@ export default function ClientDNSPage({ showToast }) {
                     <td className="py-3 px-4 font-mono text-zinc-400">{r.ttl}s</td>
                     <td className="py-3 px-4 font-mono text-zinc-400">{r.priority || '-'}</td>
                     <td className="py-3 px-4 text-right">
-                      <Button
-                        onClick={() => handleDeleteRecord(idx)}
-                        variant="ghost"
-                        size="sm"
-                        className="text-zinc-500 hover:text-rose-400 p-1.5 h-auto rounded-lg"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
+                      {['SOA', 'NS'].includes(String(r.type || '').toUpperCase()) ? (
+                        <span title="Protected record" className="inline-flex text-zinc-600 p-1.5">
+                          <Lock className="w-3.5 h-3.5" />
+                        </span>
+                      ) : (
+                        <div className="inline-flex gap-1">
+                          <Button
+                            onClick={() => {
+                              setEditIndex(idx);
+                              setNewRecord({
+                                name: r.name || '@',
+                                type: r.type || 'A',
+                                value: r.value || '',
+                                ttl: r.ttl || 14400,
+                                priority: r.priority || 10,
+                              });
+                              setIsAddRecordOpen(true);
+                            }}
+                            variant="ghost"
+                            size="sm"
+                            className="text-zinc-500 hover:text-cyan-400 p-1.5 h-auto rounded-lg"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button
+                            onClick={() => handleDeleteRecord(idx)}
+                            variant="ghost"
+                            size="sm"
+                            className="text-zinc-500 hover:text-rose-400 p-1.5 h-auto rounded-lg"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -240,12 +269,18 @@ export default function ClientDNSPage({ showToast }) {
       </Card>
 
       {/* Modal: Add DNS Record */}
-      <Dialog open={isAddRecordOpen} onOpenChange={setIsAddRecordOpen}>
+      <Dialog open={isAddRecordOpen} onOpenChange={(open) => {
+        setIsAddRecordOpen(open);
+        if (!open) {
+          setEditIndex(null);
+          setNewRecord({ name: '@', type: 'A', value: '', ttl: 14400, priority: 10 });
+        }
+      }}>
         <DialogContent className="bg-[#0f1015] border-zinc-800 text-white max-w-md rounded-2xl p-6 shadow-2xl">
           <DialogHeader>
             <DialogTitle className="text-lg font-bold flex items-center gap-2 text-white">
-              <Plus className="w-5 h-5 text-cyan-400" />
-              <span>Add DNS Record ({selectedDomain})</span>
+              {editIndex === null ? <Plus className="w-5 h-5 text-cyan-400" /> : <Pencil className="w-5 h-5 text-cyan-400" />}
+              <span>{editIndex === null ? 'Add' : 'Edit'} DNS Record ({selectedDomain})</span>
             </DialogTitle>
           </DialogHeader>
 
@@ -331,7 +366,7 @@ export default function ClientDNSPage({ showToast }) {
                 Cancel
               </Button>
               <Button type="submit" className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs px-5 rounded-xl">
-                Add Record
+                {editIndex === null ? 'Add Record' : 'Save Record'}
               </Button>
             </DialogFooter>
           </form>

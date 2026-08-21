@@ -118,6 +118,12 @@ func DetectInstalledPHPVersion(preferred string) string {
 	if versionHasPHP(preferred) {
 		return preferred
 	}
+	if data, err := os.ReadFile("/etc/akpanel/php_default_fpm.conf"); err == nil {
+		v := strings.TrimSpace(string(data))
+		if versionHasPHP(v) {
+			return v
+		}
+	}
 	for _, ver := range []string{"8.4", "8.3", "8.2", "8.1", "8.0", "7.4"} {
 		if versionHasPHP(ver) {
 			return ver

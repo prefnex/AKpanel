@@ -1514,6 +1514,10 @@ func (s *DNSService) AddRecord(domain string, record DNSRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	record.Type = strings.ToUpper(strings.TrimSpace(record.Type))
+	if err := ValidateDNSRecord(domain, record); err != nil {
+		return err
+	}
 	if record.TTL <= 0 {
 		record.TTL = 14400
 	}
@@ -1524,12 +1528,14 @@ func (s *DNSService) AddRecord(domain string, record DNSRecord) error {
 	list, _ := s.readZones()
 	found := false
 	var targetZone *DNSZone
+	var zoneIndex int
 	for i, z := range list {
 		if z.Domain == domain {
 			list[i].Records = append(list[i].Records, record)
 			list[i].Serial = time.Now().Format("2006010215")
 			list[i].UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
 			targetZone = &list[i]
+			zoneIndex = i
 			found = true
 			break
 		}
@@ -1537,16 +1543,25 @@ func (s *DNSService) AddRecord(domain string, record DNSRecord) error {
 
 	if !found {
 		zone := s.generateDefaultZone(domain, s.GetSystemIP(), "root", false)
+		if err := ValidateDNSRecord(domain, record); err != nil {
+			return err
+		}
 		zone.Records = append(zone.Records, record)
 		list = append(list, zone)
-		targetZone = &zone
+		targetZone = &list[len(list)-1]
+		zoneIndex = len(list) - 1
 	}
 
-	_ = s.writeZones(list)
-	if targetZone != nil {
-		_ = s.syncBindZone(targetZone)
+	if err := s.syncBindZone(targetZone); err != nil {
+		if found {
+			list[zoneIndex].Records = list[zoneIndex].Records[:len(list[zoneIndex].Records)-1]
+		} else {
+			list = list[:len(list)-1]
+		}
+		_ = s.writeZones(list)
+		return err
 	}
-	return nil
+	return s.writeZones(list)
 }
 
 // DeleteRecord removes a record by index
@@ -1558,15 +1573,70 @@ func (s *DNSService) DeleteRecord(domain string, index int) error {
 	for i, z := range list {
 		if z.Domain == domain {
 			if index >= 0 && index < len(z.Records) {
+				rec := z.Records[index]
+				if strings.EqualFold(rec.Type, "SOA") {
+					return fmt.Errorf("SOA records cannot be deleted")
+				}
+				if strings.EqualFold(rec.Type, "NS") && !zoneHasMinNS(z.Records, index) {
+					return fmt.Errorf("cannot delete the last NS record")
+				}
+				prev := append([]DNSRecord{}, z.Records...)
 				list[i].Records = append(z.Records[:index], z.Records[index+1:]...)
 				list[i].Serial = time.Now().Format("2006010215")
 				list[i].UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+				if err := s.syncBindZone(&list[i]); err != nil {
+					list[i].Records = prev
+					return err
+				}
 				_ = s.writeZones(list)
-				_ = s.syncBindZone(&list[i])
 				return nil
 			}
 			return fmt.Errorf("record index out of bounds")
 		}
+	}
+	return fmt.Errorf("zone not found")
+}
+
+// UpdateRecord replaces a record by index after validation and named-checkzone.
+func (s *DNSService) UpdateRecord(domain string, index int, record DNSRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record.Type = strings.ToUpper(strings.TrimSpace(record.Type))
+	if err := ValidateDNSRecord(domain, record); err != nil {
+		return err
+	}
+	if record.TTL <= 0 {
+		record.TTL = 14400
+	}
+	if record.Name == "" {
+		record.Name = "@"
+	}
+
+	list, _ := s.readZones()
+	for i, z := range list {
+		if z.Domain != domain {
+			continue
+		}
+		if index < 0 || index >= len(z.Records) {
+			return fmt.Errorf("record index out of bounds")
+		}
+		old := z.Records[index]
+		if strings.EqualFold(old.Type, "SOA") && !strings.EqualFold(record.Type, "SOA") {
+			return fmt.Errorf("SOA records cannot be converted to another type")
+		}
+		if strings.EqualFold(old.Type, "NS") && !strings.EqualFold(record.Type, "NS") && !zoneHasMinNS(z.Records, index) {
+			return fmt.Errorf("cannot remove the last NS record")
+		}
+		prev := z.Records[index]
+		list[i].Records[index] = record
+		list[i].Serial = time.Now().Format("2006010215")
+		list[i].UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+		if err := s.syncBindZone(&list[i]); err != nil {
+			list[i].Records[index] = prev
+			return err
+		}
+		return s.writeZones(list)
 	}
 	return fmt.Errorf("zone not found")
 }

@@ -567,8 +567,8 @@ export default function Sidebar({ collapsed, setCollapsed, websitesCount, stats,
                 <div className="pl-6 pr-1 space-y-0.5 animate-in fade-in duration-200">
                   {[
                     ['/php/cli', 'PHP CLI selector', PackageCheck],
-                    ['/php/fpm', 'PHP FPM selector', Server],
-                    ['/php/default', 'Default version', Check],
+                    ['/php/default', 'PHP FPM selector', Server],
+                    ['/php/fpm', 'FPM pool workers', Check],
                     ['/php/short-info', 'Runtime overview', Activity],
                     ['/php/info', 'phpinfo()', Info],
                     ['/php/extensions', 'Extensions', Layers],

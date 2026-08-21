@@ -60,7 +60,7 @@ export default function ClientDashboard({ stats, showToast }) {
   const quickActions = [
     { title: 'Add New Domain', desc: 'Host a new website or subdomain', icon: Globe, path: '/websites', color: 'from-emerald-600 to-teal-600' },
     { title: 'MySQL Databases', desc: 'Manage DBs & 1-click phpMyAdmin', icon: Database, path: '/databases', color: 'from-blue-600 to-indigo-600' },
-    { title: 'File Explorer v2', desc: 'Jailed Monaco code editor & files', icon: FolderTree, path: '/files', color: 'from-amber-600 to-orange-600' },
+    { title: 'File Manager', desc: 'Jailed explorer & code editor', icon: FolderTree, path: '/files', color: 'from-amber-600 to-orange-600' },
     { title: 'FTP Accounts', desc: 'Chrooted FTP users & credentials', icon: Server, path: '/ftp', color: 'from-cyan-600 to-teal-600' },
     { title: 'Cron Tasks', desc: 'Schedule background automation', icon: Clock, path: '/cron', color: 'from-violet-600 to-purple-600' },
     { title: 'PHP & Environment', desc: 'PHP version & execution limits', icon: Cpu, path: '/php', color: 'from-pink-600 to-rose-600' },
@@ -70,7 +70,7 @@ export default function ClientDashboard({ stats, showToast }) {
     {
       category: 'Files & Code Management',
       items: [
-        { name: 'File Explorer v2', desc: 'Manage & edit web documents', icon: FolderTree, path: '/files' },
+        { name: 'File Manager', desc: 'Manage & edit web documents', icon: FolderTree, path: '/files' },
         { name: 'FTP Accounts', desc: 'Create jailed FTP connections', icon: Server, path: '/ftp' },
         { name: 'Account Backups', desc: 'Download .tar.gz archive', icon: Archive, path: '/backups' },
         { name: 'Disk Usage Analyzer', desc: 'Live directory quota breakdown', icon: HardDrive, path: '/' },

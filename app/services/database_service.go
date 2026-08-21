@@ -1,9 +1,7 @@
 package services
 
 import (
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -92,27 +90,9 @@ func NewDatabaseService() *DatabaseService {
 }
 
 func (d *DatabaseService) CreatePmaSsoSession(username, password string) (string, error) {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	token := hex.EncodeToString(b)
-
-	sessDir := "/var/lib/phpmyadmin/sessions"
-	_ = os.MkdirAll(sessDir, 0777)
-	_ = exec.Command("chmod", "1777", sessDir).Run()
-
-	tokenData := map[string]any{
-		"username":   username,
-		"password":   password,
-		"created_at": time.Now().Unix(),
-	}
-	bytesData, _ := json.Marshal(tokenData)
-	tokenFile := fmt.Sprintf("%s/sso_%s.json", sessDir, token)
-	err := os.WriteFile(tokenFile, bytesData, 0666)
-	if err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("/phpmyadmin/signon.php?token=%s", token), nil
+	_ = username
+	_ = password
+	return "/phpmyadmin/", nil
 }
 
 // ExecMySQL runs a SQL statement against local MariaDB using configured credentials.
@@ -139,116 +119,65 @@ func ExecMySQL(sqlStr string) error {
 
 func (d *DatabaseService) EnsurePhpMyAdminDaemon() {
 	go func() {
-		// 1. Ensure dedicated session directory exists with 1777 permissions
 		sessDir := "/var/lib/phpmyadmin/sessions"
-		_ = os.MkdirAll(sessDir, 0777)
-		_ = exec.Command("chmod", "1777", sessDir).Run()
+		_ = os.MkdirAll(sessDir, 0770)
+		_ = exec.Command("chown", "www-data:www-data", sessDir).Run()
+		_ = os.Chmod(sessDir, 0770)
 
-		// 2. Ensure phpmyadmin storage database and controluser exist in MariaDB
-		sqlInit := "CREATE DATABASE IF NOT EXISTS phpmyadmin DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; " +
-			"CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; " +
-			"GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'pma'@'localhost'; " +
-			"CREATE USER IF NOT EXISTS 'phpmyadmin'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; " +
-			"GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'phpmyadmin'@'localhost'; " +
-			"FLUSH PRIVILEGES;"
+		pmaPass := persistSecret("pma_control_pass", 24)
+		sqlInit := fmt.Sprintf(
+			"CREATE DATABASE IF NOT EXISTS phpmyadmin DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; "+
+				"CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY '%s'; "+
+				"ALTER USER 'pma'@'localhost' IDENTIFIED BY '%s'; "+
+				"GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'pma'@'localhost'; "+
+				"FLUSH PRIVILEGES;",
+			pmaPass, pmaPass,
+		)
 		_ = ExecMySQL(sqlInit)
 
-		// Import create_tables.sql if phpmyadmin tables don't exist yet
 		if _, err := os.Stat("/usr/share/phpmyadmin/sql/create_tables.sql"); err == nil {
-			_ = exec.Command("bash", "-c", "mysql -u root -pakpanel123 phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql 2>/dev/null || mysql phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql 2>/dev/null || true").Run()
+			_ = exec.Command("bash", "-c", "mysql --protocol=socket -u root phpmyadmin < /usr/share/phpmyadmin/sql/create_tables.sql 2>/dev/null || true").Run()
 		}
 
-		// 3. Write /etc/phpmyadmin/config-db.php
-		configDb := "<?php\n" +
-			"$dbuser='pma';\n" +
-			"$dbpass='pma_akpanel_secret_pass';\n" +
-			"$basepath='';\n" +
-			"$dbname='phpmyadmin';\n" +
-			"$dbserver='localhost';\n" +
-			"$dbport='3306';\n" +
-			"$dbtype='mysql';\n"
-		_ = os.WriteFile("/etc/phpmyadmin/config-db.php", []byte(configDb), 0644)
+		configDb := fmt.Sprintf("<?php\n$dbuser='pma';\n$dbpass='%s';\n$basepath='';\n$dbname='phpmyadmin';\n$dbserver='127.0.0.1';\n$dbport='3306';\n$dbtype='mysql';\n", pmaPass)
+		_ = os.WriteFile("/etc/phpmyadmin/config-db.php", []byte(configDb), 0640)
+		_ = exec.Command("chown", "root:www-data", "/etc/phpmyadmin/config-db.php").Run()
 
-		// 4. Ensure auto-login signon configuration file exists
 		_ = os.MkdirAll("/etc/phpmyadmin/conf.d", 0755)
 		pmaSecret := persistSecret("pma_blowfish", 32)
 		pmaConf := fmt.Sprintf(`<?php
-$cfg['PmaAbsoluteUri'] = '/phpmyadmin/';
+$https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+$cfg['PmaAbsoluteUri'] = '';
+$cfg['ForceSSL'] = false;
+$cfg['is_https'] = $https;
 $cfg['blowfish_secret'] = '%s';
 $cfg['Servers'][1]['auth_type'] = 'cookie';
 $cfg['Servers'][1]['host'] = '127.0.0.1';
 $cfg['Servers'][1]['port'] = 3306;
 $cfg['Servers'][1]['AllowNoPassword'] = false;
 $cfg['Servers'][1]['controluser'] = 'pma';
-$cfg['Servers'][1]['controlpass'] = 'pma_akpanel_secret_pass';
+$cfg['Servers'][1]['controlpass'] = '%s';
 $cfg['Servers'][1]['pmadb'] = 'phpmyadmin';
 $cfg['PmaNoRelation_DisableWarning'] = true;
 $cfg['SessionSavePath'] = '/var/lib/phpmyadmin/sessions';
+$cfg['LoginCookieValidity'] = 3600;
+$cfg['LoginCookieStore'] = 0;
+$cfg['LoginCookieDeleteAll'] = true;
+$cfg['AllowArbitraryServer'] = false;
 $cfg['CookieSameSite'] = 'Lax';
+$cfg['CookieSecure'] = $https;
 $cfg['CookiePath'] = '/phpmyadmin/';
 $cfg['VersionCheck'] = false;
 $cfg['SendErrorReports'] = 'never';
 $cfg['CheckConfigurationPermissions'] = false;
-$cfg['LoginCookieValidity'] = 86400;
 $cfg['ExecTimeLimit'] = 300;
-`, pmaSecret)
-		_ = os.WriteFile("/etc/phpmyadmin/conf.d/01-akpanel.php", []byte(pmaConf), 0644)
+$cfg['AllowThirdPartyFraming'] = false;
+`, pmaSecret, pmaPass)
+		_ = os.WriteFile("/etc/phpmyadmin/conf.d/01-akpanel.php", []byte(pmaConf), 0640)
+		_ = exec.Command("chown", "root:www-data", "/etc/phpmyadmin/conf.d/01-akpanel.php").Run()
 
-		// 5. Ensure signon.php script exists in /usr/share/phpmyadmin
-		signonPhp := `<?php
-session_name('AKpanelPMA');
-session_save_path('/var/lib/phpmyadmin/sessions');
-@session_start();
-
-$token = isset($_GET['token']) ? $_GET['token'] : (isset($_POST['token']) ? $_POST['token'] : '');
-$user = '';
-$pass = '';
-
-if (!empty($token)) {
-    $tokenClean = preg_replace('/[^a-zA-Z0-9_-]/', '', $token);
-    $tokenFile = '/var/lib/phpmyadmin/sessions/sso_' . $tokenClean . '.json';
-    if (file_exists($tokenFile)) {
-        $content = file_get_contents($tokenFile);
-        $data = json_decode($content, true);
-        if ($data && isset($data['username']) && isset($data['password'])) {
-            $user = $data['username'];
-            $pass = $data['password'];
-            @unlink($tokenFile);
-        }
-    }
-}
-
-if (!empty($user) && !empty($pass)) {
-    $u = htmlspecialchars($user, ENT_QUOTES, 'UTF-8');
-    $p = htmlspecialchars($pass, ENT_QUOTES, 'UTF-8');
-    echo '<!DOCTYPE html><html><body><form id="p" method="post" action="/phpmyadmin/index.php">';
-    echo '<input type="hidden" name="pma_username" value="'.$u.'">';
-    echo '<input type="hidden" name="pma_password" value="'.$p.'">';
-    echo '<input type="hidden" name="server" value="1">';
-    echo '</form><script>document.getElementById("p").submit();</script></body></html>';
-    exit;
-}
-
-if (!empty($_SESSION['PMA_single_signon_user']) && !empty($_SESSION['PMA_single_signon_password'])) {
-    session_write_close();
-    header('Location: /phpmyadmin/index.php');
-    exit;
-}
-
-// Clear any failed session to avoid loop
-unset($_SESSION['PMA_single_signon_user']);
-unset($_SESSION['PMA_single_signon_password']);
-session_write_close();
-
-if (!empty($token)) {
-    echo '<!DOCTYPE html><html><head><title>AKpanel - phpMyAdmin SSO</title><meta http-equiv="refresh" content="3;url=/databases"></head><body style="font-family:sans-serif;background:#090a0f;color:#fff;text-align:center;padding:50px;"><h2>SSO Token Expired or Invalid</h2><p>Redirecting back to AKpanel...</p><p><a href="/databases" style="color:#6366f1;">Click here if not redirected</a></p></body></html>';
-    exit;
-}
-
-header('Location: /phpmyadmin/index.php');
-exit;
-`
-		_ = os.WriteFile("/usr/share/phpmyadmin/signon.php", []byte(signonPhp), 0644)
+		_ = os.WriteFile("/usr/share/phpmyadmin/signon.php", []byte("<?php\nheader('Location: /phpmyadmin/', true, 302);\nexit;\n"), 0644)
 		_ = os.Remove("/usr/share/phpmyadmin/phpmyadmin")
 		_ = exec.Command("pkill", "-f", "php -S 0.0.0.0:8085").Run()
 		_ = NewNginxService().EnsurePhpMyAdminListener()
@@ -340,6 +269,9 @@ func (d *DatabaseService) GetEnginesOverview() []DatabaseEngineInfo {
 	postgresInstalled := d.checkBinary("psql")
 	mongoInstalled := d.checkBinary("mongod") || d.checkBinary("mongosh")
 	redisInstalled := d.checkBinary("redis-server") || d.checkBinary("redis-cli")
+	if redisInstalled {
+		_ = GetRedisService().EnsureHardened()
+	}
 
 	engines := []DatabaseEngineInfo{
 		{
@@ -400,7 +332,7 @@ func (d *DatabaseService) GetEnginesOverview() []DatabaseEngineInfo {
 			Version:     d.detectVersion("redis", "redis-server --version"),
 			Status:      d.getServiceStatusWithInstall("redis-server", "redis", redisInstalled),
 			Port:        6379,
-			DefaultUser: "default",
+			DefaultUser: "ACL users",
 			MemoryMB:    "42 MB",
 			Connections: 24,
 			Databases:   d.countDatabasesByEngine("redis"),
@@ -742,6 +674,12 @@ func (d *DatabaseService) CreateDatabase(name, engine, collation, username, pass
 
 	case "postgres":
 		_ = exec.Command("su", "-", "postgres", "-c", fmt.Sprintf("createdb %s", safeName)).Run()
+	case "redis":
+		aclUser := username
+		if aclUser == "" {
+			aclUser = safeName
+		}
+		_ = GetRedisService().ProvisionUser(aclUser, password)
 	}
 
 	_, err = db.Exec("INSERT OR REPLACE INTO databases (id, name, engine, collation, size_mb, tables_count, users_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -765,6 +703,8 @@ func (d *DatabaseService) DeleteDatabase(id string) error {
 		_ = ExecMySQL(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`;", name))
 	case "postgres":
 		_ = exec.Command("su", "-", "postgres", "-c", fmt.Sprintf("dropdb %s", name)).Run()
+	case "redis":
+		_ = GetRedisService().DeleteUser(name)
 	}
 
 	_, err = db.Exec("DELETE FROM databases WHERE id = ?", id)
@@ -794,8 +734,7 @@ func (d *DatabaseService) ExecuteQuery(engine, dbName, query string) (*QueryResu
 
 // FlushRedis flushes Redis in-memory cache
 func (d *DatabaseService) FlushRedis() error {
-	cmd := exec.Command("redis-cli", "FLUSHALL")
-	return cmd.Run()
+	return GetRedisService().FlushAll()
 }
 
 // ControlEngine starts, stops or restarts a database service
@@ -1142,59 +1081,27 @@ type PhpMyAdminSettings struct {
 
 // GetPhpMyAdminConfig returns phpMyAdmin configuration settings
 func (d *DatabaseService) GetPhpMyAdminConfig() PhpMyAdminSettings {
-	settings := PhpMyAdminSettings{
-		AutoLogin:      true,
-		DefaultUser:    "ak_admin",
+	return PhpMyAdminSettings{
+		AutoLogin:      false,
+		DefaultUser:    "",
 		UploadMaxMB:    128,
-		SessionTimeout: 1440,
-		PmaVersion:     "5.1.1 LTS (Ubuntu 22.04)",
-		AuthType:       "config",
+		SessionTimeout: 60,
+		PmaVersion:     "5.x",
+		AuthType:       "cookie",
 		SessionPath:    "/var/lib/phpmyadmin/sessions",
 	}
-
-	confBytes, err := os.ReadFile("/etc/phpmyadmin/conf.d/01-akpanel.php")
-	if err == nil {
-		content := string(confBytes)
-		if strings.Contains(content, "auth_type'] = 'cookie'") {
-			settings.AutoLogin = false
-			settings.AuthType = "cookie"
-		}
-	}
-	return settings
 }
 
-// SavePhpMyAdminConfig updates phpMyAdmin configuration
+// SavePhpMyAdminConfig keeps cookie auth and HTTPS-aware cookies (auto-login is disabled).
 func (d *DatabaseService) SavePhpMyAdminConfig(autoLogin bool, maxUploadMB int, timeoutMin int) error {
-	_ = os.MkdirAll("/etc/phpmyadmin/conf.d", 0755)
-	_ = os.MkdirAll("/var/lib/phpmyadmin/sessions", 0777)
-	_ = exec.Command("chmod", "1777", "/var/lib/phpmyadmin/sessions").Run()
-
-	authType := "cookie"
-
-	pmaConf := fmt.Sprintf(`<?php
-$cfg['PmaAbsoluteUri'] = '/phpmyadmin/';
-$cfg['blowfish_secret'] = 'akpanel_enterprise_super_secret_key_32bytes_long!';
-$cfg['Servers'][1]['auth_type'] = '%s';
-$cfg['Servers'][1]['host'] = '127.0.0.1';
-$cfg['Servers'][1]['port'] = 3306;
-$cfg['Servers'][1]['AllowNoPassword'] = false;
-$cfg['SessionSavePath'] = '/var/lib/phpmyadmin/sessions';
-$cfg['CookieSameSite'] = 'Lax';
-$cfg['CookieSecure'] = false;
-$cfg['CookiePath'] = '/';
-$cfg['VersionCheck'] = false;
-$cfg['SendErrorReports'] = 'never';
-$cfg['CheckConfigurationPermissions'] = false;
-$cfg['LoginCookieValidity'] = %d;
-$cfg['ExecTimeLimit'] = 300;
-`, authType, timeoutMin*60)
-
-	err := os.WriteFile("/etc/phpmyadmin/conf.d/01-akpanel.php", []byte(pmaConf), 0644)
-	if err != nil {
-		return err
+	_ = autoLogin
+	if timeoutMin <= 0 {
+		timeoutMin = 60
 	}
-
-	_ = exec.Command("pkill", "-f", "php -S 0.0.0.0:8085").Run()
+	if maxUploadMB <= 0 {
+		maxUploadMB = 128
+	}
+	d.EnsurePhpMyAdminDaemon()
 	return NewNginxService().EnsurePhpMyAdminListener()
 }
 

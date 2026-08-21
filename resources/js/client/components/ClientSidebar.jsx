@@ -31,7 +31,7 @@ export default function ClientSidebar({ stats }) {
     { id: 'websites', path: '/websites', label: 'Websites & Domains', icon: Globe, count: stats?.domains_used },
     { id: 'dns', path: '/dns', label: 'DNS Zone Records', icon: Zap },
     { id: 'databases', path: '/databases', label: 'MySQL Databases', icon: Database, count: stats?.databases_used },
-    { id: 'files', path: '/files', altPath: '/filemanager', label: 'File Explorer v2', icon: FolderTree, badge: 'Jail' },
+    { id: 'files', path: '/files', altPath: '/filemanager', label: 'File Manager', icon: FolderTree, badge: 'Jail' },
     { id: 'ftp', path: '/ftp', label: 'FTP Accounts', icon: Server, count: stats?.ftp_used },
     { id: 'emails', path: '/emails', label: 'Email Accounts', icon: Mail, count: stats?.emails_used },
     { id: 'cron', path: '/cron', label: 'Cron Tasks', icon: Clock },

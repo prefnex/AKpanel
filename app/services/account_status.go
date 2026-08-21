@@ -12,6 +12,117 @@ import (
 
 const accountFlagsDir = "/etc/akpanel/account-flags"
 const accountStatusWeb = "/var/www/akpanel-status"
+const nginxHoldsDir = "/etc/nginx/akpanel-holds"
+
+func nginxHoldIncludePath(username string) string {
+	return filepath.Join(nginxHoldsDir, filepath.Base(username)+".inc")
+}
+
+func writeNginxHoldInclude(username string, held bool) {
+	_ = os.MkdirAll(nginxHoldsDir, 0755)
+	path := nginxHoldIncludePath(username)
+	if !held {
+		_ = os.WriteFile(path, []byte("# account live\n"), 0644)
+		return
+	}
+	body := fmt.Sprintf(`# AKpanel account hold — evaluated on every request
+if ($uri ~ ^/\.well-known/acme-challenge/) {
+    break;
+}
+if (-f %s) {
+    return 503;
+}
+error_page 503 @akpanel_hold;
+location @akpanel_hold {
+    internal;
+    root %s;
+    rewrite ^ /index.html break;
+}
+`, accountFlagPath(username), accountStatusWeb)
+	_ = os.WriteFile(path, []byte(body), 0644)
+}
+
+func injectNginxHoldIncludes(content, owner string) string {
+	owner = strings.TrimSpace(owner)
+	if owner == "" || owner == "root" || owner == "admin" {
+		return content
+	}
+	held := false
+	if _, err := os.Stat(accountFlagPath(owner)); err == nil {
+		held = true
+	}
+	writeNginxHoldInclude(owner, held)
+	inc := fmt.Sprintf("    include %s;", nginxHoldIncludePath(owner))
+	if strings.Count(content, inc) >= strings.Count(content, "server {") && strings.Contains(content, inc) {
+		return content
+	}
+	// Strip previous copies then inject into every server block.
+	cleaned := content
+	for strings.Contains(cleaned, inc+"\n") {
+		cleaned = strings.ReplaceAll(cleaned, inc+"\n", "")
+	}
+	return strings.ReplaceAll(cleaned, "server {", "server {\n"+inc+"\n")
+}
+
+// SyncAccountHoldWeb writes hold flags/includes into existing nginx vhosts for this user.
+func SyncAccountHoldWeb(username string) {
+	username = strings.TrimSpace(username)
+	if username == "" || username == "root" || username == "admin" {
+		return
+	}
+	EnsureAccountStatusPage()
+	held := false
+	if _, err := os.Stat(accountFlagPath(username)); err == nil {
+		held = true
+	}
+	writeNginxHoldInclude(username, held)
+
+	homeMarker := "/home/" + username + "/"
+	ownerMarker := "# akpanel-owner: " + username
+	domainHints := []string{}
+	if entries, err := os.ReadDir(filepath.Join("/home", username, "domains")); err == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				domainHints = append(domainHints, e.Name())
+			}
+		}
+	}
+	files, _ := filepath.Glob("/etc/nginx/sites-available/*.conf")
+	changed := false
+	for _, f := range files {
+		base := filepath.Base(f)
+		if strings.HasPrefix(base, "akpanel-") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		s := string(b)
+		match := strings.Contains(s, homeMarker) || strings.Contains(s, ownerMarker)
+		if !match {
+			for _, d := range domainHints {
+				if strings.Contains(s, d) {
+					match = true
+					break
+				}
+			}
+		}
+		if !match {
+			continue
+		}
+		next := injectNginxHoldIncludes(s, username)
+		if next != s {
+			_ = os.WriteFile(f, []byte(next), 0644)
+			changed = true
+		}
+	}
+	if changed || held {
+		_ = exec.Command("nginx", "-t").Run()
+		_ = exec.Command("nginx", "-s", "reload").Run()
+		_ = exec.Command("service", "apache2", "reload").Run()
+	}
+}
 
 // EnsureAccountStatusPage writes the public hold page shown on suspended/over-quota sites.
 func EnsureAccountStatusPage() {
@@ -87,18 +198,22 @@ func RefreshAccountHold(u UserAccount) {
 			reason = "Administrative suspension"
 		}
 		_ = SetAccountHold(u.Username, "suspended", reason)
+		SyncAccountHoldWeb(u.Username)
 		return
 	}
 	used := diskUsedMB(u.HomeDir)
 	if u.DiskQuotaMB > 0 && used >= u.DiskQuotaMB {
 		_ = SetAccountHold(u.Username, "quota", fmt.Sprintf("Disk quota exceeded (%d/%d MB)", used, u.DiskQuotaMB))
+		SyncAccountHoldWeb(u.Username)
 		return
 	}
 	if u.BandwidthLimitMB > 0 && u.BandwidthUsedMB >= u.BandwidthLimitMB {
 		_ = SetAccountHold(u.Username, "bandwidth", "Monthly bandwidth limit exceeded")
+		SyncAccountHoldWeb(u.Username)
 		return
 	}
 	ClearAccountHold(u.Username)
+	SyncAccountHoldWeb(u.Username)
 }
 
 func diskUsedMB(home string) int {
@@ -123,17 +238,12 @@ func NginxAccountHoldSnippet(owner string) string {
 	if owner == "" || owner == "root" || owner == "admin" {
 		return ""
 	}
-	return fmt.Sprintf(`    if (-f %s) {
-        return 503;
-    }
-    error_page 503 @akpanel_hold;
-    location @akpanel_hold {
-        internal;
-        root %s;
-        rewrite ^ /index.html break;
-    }
-
-`, accountFlagPath(owner), accountStatusWeb)
+	held := false
+	if _, err := os.Stat(accountFlagPath(owner)); err == nil {
+		held = true
+	}
+	writeNginxHoldInclude(owner, held)
+	return fmt.Sprintf("    include %s;\n", nginxHoldIncludePath(owner))
 }
 
 // ApacheAccountHoldSnippet blocks Apache backends for the same account flag.

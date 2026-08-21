@@ -386,7 +386,7 @@ func (r *DatabasesController) SavePhpMyAdminConfig(ctx http.Context) http.Respon
 
 // GetPhpMyAdminSSO creates a 1-click SSO session for Root WHM admin
 func (r *DatabasesController) GetPhpMyAdminSSO(ctx http.Context) http.Response {
-	ssoURL, err := r.dbService.CreatePmaSsoSession("ak_admin", "akpanel123")
+	ssoURL, err := r.dbService.CreatePmaSsoSession("", "")
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  false,

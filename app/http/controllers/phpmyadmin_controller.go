@@ -134,10 +134,14 @@ func (r *PhpMyAdminController) Proxy(ctx goravelhttp.Context) goravelhttp.Respon
 		}
 	}
 	proxyReq.Host = "127.0.0.1:8085"
+	fwdProto := requestForwardedProto(req)
 	proxyReq.Header.Set("X-Forwarded-Host", req.Host)
-	proxyReq.Header.Set("X-Forwarded-Proto", "http")
+	proxyReq.Header.Set("X-Forwarded-Proto", fwdProto)
 	proxyReq.Header.Set("X-Forwarded-Prefix", "/phpmyadmin")
 	proxyReq.Header.Set("X-Forwarded-For", req.RemoteAddr)
+	if fwdProto == "https" {
+		proxyReq.Header.Set("HTTPS", "on")
+	}
 
 	// 2. Execute request to backend phpMyAdmin
 	resp, err := r.client.Do(proxyReq)
@@ -161,11 +165,11 @@ func (r *PhpMyAdminController) Proxy(ctx goravelhttp.Context) goravelhttp.Respon
 		response.Cookie(goravelhttp.Cookie{
 			Name:     cookie.Name,
 			Value:    cookie.Value,
-			Path:     "/",
+			Path:     "/phpmyadmin/",
 			Domain:   "",
 			Expires:  cookie.Expires,
 			MaxAge:   cookie.MaxAge,
-			Secure:   false,
+			Secure:   requestForwardedProto(req) == "https",
 			HttpOnly: cookie.HttpOnly,
 			SameSite: "lax",
 		})

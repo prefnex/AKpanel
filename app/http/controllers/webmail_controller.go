@@ -124,10 +124,7 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 	}
 	proxyReq.Host = "127.0.0.1:8086"
 	proxyReq.Header.Set("X-Forwarded-Host", req.Host)
-	fwdProto := "http"
-	if req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https") {
-		fwdProto = "https"
-	}
+	fwdProto := requestForwardedProto(req)
 	proxyReq.Header.Set("X-Forwarded-Proto", fwdProto)
 	proxyReq.Header.Set("X-Forwarded-Prefix", "/roundcube")
 	proxyReq.Header.Set("X-Forwarded-For", req.RemoteAddr)
@@ -159,7 +156,7 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 			Domain:   "",
 			Expires:  cookie.Expires,
 			MaxAge:   cookie.MaxAge,
-			Secure:   false,
+			Secure:   requestForwardedProto(req) == "https",
 			HttpOnly: cookie.HttpOnly,
 			SameSite: "lax",
 		})
@@ -202,19 +199,14 @@ func (r *WebmailController) SSO(ctx goravelhttp.Context) goravelhttp.Response {
 	if err != nil {
 		return ctx.Response().Status(400).String("Webmail login link expired. Open webmail again from the panel.")
 	}
-	imapUser, imapPass := services.GetMailAuthService().MasterLoginIdentity(email)
 	html := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Opening webmail</title></head>
+<html><head><meta charset="utf-8"><title>Opening webmail</title>
+<meta http-equiv="refresh" content="0;url=/roundcube/?_task=login&amp;_user=%s">
+</head>
 <body style="font-family:sans-serif;background:#09090b;color:#fff;text-align:center;padding:48px">
-<p>Signing in to webmail for %s…</p>
-<form id="rc" method="post" action="/roundcube/?_task=login">
-<input type="hidden" name="_task" value="login">
-<input type="hidden" name="_action" value="login">
-<input type="hidden" name="_user" value="%s">
-<input type="hidden" name="_pass" value="%s">
-</form>
-<script>document.getElementById('rc').submit();</script>
-</body></html>`, email, htmlEscape(imapUser), htmlEscape(imapPass))
+<p>Opening webmail for %s — enter the mailbox password to sign in.</p>
+<p><a href="/roundcube/?_task=login&amp;_user=%s" style="color:#818cf8">Continue to Roundcube</a></p>
+</body></html>`, url.QueryEscape(email), htmlEscape(email), url.QueryEscape(email))
 	return ctx.Response().Status(200).Data("text/html; charset=utf-8", []byte(html))
 }
 

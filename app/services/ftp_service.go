@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"goravel/app/paths"
@@ -55,6 +56,28 @@ MaxDiskUsage                   99
 CustomerProof                yes
 `
 	return os.WriteFile(pureFTPdConf, []byte(conf), 0644)
+}
+
+func (f *FTPService) SetPrimaryPassword(username, password string) error {
+	if username == "" || username == "root" || password == "" {
+		return nil
+	}
+	if err := f.EnsureConfigured(); err != nil {
+		return err
+	}
+	home := paths.UserHome(username)
+	_ = os.MkdirAll(home, 0755)
+
+	passIn := password + "\n" + password + "\n"
+	upd := exec.Command("pure-pw", "passwd", username, "-m")
+	upd.Stdin = strings.NewReader(passIn)
+	if err := upd.Run(); err != nil {
+		add := exec.Command("pure-pw", "useradd", username, "-u", username, "-d", home, "-m")
+		add.Stdin = strings.NewReader(passIn)
+		_ = add.Run()
+	}
+	_ = exec.Command("pure-pw", "mkdb").Run()
+	return nil
 }
 
 // EnsurePrimaryAccount ensures the Linux user can authenticate via Pure-FTPd (UnixAuthentication).

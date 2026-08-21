@@ -689,15 +689,17 @@ func mysqlRootExec(sql string) {
 }
 
 func writeRoundcubePHPConfig(dbPass, desKey string) {
+	if len(desKey) < 24 {
+		desKey = (desKey + "akpanel-webmail-key!!!!")[:24]
+	}
+	if len(desKey) > 24 {
+		desKey = desKey[:24]
+	}
 	cfg := fmt.Sprintf(`<?php
 $config = [];
 $config['db_dsnw'] = 'mysql://roundcube:%s@127.0.0.1/roundcubemail';
-$config['default_host'] = '127.0.0.1';
 $config['imap_host'] = '127.0.0.1:143';
-$config['default_port'] = 143;
-$config['smtp_server'] = '127.0.0.1';
 $config['smtp_host'] = '127.0.0.1:587';
-$config['smtp_port'] = 587;
 $config['smtp_user'] = '%%u';
 $config['smtp_pass'] = '%%p';
 $config['support_url'] = '';
@@ -707,12 +709,23 @@ $config['plugins'] = [];
 $config['skin'] = 'elastic';
 $config['enable_spellcheck'] = false;
 $config['auto_create_user'] = true;
-$config['force_https'] = false;
-$config['use_https'] = false;
-$config['request_path'] = '/roundcube';
 $config['login_autocomplete'] = 2;
 $config['log_dir'] = '/var/log/roundcube/';
 $config['temp_dir'] = '/var/lib/roundcube/temp/';
+$config['ip_check'] = false;
+$config['request_path'] = '/roundcube';
+$https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+    || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && strtolower($_SERVER['HTTP_X_FORWARDED_PROTO']) === 'https');
+$config['use_https'] = $https;
+$config['force_https'] = false;
+$config['session_lifetime'] = 10;
+$config['session_samesite'] = 'Lax';
+$config['imap_conn_options'] = [
+  'ssl' => ['verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true],
+];
+$config['smtp_conn_options'] = [
+  'ssl' => ['verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true],
+];
 `, dbPass, desKey)
 	_ = os.MkdirAll("/etc/roundcube", 0755)
 	_ = os.WriteFile("/etc/roundcube/config.inc.php", []byte(cfg), 0640)

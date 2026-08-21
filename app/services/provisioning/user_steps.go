@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -162,6 +161,7 @@ func (s *CreateLinuxUserStep) Execute(ctx context.Context, plan *UserProvisionPl
 		cmd := exec.Command("chpasswd")
 		cmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", plan.Username, plan.Password))
 		_ = cmd.Run()
+		_ = services.GetRedisService().ProvisionUser(plan.Username, plan.Password)
 	}
 
 	// Harden /home — no listing of other users
@@ -207,43 +207,7 @@ func (s *CreateUserDirectoriesStep) Execute(ctx context.Context, plan *UserProvi
 	}
 
 	indexPhp := filepath.Join(plan.RootPath, "index.php")
-	if _, err := os.Stat(indexPhp); os.IsNotExist(err) {
-		body := fmt.Sprintf(`<?php
-header('Content-Type: text/html; charset=UTF-8');
-$domain = %s;
-$user = %s;
-$php = PHP_VERSION;
-?><!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title><?php echo htmlspecialchars($domain); ?> | AKpanel</title>
-  <style>
-    :root { color-scheme: dark; }
-    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-      font-family: ui-sans-serif, system-ui, sans-serif; background:#0b0f19; color:#f8fafc; }
-    .card { width:min(560px,92vw); padding:2.4rem; border-radius:24px; background:#111827;
-      border:1px solid rgba(255,255,255,.08); box-shadow:0 24px 60px rgba(0,0,0,.45); text-align:center; }
-    .badge { display:inline-block; margin-bottom:1rem; padding:.3rem .8rem; border-radius:999px;
-      background:#312e81; color:#c7d2fe; font-size:.75rem; font-weight:700; letter-spacing:.04em; }
-    h1 { margin:0 0 .6rem; font-size:1.7rem; color:#a5b4fc; }
-    p { margin:.4rem 0; color:#94a3b8; line-height:1.6; }
-    code { color:#e2e8f0; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">PHP <?php echo htmlspecialchars($php); ?> · nginx + php-fpm</div>
-    <h1><?php echo htmlspecialchars($domain); ?> is live</h1>
-    <p>Account <code><?php echo htmlspecialchars($user); ?></code> is ready on AKpanel.</p>
-    <p>Replace this file with your application (<code>index.php</code> or a framework public folder).</p>
-  </div>
-</body>
-</html>
-`, strconv.Quote(plan.MainDomain), strconv.Quote(plan.Username))
-		_ = os.WriteFile(indexPhp, []byte(body), 0644)
-	}
+	_ = services.WriteWelcomeIndex(indexPhp, plan.MainDomain, plan.Username)
 
 	_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", plan.Username, plan.Username), plan.HomeDir).Run()
 	_ = exec.Command("chmod", "711", plan.HomeDir).Run()
@@ -375,11 +339,14 @@ func (s *CreateFTPAccountStep) Name() string { return "CreateFTPAccount" }
 
 func (s *CreateFTPAccountStep) Execute(ctx context.Context, plan *UserProvisionPlan) error {
 	ftp := services.GetFTPService()
-	if err := ftp.EnsurePrimaryAccount(plan.Username); err != nil {
-		progressLog(plan, s.Name(), 45, fmt.Sprintf("FTP warning: %v", err))
-		return nil
+	_ = ftp.EnsurePrimaryAccount(plan.Username)
+	if plan.Password != "" {
+		if err := ftp.SetPrimaryPassword(plan.Username, plan.Password); err != nil {
+			progressLog(plan, s.Name(), 45, fmt.Sprintf("FTP warning: %v", err))
+			return nil
+		}
 	}
-	progressLog(plan, s.Name(), 45, "Pure-FTPd UnixAuthentication enabled for Linux user")
+	progressLog(plan, s.Name(), 45, "FTP account synced with Linux password")
 	return nil
 }
 

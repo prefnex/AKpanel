@@ -20,4 +20,5 @@ func registerPHPRoutes(phpController *controllers.PHPController) {
 	facades.Route().Post("/api/php/ini", phpController.UpdateIni)
 	facades.Route().Post("/api/php/fpm/restart", phpController.RestartFPM)
 	facades.Route().Post("/api/php/cli/default", phpController.SetDefaultCLI)
+	facades.Route().Post("/api/php/fpm/default", phpController.SetDefaultFPM)
 }

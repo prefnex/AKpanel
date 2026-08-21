@@ -63,7 +63,7 @@ import { Checkbox } from './ui/checkbox';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
 
 // Recursive Server Root Tree Node
-function RootTreeNode({ path, label, currentPath, onSelectPath }) {
+function RootTreeNode({ path, label, currentPath, onSelectPath, apiBase = '/api/files' }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [subdirs, setSubdirs] = useState([]);
   const [loaded, setLoaded] = useState(false);
@@ -73,7 +73,7 @@ function RootTreeNode({ path, label, currentPath, onSelectPath }) {
     e.stopPropagation();
     if (!loaded && !isExpanded) {
       try {
-        const res = await fetch(`/api/files/subdirs?path=${encodeURIComponent(path)}`);
+        const res = await fetch(`${apiBase}/subdirs?path=${encodeURIComponent(path)}`);
         if (res.ok) {
           const json = await res.json();
           setSubdirs(json.data || []);
@@ -122,6 +122,7 @@ function RootTreeNode({ path, label, currentPath, onSelectPath }) {
               path={sub}
               currentPath={currentPath}
               onSelectPath={onSelectPath}
+              apiBase={apiBase}
             />
           ))}
         </div>
@@ -130,8 +131,13 @@ function RootTreeNode({ path, label, currentPath, onSelectPath }) {
   );
 }
 
-export default function FileManagerV2({ showToast }) {
-  const [currentPath, setCurrentPath] = useState('/var/www/sites');
+export default function FileManagerV2({ showToast, standalone = false, apiBase = '/api/files', jailRoot = '', dashboardHref }) {
+  const jailed = Boolean(jailRoot);
+  const homePath = jailed ? String(jailRoot).replace(/\/+$/, '') : '/var/www/sites';
+  const dashLink = dashboardHref || (jailed ? '/' : '/filemanager');
+  const jailUser = jailed ? homePath.split('/').filter(Boolean).pop() : '';
+
+  const [currentPath, setCurrentPath] = useState(homePath);
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedItems, setSelectedItems] = useState([]);
@@ -179,8 +185,8 @@ export default function FileManagerV2({ showToast }) {
   const [isChmodOpen, setIsChmodOpen] = useState(false);
   const [chmodTarget, setChmodTarget] = useState(null);
   const [chmodMode, setChmodMode] = useState('0755');
-  const [chmodOwner, setChmodOwner] = useState('www-data');
-  const [chmodGroup, setChmodGroup] = useState('www-data');
+  const [chmodOwner, setChmodOwner] = useState(jailUser || 'www-data');
+  const [chmodGroup, setChmodGroup] = useState(jailUser || 'www-data');
   const [chmodRecursive, setChmodRecursive] = useState(false);
 
   const [isChecksumOpen, setIsChecksumOpen] = useState(false);
@@ -198,7 +204,7 @@ export default function FileManagerV2({ showToast }) {
   // Fetch Root Directories for full / tree
   const fetchRootTree = async () => {
     try {
-      const res = await fetch('/api/files/subdirs?path=/');
+      const res = await fetch(`${apiBase}/subdirs?path=${encodeURIComponent(jailed ? homePath : '/')}`);
       if (res.ok) {
         const json = await res.json();
         setRootSubdirs(json.data || []);
@@ -213,7 +219,7 @@ export default function FileManagerV2({ showToast }) {
     setSelectedItems([]);
     setContextMenu(null);
     try {
-      const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`${apiBase}?path=${encodeURIComponent(path)}`);
       if (res.ok) {
         const json = await res.json();
         setFiles(json.data || []);
@@ -242,22 +248,36 @@ export default function FileManagerV2({ showToast }) {
   }, []);
 
   const handleOpenFolder = (path) => {
+    if (jailed) {
+      const clean = String(path || '').replace(/\/+$/, '') || homePath;
+      if (clean !== homePath && !clean.startsWith(`${homePath}/`)) {
+        showToast('Access denied: you cannot leave your home directory', 'error');
+        return;
+      }
+    }
     fetchFiles(path);
   };
 
   const handleGoUp = () => {
+    if (jailed && (currentPath === homePath || currentPath === `${homePath}/`)) {
+      return;
+    }
     const parts = currentPath.split('/').filter(Boolean);
     if (parts.length > 0) {
       parts.pop();
       const parent = '/' + parts.join('/');
-      fetchFiles(parent || '/');
+      if (jailed && (!parent.startsWith(homePath) || parent === '/')) {
+        fetchFiles(homePath);
+        return;
+      }
+      fetchFiles(parent || (jailed ? homePath : '/'));
     }
   };
 
   const handlePathInputSubmit = (e) => {
     e.preventDefault();
     setIsEditingPath(false);
-    fetchFiles(pathInputVal);
+    handleOpenFolder(pathInputVal);
   };
 
   // Right-Click Context Menu Trigger
@@ -295,7 +315,7 @@ export default function FileManagerV2({ showToast }) {
     }
 
     try {
-      const res = await fetch(`/api/files/read?path=${encodeURIComponent(file.path)}`);
+      const res = await fetch(`${apiBase}/read?path=${encodeURIComponent(file.path)}`);
       if (res.ok) {
         const json = await res.json();
         const newTab = {
@@ -320,7 +340,7 @@ export default function FileManagerV2({ showToast }) {
     if (!tab) return;
 
     try {
-      const res = await fetch('/api/files/save', {
+      const res = await fetch(`${apiBase}/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -359,7 +379,7 @@ export default function FileManagerV2({ showToast }) {
   // Paste from Clipboard
   const handlePasteClipboard = async () => {
     if (!clipboard || clipboard.sources.length === 0) return;
-    const endpoint = clipboard.action === 'copy' ? '/api/files/copy' : '/api/files/move';
+    const endpoint = clipboard.action === 'copy' ? `${apiBase}/copy` : `${apiBase}/move`;
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -388,7 +408,7 @@ export default function FileManagerV2({ showToast }) {
 
   const handleExecutePickerAction = async () => {
     if (pickerSources.length === 0) return;
-    const endpoint = pickerMode === 'copy' ? '/api/files/copy' : '/api/files/move';
+    const endpoint = pickerMode === 'copy' ? `${apiBase}/copy` : `${apiBase}/move`;
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
@@ -413,7 +433,7 @@ export default function FileManagerV2({ showToast }) {
     if (!newItemName) return;
     const fullPath = `${currentPath}/${newItemName}`;
     try {
-      const res = await fetch('/api/files/create', {
+      const res = await fetch(`${apiBase}/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -437,7 +457,7 @@ export default function FileManagerV2({ showToast }) {
     if (!renameTarget || !renameNewName) return;
     const newPath = `${currentPath}/${renameNewName}`;
     try {
-      const res = await fetch('/api/files/rename', {
+      const res = await fetch(`${apiBase}/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -459,7 +479,7 @@ export default function FileManagerV2({ showToast }) {
   const handleDeleteItem = async (item) => {
     if (!confirm(`Delete '${item.name}'?`)) return;
     try {
-      const res = await fetch('/api/files/delete', {
+      const res = await fetch(`${apiBase}/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: item.path }),
@@ -478,7 +498,7 @@ export default function FileManagerV2({ showToast }) {
     if (!confirm(`Delete ${selectedItems.length} selected item(s)?`)) return;
     for (const p of selectedItems) {
       try {
-        await fetch('/api/files/delete', {
+        await fetch(`${apiBase}/delete`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: p }),
@@ -496,7 +516,7 @@ export default function FileManagerV2({ showToast }) {
     if (selectedItems.length === 0) return;
     const destArchive = `${currentPath}/${archiveName}`;
     try {
-      const res = await fetch('/api/files/archive', {
+      const res = await fetch(`${apiBase}/archive`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -517,7 +537,7 @@ export default function FileManagerV2({ showToast }) {
 
   const handleExtract = async (file) => {
     try {
-      const res = await fetch('/api/files/extract', {
+      const res = await fetch(`${apiBase}/extract`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -537,7 +557,7 @@ export default function FileManagerV2({ showToast }) {
   const handleRemoteDownload = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch('/api/files/remote-download', {
+      const res = await fetch(`${apiBase}/remote-download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -562,7 +582,7 @@ export default function FileManagerV2({ showToast }) {
     e.preventDefault();
     setIsGrepSearching(true);
     try {
-      const res = await fetch('/api/files/grep', {
+      const res = await fetch(`${apiBase}/grep`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -582,7 +602,7 @@ export default function FileManagerV2({ showToast }) {
   const handleShowChecksum = async (file) => {
     setChecksumFile(file);
     try {
-      const res = await fetch(`/api/files/checksum?path=${encodeURIComponent(file.path)}`);
+      const res = await fetch(`${apiBase}/checksum?path=${encodeURIComponent(file.path)}`);
       const json = await res.json();
       if (res.ok) {
         setChecksumData(json.data);
@@ -594,11 +614,12 @@ export default function FileManagerV2({ showToast }) {
   };
 
   const handleFixPermissions = async () => {
+    const targets = selectedItems.length > 0 ? selectedItems : [currentPath];
     try {
-      const res = await fetch('/api/files/permissions', {
+      const res = await fetch(`${apiBase}/permissions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: currentPath }),
+        body: JSON.stringify({ path: currentPath, paths: targets }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
@@ -613,7 +634,7 @@ export default function FileManagerV2({ showToast }) {
     e.preventDefault();
     if (!chmodTarget) return;
     try {
-      const res = await fetch('/api/files/chmod', {
+      const res = await fetch(`${apiBase}/chmod`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -643,7 +664,7 @@ export default function FileManagerV2({ showToast }) {
     data.append('dest_dir', currentPath);
 
     try {
-      const res = await fetch('/api/files/upload', {
+      const res = await fetch(`${apiBase}/upload`, {
         method: 'POST',
         body: data,
       });
@@ -718,7 +739,7 @@ export default function FileManagerV2({ showToast }) {
   const activeTab = openTabs[activeTabIdx];
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0a0a0c] select-none text-zinc-100 font-sans antialiased overflow-hidden">
+    <div className={`flex flex-col ${jailed ? 'h-full w-full' : 'h-screen w-screen'} bg-[#0a0a0c] select-none text-zinc-100 font-sans antialiased overflow-hidden`}>
 
       {/* 1. Top Blue Nav Bar (AKpanel Enterprise Brand Header) */}
       <header className="bg-[#0e1726] border-b border-blue-900/40 px-4 py-2.5 flex items-center justify-between shadow-md shrink-0 z-20">
@@ -729,7 +750,7 @@ export default function FileManagerV2({ showToast }) {
             </div>
             <span className="font-extrabold text-sm text-white tracking-wider">AK<span className="text-blue-400">CONTROL</span></span>
             <Badge variant="outline" className="text-[9px] px-1.5 py-0 border-blue-500/30 text-blue-400 font-mono">
-              Full v2
+              {jailed ? 'Jailed' : 'Full v2'}
             </Badge>
           </div>
 
@@ -737,7 +758,7 @@ export default function FileManagerV2({ showToast }) {
             size="sm"
             variant="ghost"
             onClick={handleGoUp}
-            disabled={currentPath === '/'}
+            disabled={currentPath === '/' || (jailed && (currentPath === homePath || currentPath === `${homePath}/`))}
             className="h-7 w-7 p-0 rounded-lg text-zinc-300 hover:text-white hover:bg-blue-900/40"
           >
             <ArrowLeft className="w-4 h-4" />
@@ -763,13 +784,16 @@ export default function FileManagerV2({ showToast }) {
               className="flex items-center gap-1 overflow-x-auto text-xs font-mono cursor-text"
             >
               <button
-                onClick={(e) => { e.stopPropagation(); handleOpenFolder('/'); }}
+                onClick={(e) => { e.stopPropagation(); handleOpenFolder(jailed ? homePath : '/'); }}
                 className="px-2 py-0.5 rounded bg-blue-950/60 border border-blue-800/40 text-blue-300 font-bold hover:bg-blue-900/80"
               >
-                /
+                {jailed ? '~' : '/'}
               </button>
               {pathParts.map((part, idx) => {
                 const sub = '/' + pathParts.slice(0, idx + 1).join('/');
+                if (jailed && sub !== homePath && !sub.startsWith(`${homePath}/`)) {
+                  return null;
+                }
                 return (
                   <React.Fragment key={sub}>
                     <span className="text-zinc-600 font-bold">/</span>
@@ -803,7 +827,7 @@ export default function FileManagerV2({ showToast }) {
           </div>
 
           <a
-            href="/filemanager"
+            href={dashLink}
             className="h-7 px-3 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold flex items-center gap-1.5 transition"
           >
             <Home className="w-3.5 h-3.5" />
@@ -940,7 +964,7 @@ export default function FileManagerV2({ showToast }) {
             className="h-7 px-2.5 rounded-lg border-zinc-800 bg-zinc-900 text-emerald-400 hover:bg-zinc-800 gap-1 text-xs"
           >
             <Shield className="w-3.5 h-3.5" />
-            <span>Permissions</span>
+            <span>Fix Permissions</span>
           </Button>
 
           <Button
@@ -985,18 +1009,19 @@ export default function FileManagerV2({ showToast }) {
               <FolderTree className="w-3.5 h-3.5 text-blue-400" />
               <span>Root Hierarchy</span>
             </span>
-            <button onClick={() => handleOpenFolder('/')} className="hover:text-blue-400 text-xs font-mono font-bold">
-              /
+            <button onClick={() => handleOpenFolder(jailed ? homePath : '/')} className="hover:text-blue-400 text-xs font-mono font-bold">
+              {jailed ? '~' : '/'}
             </button>
           </div>
 
           {/* Tree Scroll Area */}
           <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-0.5">
             <RootTreeNode
-              path="/"
-              label="/"
+              path={jailed ? homePath : '/'}
+              label={jailed ? jailUser || '~' : '/'}
               currentPath={currentPath}
               onSelectPath={handleOpenFolder}
+              apiBase={apiBase}
             />
             {rootSubdirs.map(subPath => (
               <RootTreeNode
@@ -1004,6 +1029,7 @@ export default function FileManagerV2({ showToast }) {
                 path={subPath}
                 currentPath={currentPath}
                 onSelectPath={handleOpenFolder}
+                apiBase={apiBase}
               />
             ))}
           </div>
@@ -1159,7 +1185,7 @@ export default function FileManagerV2({ showToast }) {
                           </Button>
 
                           <a
-                            href={`/api/files/download?path=${encodeURIComponent(item.path)}`}
+                            href={`${apiBase}/download?path=${encodeURIComponent(item.path)}`}
                             download
                             title="Download"
                             className="h-6 w-6 rounded-lg flex items-center justify-center text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800 transition"
@@ -1314,7 +1340,7 @@ export default function FileManagerV2({ showToast }) {
           )}
 
           <a
-            href={`/api/files/download?path=${encodeURIComponent(contextMenu.item.path)}`}
+            href={`${apiBase}/download?path=${encodeURIComponent(contextMenu.item.path)}`}
             download
             className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl hover:bg-zinc-800 hover:text-white transition"
           >
@@ -1351,10 +1377,11 @@ export default function FileManagerV2({ showToast }) {
 
             <div className="max-h-60 overflow-y-auto custom-scrollbar border border-zinc-800 rounded-2xl p-2 space-y-1">
               <RootTreeNode
-                path="/"
-                label="/"
+                path={jailed ? homePath : '/'}
+                label={jailed ? jailUser || '~' : '/'}
                 currentPath={pickerTargetDir}
                 onSelectPath={setPickerTargetDir}
+                apiBase={apiBase}
               />
               {rootSubdirs.map(subPath => (
                 <RootTreeNode
@@ -1362,6 +1389,7 @@ export default function FileManagerV2({ showToast }) {
                   path={subPath}
                   currentPath={pickerTargetDir}
                   onSelectPath={setPickerTargetDir}
+                  apiBase={apiBase}
                 />
               ))}
             </div>
@@ -1415,8 +1443,8 @@ export default function FileManagerV2({ showToast }) {
                   <span>Save File (Ctrl+S)</span>
                 </Button>
 
-                <Button size="sm" variant="ghost" onClick={() => setIsEditorModalOpen(false)} className="rounded-xl">
-                  ✕
+                <Button size="sm" variant="ghost" onClick={() => setIsEditorModalOpen(false)} className="rounded-xl text-zinc-400 hover:text-white">
+                  Close
                 </Button>
               </div>
             </div>
@@ -1496,7 +1524,7 @@ export default function FileManagerV2({ showToast }) {
             </DialogHeader>
             <div className="mt-3 flex items-center justify-center bg-black/60 rounded-2xl p-4 border border-zinc-800 min-h-64">
               <img
-                src={`/api/files/download?path=${encodeURIComponent(imagePreview.path)}`}
+                src={`${apiBase}/download?path=${encodeURIComponent(imagePreview.path)}`}
                 alt={imagePreview.name}
                 className="max-h-96 max-w-full object-contain rounded-xl shadow-lg"
               />
@@ -1604,16 +1632,18 @@ export default function FileManagerV2({ showToast }) {
               <div>
                 <label className="block text-zinc-300 font-semibold mb-1">User Owner</label>
                 <Input
-                  value={chmodOwner}
+                  value={jailed ? jailUser : chmodOwner}
                   onChange={(e) => setChmodOwner(e.target.value)}
+                  disabled={jailed}
                   className="bg-zinc-900 border-zinc-800 rounded-xl font-mono text-white"
                 />
               </div>
               <div>
                 <label className="block text-zinc-300 font-semibold mb-1">Group Owner</label>
                 <Input
-                  value={chmodGroup}
+                  value={jailed ? jailUser : chmodGroup}
                   onChange={(e) => setChmodGroup(e.target.value)}
+                  disabled={jailed}
                   className="bg-zinc-900 border-zinc-800 rounded-xl font-mono text-white"
                 />
               </div>

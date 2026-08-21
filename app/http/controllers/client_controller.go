@@ -278,7 +278,7 @@ func (c *ClientController) StoreDNSRecord(ctx http.Context) http.Response {
 	}
 
 	if err := c.clientService.AddDNSRecord(username, req.Domain, req.Name, req.Type, req.Value, req.TTL, req.Priority); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": err.Error()})
 	}
 
 	return ctx.Response().Success().Json(http.Json{
@@ -299,12 +299,39 @@ func (c *ClientController) DeleteDNSRecord(ctx http.Context) http.Response {
 	}
 
 	if err := c.clientService.DeleteDNSRecord(username, req.Domain, req.Index); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": err.Error()})
 	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": "DNS record deleted successfully!",
+	})
+}
+
+// POST /api/client/dns/record/update
+func (c *ClientController) UpdateDNSRecord(ctx http.Context) http.Response {
+	username := c.getUsername(ctx)
+	var req struct {
+		Domain   string `json:"domain"`
+		Index    int    `json:"index"`
+		Name     string `json:"name"`
+		Type     string `json:"type"`
+		Value    string `json:"value"`
+		TTL      int    `json:"ttl"`
+		Priority int    `json:"priority"`
+	}
+	if err := ctx.Request().Bind(&req); err != nil || req.Domain == "" || req.Value == "" {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Domain, name, and value are required."})
+	}
+	if req.TTL <= 0 {
+		req.TTL = 3600
+	}
+	if err := c.clientService.UpdateDNSRecord(username, req.Domain, req.Index, req.Name, req.Type, req.Value, req.TTL, req.Priority); err != nil {
+		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": err.Error()})
+	}
+	return ctx.Response().Success().Json(http.Json{
+		"status":  true,
+		"message": "DNS record updated successfully!",
 	})
 }
 
@@ -357,259 +384,6 @@ func (c *ClientController) DeleteDatabase(ctx http.Context) http.Response {
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
 		"message": fmt.Sprintf("Database '%s' dropped.", req.DatabaseName),
-	})
-}
-
-// =========================================================================
-// JAILED FILE MANAGER V2 HANDLERS
-// =========================================================================
-
-// GET /api/client/files
-func (c *ClientController) Files(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	path := ctx.Request().Query("path", "/")
-	files, err := c.clientService.GetClientFiles(username, path)
-	if err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-	return ctx.Response().Success().Json(http.Json{
-		"status":       true,
-		"data":         files,
-		"files":        files,
-		"current_path": path,
-	})
-}
-
-// GET /api/client/files/read
-func (c *ClientController) ReadFile(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	path := ctx.Request().Query("path", "")
-	if path == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "File path is required."})
-	}
-
-	content, err := c.clientService.ReadClientFile(username, path)
-	if err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"content": content,
-		"path":    path,
-	})
-}
-
-// POST /api/client/files/save
-func (c *ClientController) SaveFile(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.Path == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Path and content are required."})
-	}
-
-	if err := c.clientService.SaveClientFile(username, req.Path, req.Content); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "File saved successfully!",
-	})
-}
-
-// POST /api/client/files/create
-func (c *ClientController) CreateFile(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		Path string `json:"path"`
-		Name string `json:"name"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.Name == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "File name is required."})
-	}
-
-	if err := c.clientService.CreateClientFile(username, req.Path, req.Name); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": fmt.Sprintf("File '%s' created.", req.Name),
-	})
-}
-
-// POST /api/client/files/mkdir
-func (c *ClientController) CreateFolder(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		Path string `json:"path"`
-		Name string `json:"name"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.Name == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Folder name is required."})
-	}
-
-	if err := c.clientService.CreateClientFolder(username, req.Path, req.Name); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": fmt.Sprintf("Folder '%s' created.", req.Name),
-	})
-}
-
-// POST /api/client/files/delete
-func (c *ClientController) DeleteFile(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		Path string `json:"path"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.Path == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Path is required."})
-	}
-
-	if err := c.clientService.DeleteClientFile(username, req.Path); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "Item deleted.",
-	})
-}
-
-// POST /api/client/files/rename
-func (c *ClientController) RenameFile(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		OldPath string `json:"old_path"`
-		NewName string `json:"new_name"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.OldPath == "" || req.NewName == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Old path and new name are required."})
-	}
-
-	if err := c.clientService.RenameClientFile(username, req.OldPath, req.NewName); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "Item renamed.",
-	})
-}
-
-// POST /api/client/files/chmod
-func (c *ClientController) ChmodFile(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		Path string `json:"path"`
-		Mode string `json:"mode"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.Path == "" || req.Mode == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Path and mode are required."})
-	}
-
-	if err := c.clientService.ChmodClientFile(username, req.Path, req.Mode); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "Permissions updated.",
-	})
-}
-
-// POST /api/client/files/extract
-func (c *ClientController) ExtractArchive(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		ArchivePath string `json:"archive_path"`
-		DestPath    string `json:"dest_path"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.ArchivePath == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Archive path is required."})
-	}
-
-	if req.DestPath == "" {
-		req.DestPath = "/"
-	}
-
-	if err := c.clientService.ExtractClientArchive(username, req.ArchivePath, req.DestPath); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "Archive extracted successfully.",
-	})
-}
-
-// POST /api/client/files/compress
-func (c *ClientController) CompressArchive(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		TargetDir   string   `json:"target_dir"`
-		ArchiveName string   `json:"archive_name"`
-		Files       []string `json:"files"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.ArchiveName == "" || len(req.Files) == 0 {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Archive name and files are required."})
-	}
-
-	if err := c.clientService.CompressClientArchive(username, req.TargetDir, req.ArchiveName, req.Files); err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": fmt.Sprintf("Compressed into '%s'.", req.ArchiveName),
-	})
-}
-
-// GET /api/client/files/search
-func (c *ClientController) SearchFiles(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	query := ctx.Request().Query("q", "")
-	if query == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Query string is required."})
-	}
-
-	matches, err := c.clientService.SearchClientFiles(username, query)
-	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"data":    matches,
-		"matches": matches,
-	})
-}
-
-// POST /api/client/files/git-clone
-func (c *ClientController) GitClone(ctx http.Context) http.Response {
-	username := c.getUsername(ctx)
-	var req struct {
-		DestPath string `json:"dest_path"`
-		RepoURL  string `json:"repo_url"`
-	}
-	if err := ctx.Request().Bind(&req); err != nil || req.RepoURL == "" {
-		return ctx.Response().Status(400).Json(http.Json{"status": false, "message": "Git repository URL is required."})
-	}
-
-	if err := c.clientService.GitCloneClientRepo(username, req.DestPath, req.RepoURL); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
-	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  true,
-		"message": "Repository cloned successfully!",
 	})
 }
 

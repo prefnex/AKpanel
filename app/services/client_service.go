@@ -404,24 +404,8 @@ func (c *ClientService) CreateWebsite(username, domain, phpVersion string) error
 	}
 
 	_ = os.MkdirAll(siteRoot, 0755)
-	indexFile := filepath.Join(siteRoot, "index.html")
-	if _, err := os.Stat(indexFile); os.IsNotExist(err) {
-		html := fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>%s | Hosted on AKpanel</title>
-    <style>body{background:#09090b;color:#f4f4f5;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style>
-</head>
-<body>
-    <div style="background:#18181b;padding:2rem;border-radius:16px;border:1px solid #27272a;text-align:center;">
-        <h1 style="color:#10b981;">🚀 %s is Online!</h1>
-        <p style="color:#a1a1aa;">Uploaded via AKpanel Client Portal for user <strong>%s</strong>.</p>
-    </div>
-</body>
-</html>`, domain, domain, username)
-		_ = os.WriteFile(indexFile, []byte(html), 0644)
-	}
+	indexFile := filepath.Join(siteRoot, "index.php")
+	_ = WriteWelcomeIndex(indexFile, domain, username)
 
 	_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", username, username), filepath.Dir(siteRoot)).Run()
 	_ = exec.Command("chmod", "-R", "755", siteRoot).Run()
@@ -562,6 +546,27 @@ func (c *ClientService) DeleteDNSRecord(username, domain string, index int) erro
 	}
 
 	return c.dnsService.DeleteRecord(domain, index)
+}
+
+func (c *ClientService) UpdateDNSRecord(username, domain string, index int, name, rType, value string, ttl, priority int) error {
+	zones, _ := c.GetDNSZones(username)
+	found := false
+	for _, z := range zones {
+		if z.Domain == domain {
+			found = true
+			break
+		}
+	}
+	if !found && username != "root" && username != "admin" {
+		return fmt.Errorf("DNS zone '%s' does not belong to your account", domain)
+	}
+	return c.dnsService.UpdateRecord(domain, index, DNSRecord{
+		Name:     name,
+		Type:     rType,
+		Value:    value,
+		TTL:      ttl,
+		Priority: priority,
+	})
 }
 
 func (c *ClientService) readClientDatabases() []ClientDatabaseRecord {
@@ -1204,54 +1209,15 @@ func (c *ClientService) SavePHPConfig(username, version string, memoryLimit, upl
 
 // GetPhpMyAdminSSO returns dedicated scoped login link for tenant with active SSO session
 func (c *ClientService) GetPhpMyAdminSSO(username string) (map[string]any, error) {
-	var dbUser, dbPass string
-
-	if username == "admin" || username == "root" {
-		dbUser = "ak_admin"
-		dbPass = "akpanel123"
-		ensureSQL := "CREATE USER IF NOT EXISTS 'ak_admin'@'%' IDENTIFIED BY 'akpanel123'; " +
-			"CREATE USER IF NOT EXISTS 'ak_admin'@'localhost' IDENTIFIED BY 'akpanel123'; " +
-			"CREATE USER IF NOT EXISTS 'ak_admin'@'127.0.0.1' IDENTIFIED BY 'akpanel123'; " +
-			"GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'%' WITH GRANT OPTION; " +
-			"GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'localhost' WITH GRANT OPTION; " +
-			"GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'127.0.0.1' WITH GRANT OPTION; " +
-			"FLUSH PRIVILEGES;"
-		_ = ExecMySQL(ensureSQL)
-	} else {
-		dbUser = username
-		dbPass = "ClientPass2026!"
-		if usr, err := c.userService.GetUser(username); err == nil && usr != nil && usr.Password != "" {
-			dbPass = usr.Password
-		}
-
-		// Ensure MySQL user exists with this password and has access to their databases!
-		ensureSQL := fmt.Sprintf(
-			"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s';\n"+
-				"CREATE USER IF NOT EXISTS '%s'@'127.0.0.1' IDENTIFIED BY '%s';\n"+
-				"ALTER USER '%s'@'localhost' IDENTIFIED BY '%s';\n"+
-				"ALTER USER '%s'@'127.0.0.1' IDENTIFIED BY '%s';\n"+
-				"GRANT ALL PRIVILEGES ON `%s\\_%%`.* TO '%s'@'localhost';\n"+
-				"GRANT ALL PRIVILEGES ON `%s\\_%%`.* TO '%s'@'127.0.0.1';\n"+
-				"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';\n"+
-				"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'127.0.0.1';\n"+
-				"FLUSH PRIVILEGES;",
-			dbUser, dbPass, dbUser, dbPass, dbUser, dbPass, dbUser, dbPass,
-			dbUser, dbUser, dbUser, dbUser, dbUser, dbUser, dbUser, dbUser)
-		_ = ExecMySQL(ensureSQL)
-	}
-
-	ssoURL, err := c.dbService.CreatePmaSsoSession(dbUser, dbPass)
-	if err != nil {
-		return nil, err
-	}
-
+	_ = username
 	return map[string]any{
-		"url":          ssoURL,
-		"redirect_url": ssoURL,
-		"username":     dbUser,
+		"url":          "/phpmyadmin/",
+		"redirect_url": "/phpmyadmin/",
+		"username":     "",
 		"server":       "127.0.0.1",
 		"port":         3306,
 		"direct_to":    "index.php",
+		"auto_login":   false,
 	}, nil
 }
 
