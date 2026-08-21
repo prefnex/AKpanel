@@ -119,9 +119,12 @@ func NewEmailService() *EmailService {
 		s.initDefaultConfig()
 		s.initDefaultEmails()
 		s.initDefaultAliases()
-		s.EnsureRoundcubeWebmail()
-		_ = GetMailAuthService().EnsureDovecotConfig()
 		emailServiceInstance = s
+		go func() {
+			defer func() { _ = recover() }()
+			s.EnsureRoundcubeWebmail()
+			_ = GetMailAuthService().EnsureDovecotConfig()
+		}()
 	})
 	return emailServiceInstance
 }
@@ -827,28 +830,7 @@ func importRoundcubeSQL(sqlFile string) {
 }
 
 func ensurePHPIntl() {
-	ents, _ := os.ReadDir("/etc/php")
-	installed := false
-	for _, e := range ents {
-		if !e.IsDir() {
-			continue
-		}
-		ver := e.Name()
-		if _, err := os.Stat("/etc/php/" + ver + "/mods-available/intl.ini"); err == nil {
-			continue
-		}
-		cmd := exec.Command("apt-get", "install", "-y", "-qq", "php"+ver+"-intl")
-		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-		if cmd.Run() == nil {
-			installed = true
-		}
-	}
-	if !installed {
-		return
-	}
-	for _, e := range ents {
-		_ = exec.Command("systemctl", "reload", "php"+e.Name()+"-fpm").Run()
-	}
+	// php-intl is installed by the installer. Never apt-get on an API request.
 }
 
 func (s *EmailService) EnsureRoundcubeWebmail() {

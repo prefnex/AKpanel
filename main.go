@@ -168,6 +168,7 @@ func startPanelListener(addr string, port string, scope string, targetURL string
 }
 
 func main() {
+	services.EnsurePanelMariaDB()
 	app := bootstrap.Boot()
 
 	tlsConfig := &tls.Config{
@@ -192,6 +193,7 @@ func main() {
 	}()
 
 	_ = facades.Artisan().Call("migrate")
+	go services.StartPanelDBReplica()
 
 	log.Println("👑 [AKpanel] Starting Goravel Core Backend Engine on 127.0.0.1:2088...")
 	app.Start()

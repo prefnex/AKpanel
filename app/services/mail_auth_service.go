@@ -1,12 +1,14 @@
 package services
 
 import (
+	"context"
 	"crypto/sha512"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -62,15 +64,28 @@ userdb {
 }
 `, uid, gid)
 	m.ensureMasterUserLocked()
-	if err := os.WriteFile(m.confFile, []byte(conf), 0644); err != nil {
-		return err
-	}
-	m.writeDovecotListenersLocked()
+	authChanged := writeIfChanged(m.confFile, conf, 0644)
+	listenChanged := m.writeDovecotListenersLocked()
 	m.ensurePostfixMailStackLocked(uid, gid)
 
-	_ = exec.Command("service", "dovecot", "reload").Run()
-	_ = exec.Command("systemctl", "reload", "dovecot").Run()
+	if authChanged || listenChanged {
+		runTimeout(8*time.Second, "systemctl", "reload", "dovecot")
+	}
 	return nil
+}
+
+func writeIfChanged(path, body string, mode os.FileMode) bool {
+	old, _ := os.ReadFile(path)
+	if string(old) == body {
+		return false
+	}
+	return os.WriteFile(path, []byte(body), mode) == nil
+}
+
+func runTimeout(d time.Duration, name string, args ...string) {
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	_ = exec.CommandContext(ctx, name, args...).Run()
 }
 
 // ensureVmailIdentity creates the vmail system user and returns numeric uid/gid.
@@ -133,7 +148,7 @@ func mailTLSPair() (cert, key string) {
 	return "/etc/akpanel/ssl/server/fullchain.pem", "/etc/akpanel/ssl/server/privkey.pem"
 }
 
-func (m *MailAuthService) writeDovecotListenersLocked() {
+func (m *MailAuthService) writeDovecotListenersLocked() bool {
 	cert, key := mailTLSPair()
 	var b strings.Builder
 	fmt.Fprintf(&b, `# AKpanel TLS + Postfix SASL (do not redeclare IMAP ports — Debian already binds 143/993)
@@ -163,7 +178,7 @@ local_name mail.%s {
 }
 `, p.domain, p.cert, p.key, p.domain, p.cert, p.key)
 	}
-	_ = os.WriteFile("/etc/dovecot/conf.d/99-akpanel-listeners.conf", []byte(b.String()), 0644)
+	return writeIfChanged("/etc/dovecot/conf.d/99-akpanel-listeners.conf", b.String(), 0644)
 }
 
 type mailCertPair struct {
@@ -214,8 +229,7 @@ func (m *MailAuthService) ensurePostfixMailStackLocked(uid, gid string) {
 	_ = exec.Command("postconf", "-e", "virtual_gid_maps = static:"+gid).Run()
 	writePostfixSNIMap()
 	ensurePostfixMasterServices()
-	_ = exec.Command("service", "postfix", "reload").Run()
-	_ = exec.Command("systemctl", "reload", "postfix").Run()
+	runTimeout(8*time.Second, "systemctl", "reload", "postfix")
 }
 
 func writePostfixSNIMap() {
@@ -285,9 +299,15 @@ func hasActiveMasterService(s, name string) bool {
 }
 
 func (m *MailAuthService) hashPassword(password string) (string, error) {
-	out, err := exec.Command("doveadm", "pw", "-s", "SHA512-CRYPT", "-p", password).Output()
-	if err == nil {
-		return strings.TrimSpace(string(out)), nil
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "openssl", "passwd", "-6", "-stdin")
+	cmd.Stdin = strings.NewReader(password + "\n")
+	if out, err := cmd.Output(); err == nil {
+		h := strings.TrimSpace(string(out))
+		if strings.HasPrefix(h, "$6$") {
+			return "{SHA512-CRYPT}" + h, nil
+		}
 	}
 	b, berr := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if berr != nil {
@@ -313,10 +333,6 @@ func (m *MailAuthService) MasterLoginIdentity(email string) (user, pass string) 
 
 // SetMailboxPassword adds or updates a mailbox password in Dovecot passwd-file.
 func (m *MailAuthService) SetMailboxPassword(email, password string) error {
-	if err := m.EnsureDovecotConfig(); err != nil {
-		return err
-	}
-
 	hash, err := m.hashPassword(password)
 	if err != nil {
 		return err
@@ -324,6 +340,7 @@ func (m *MailAuthService) SetMailboxPassword(email, password string) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	_ = os.MkdirAll("/etc/dovecot", 0755)
 
 	content, _ := os.ReadFile(m.passwdFile)
 	lines := strings.Split(string(content), "\n")
@@ -375,6 +392,6 @@ func (m *MailAuthService) EnsurePostfixVirtualConfig() error {
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_maps=hash:/etc/postfix/vmailbox").Run()
 	_ = exec.Command("postconf", "-e", "virtual_uid_maps=static:"+uid).Run()
 	_ = exec.Command("postconf", "-e", "virtual_gid_maps=static:"+gid).Run()
-	_ = exec.Command("service", "postfix", "reload").Run()
+	runTimeout(8*time.Second, "systemctl", "reload", "postfix")
 	return nil
 }

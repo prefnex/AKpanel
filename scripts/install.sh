@@ -985,14 +985,41 @@ task_step4() {
     service mariadb start >> "$LOG_FILE" 2>&1 || service mysql start >> "$LOG_FILE" 2>&1 || systemctl start mariadb >> "$LOG_FILE" 2>&1 || true
     sleep 1
 
+    mkdir -p /etc/akpanel/secrets
+    if [ ! -s /etc/akpanel/secrets/mysql_root ]; then
+        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24 > /etc/akpanel/secrets/mysql_root
+    fi
+    if [ ! -s /etc/akpanel/secrets/mysql_akpanel ]; then
+        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24 > /etc/akpanel/secrets/mysql_akpanel
+    fi
+    chmod 600 /etc/akpanel/secrets/mysql_root /etc/akpanel/secrets/mysql_akpanel 2>/dev/null || true
+    MYSQL_ROOT_PASS=$(tr -d '\n' < /etc/akpanel/secrets/mysql_root)
+    MYSQL_PANEL_PASS=$(tr -d '\n' < /etc/akpanel/secrets/mysql_akpanel)
+
+    mkdir -p /etc/mysql/mariadb.conf.d /var/lib/akpanel/replica/json
+    cat > /etc/mysql/mariadb.conf.d/99-akpanel.cnf << 'MYCNF'
+[mysqld]
+bind-address = 127.0.0.1
+skip-name-resolve
+innodb_file_per_table = 1
+innodb_buffer_pool_size = 192M
+innodb_flush_log_at_trx_commit = 2
+max_connections = 80
+table_open_cache = 400
+performance_schema = OFF
+skip-log-bin
+MYCNF
+    systemctl restart mariadb >> "$LOG_FILE" 2>&1 || service mariadb restart >> "$LOG_FILE" 2>&1 || true
+    sleep 2
+
     run_mysql() {
-        mysql -u root -pakpanel123 "$@" 2>/dev/null || mysql -u root "$@" 2>/dev/null || mysql "$@" 2>/dev/null || true
+        mysql --protocol=socket -u root -p"$MYSQL_ROOT_PASS" "$@" 2>/dev/null || mysql --protocol=socket -u root "$@" 2>/dev/null || mysql "$@" 2>/dev/null || true
     }
 
-    run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'%' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'%' WITH GRANT OPTION; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
-    run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'localhost' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'localhost' WITH GRANT OPTION; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
-    run_mysql -e "CREATE USER IF NOT EXISTS 'ak_admin'@'127.0.0.1' IDENTIFIED BY 'akpanel123'; GRANT ALL PRIVILEGES ON *.* TO 'ak_admin'@'127.0.0.1' WITH GRANT OPTION; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
-    run_mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'akpanel123'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
+    run_mysql -e "CREATE DATABASE IF NOT EXISTS akpanel DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    run_mysql -e "CREATE USER IF NOT EXISTS 'akpanel'@'localhost' IDENTIFIED BY '${MYSQL_PANEL_PASS}'; CREATE USER IF NOT EXISTS 'akpanel'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PANEL_PASS}'; ALTER USER 'akpanel'@'localhost' IDENTIFIED BY '${MYSQL_PANEL_PASS}'; ALTER USER 'akpanel'@'127.0.0.1' IDENTIFIED BY '${MYSQL_PANEL_PASS}'; GRANT ALL PRIVILEGES ON akpanel.* TO 'akpanel'@'localhost'; GRANT ALL PRIVILEGES ON akpanel.* TO 'akpanel'@'127.0.0.1';"
+    run_mysql -e "CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}'; ALTER USER 'root'@'127.0.0.1' IDENTIFIED BY '${MYSQL_ROOT_PASS}'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;"
+    run_mysql -e "DROP USER IF EXISTS 'ak_admin'@'%'; DROP USER IF EXISTS 'ak_admin'@'localhost'; DROP USER IF EXISTS 'ak_admin'@'127.0.0.1'; FLUSH PRIVILEGES;"
 
     run_mysql -e "CREATE DATABASE IF NOT EXISTS phpmyadmin DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS 'pma'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'pma'@'localhost'; CREATE USER IF NOT EXISTS 'phpmyadmin'@'localhost' IDENTIFIED BY 'pma_akpanel_secret_pass'; GRANT ALL PRIVILEGES ON phpmyadmin.* TO 'phpmyadmin'@'localhost'; FLUSH PRIVILEGES;" >> "$LOG_FILE" 2>&1
     if [ -f /usr/share/phpmyadmin/sql/create_tables.sql ]; then
@@ -1038,8 +1065,9 @@ task_step4() {
 \$config['support_url'] = '';
 \$config['product_name'] = 'AKpanel Webmail';
 \$config['des_key'] = '${RC_DES_KEY}';
-\$config['plugins'] = [];
+\$config['plugins'] = ['akpanel_sso'];
 \$config['skin'] = 'elastic';
+\$config['ip_check'] = false;
 \$config['enable_spellcheck'] = false;
 \$config['auto_create_user'] = true;
 \$config['force_https'] = false;
@@ -1198,7 +1226,9 @@ EOF
  🌐 Client Portal   : http://${SERVER_IP}:2083
  📅 Generated Date  : $(date)
 ==============================================================================
- 🛡️ Security Note: The plain password was shown once at installation time.
+ 🛡️ MariaDB panel DB : akpanel (user akpanel)
+ 🛡️ MariaDB root     : /etc/akpanel/secrets/mysql_root (127.0.0.1)
+ 🛡️ Replica dump     : /var/lib/akpanel/replica/akpanel.sql
  If forgotten, you can reset it anytime by running: akpanel-reset-password
 ==============================================================================
 EOF
@@ -1276,8 +1306,9 @@ task_step5() {
 
     cd "$PROJECT_ROOT"
 
-    # Always generate 100% working .env for 0.0.0.0 and Port 2087 and SQLite
-    cat << 'EOF' > "$PROJECT_ROOT/.env"
+    # Always generate 100% working .env for 0.0.0.0 and Port 2087
+    MYSQL_PANEL_PASS=$(tr -d '\n' < /etc/akpanel/secrets/mysql_akpanel 2>/dev/null || true)
+    cat << EOF > "$PROJECT_ROOT/.env"
 APP_NAME=AKpanel
 APP_ENV=production
 APP_KEY=akpanel_production_secret_key_32
@@ -1295,9 +1326,22 @@ APP_PORT=2087
 
 JWT_SECRET=akpanel_super_secret_jwt_key_64_bytes_long_entropy_string!
 
-DB_CONNECTION=sqlite
-DB_DATABASE=database/akpanel.sqlite
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=akpanel
+DB_USERNAME=akpanel
+DB_PASSWORD=${MYSQL_PANEL_PASS}
 EOF
+    cat << EOF > /etc/akpanel/akpanel.env
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=akpanel
+DB_USERNAME=akpanel
+DB_PASSWORD=${MYSQL_PANEL_PASS}
+EOF
+    chmod 600 /etc/akpanel/akpanel.env 2>/dev/null || true
     mkdir -p "$PROJECT_ROOT/database"
     touch "$PROJECT_ROOT/database/akpanel.sqlite"
 
@@ -1365,7 +1409,7 @@ Environment=APP_ENV=production
 Environment=APP_PORT=2087
 Environment=APP_HOST=0.0.0.0
 Environment=APP_KEY=akpanel_production_secret_key_32
-Environment=DB_CONNECTION=sqlite
+EnvironmentFile=-/etc/akpanel/akpanel.env
 
 [Install]
 WantedBy=multi-user.target
