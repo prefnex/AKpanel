@@ -1,6 +1,8 @@
 package services
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,6 +92,11 @@ func (a *ACMEService) GenerateSelfSigned(domain string) (string, string, error) 
 		}
 	}
 
+	return a.writeSelfSigned(domain, certPath, keyPath)
+}
+
+func (a *ACMEService) writeSelfSigned(domain, certPath, keyPath string) (string, string, error) {
+	_ = os.MkdirAll(filepath.Dir(certPath), 0755)
 	subj := fmt.Sprintf("/C=US/ST=Cloud/L=Server/O=AKpanel/CN=%s", domain)
 	cmd := exec.Command("openssl", "req", "-x509", "-nodes", "-days", "365",
 		"-newkey", "rsa:2048",
@@ -136,51 +143,51 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 
 	_ = a.EnsureAcmeInstalled()
 
-	// Try acme.sh issuance with detailed log recording
 	var issueSuccess bool
 	var acmeOutput string
-	var caUsed string = "Let's Encrypt"
+	caUsed := "Let's Encrypt"
 	logPath := "/var/log/akpanel/acme.log"
 	_ = os.MkdirAll("/var/log/akpanel", 0755)
 
 	if a.isAcmeAvailable() {
-		// 1. Try Let's Encrypt
-		cmdIssue := exec.Command(a.acmeBin,
-			"--issue",
-			"-d", domain,
-			"-w", webroot,
-			"--server", "letsencrypt",
-			"--force",
-		)
-		out, err := cmdIssue.CombinedOutput()
-		acmeOutput = string(out)
-
-		// If Let's Encrypt fails (rate limits, staging blocks, etc.), try ZeroSSL automatically
-		if err != nil {
-			cmdZero := exec.Command(a.acmeBin,
-				"--issue",
-				"-d", domain,
-				"-w", webroot,
-				"--server", "zerossl",
-				"--force",
-			)
-			outZero, errZero := cmdZero.CombinedOutput()
-			acmeOutput += "\n[Automatic Fallback to ZeroSSL]:\n" + string(outZero)
-			if errZero == nil {
-				err = nil
-				caUsed = "ZeroSSL"
+		wwwExtra := strings.Count(domain, ".") == 1 && !strings.HasPrefix(domain, "www.")
+		for attempt := 1; attempt <= 3 && !issueSuccess; attempt++ {
+			if attempt > 1 {
+				time.Sleep(time.Duration(attempt*8) * time.Second)
 			}
-		}
+			issueArgs := []string{"--issue", "-d", domain}
+			if wwwExtra {
+				issueArgs = append(issueArgs, "-d", "www."+domain)
+			}
+			issueArgs = append(issueArgs, "-w", webroot, "--server", "letsencrypt", "--force")
+			cmdIssue := exec.Command(a.acmeBin, issueArgs...)
+			out, err := cmdIssue.CombinedOutput()
+			acmeOutput = string(out)
 
-		// Append to persistent log file
-		logEntry := fmt.Sprintf("\n=== ACME Issue [%s] %s ===\n%s\n", time.Now().Format(time.RFC3339), domain, acmeOutput)
-		f, _ := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if f != nil {
-			_, _ = f.WriteString(logEntry)
-			f.Close()
-		}
+			if err != nil {
+				zeroArgs := []string{"--issue", "-d", domain}
+				if wwwExtra {
+					zeroArgs = append(zeroArgs, "-d", "www."+domain)
+				}
+				zeroArgs = append(zeroArgs, "-w", webroot, "--server", "zerossl", "--force")
+				cmdZero := exec.Command(a.acmeBin, zeroArgs...)
+				outZero, errZero := cmdZero.CombinedOutput()
+				acmeOutput += "\n[Automatic Fallback to ZeroSSL]:\n" + string(outZero)
+				if errZero == nil {
+					err = nil
+					caUsed = "ZeroSSL"
+				}
+			}
 
-		if err == nil {
+			logEntry := fmt.Sprintf("\n=== ACME Issue [%s] %s attempt=%d ===\n%s\n", time.Now().Format(time.RFC3339), domain, attempt, acmeOutput)
+			if f, errOpen := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); errOpen == nil {
+				_, _ = f.WriteString(logEntry)
+				_ = f.Close()
+			}
+
+			if err != nil {
+				continue
+			}
 			cmdInstall := exec.Command(a.acmeBin,
 				"--install-cert",
 				"-d", domain,
@@ -188,13 +195,14 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 				"--fullchain-file", certPath,
 				"--reloadcmd", "service nginx reload 2>/dev/null || true; service apache2 reload 2>/dev/null || true",
 			)
-			if err := cmdInstall.Run(); err == nil {
+			if cmdInstall.Run() == nil {
 				issueSuccess = true
 			}
 		}
 	}
 
 	if issueSuccess {
+		_ = exec.Command("service", "nginx", "reload").Run()
 		return &SSLStatus{
 			Domain:       domain,
 			Issuer:       fmt.Sprintf("%s (acme.sh)", caUsed),
@@ -206,12 +214,6 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 		}, nil
 	}
 
-	// Fallback to local Self-Signed certificate
-	_, _, err := a.GenerateSelfSigned(domain)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate fallback SSL certificate: %w", err)
-	}
-
 	failReason := "DNS or HTTP verification failed. Check /var/log/akpanel/acme.log for details."
 	if strings.Contains(acmeOutput, "NXDOMAIN") || strings.Contains(acmeOutput, "DNS problem") {
 		failReason = "DNS A-record check failed: The domain does not yet point to this server IP in public DNS."
@@ -219,15 +221,79 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 		failReason = "HTTP challenge timed out or Port 80 was unreachable from Let's Encrypt servers."
 	}
 
+	// Keep an existing trusted cert instead of silently replacing it with self-signed.
+	if info, ok := InspectCertificateFile(certPath); ok && !info.SelfSigned && info.DaysLeft > 7 {
+		return &SSLStatus{
+			Domain:       domain,
+			Issuer:       info.Issuer,
+			Status:       "Active (Trusted — ACME renew deferred)",
+			CertPath:     certPath,
+			KeyPath:      keyPath,
+			IsSelfSigned: false,
+			Message:      fmt.Sprintf("%s Existing trusted certificate was kept (expires in %d days).", failReason, info.DaysLeft),
+		}, nil
+	}
+
+	if _, _, err := a.writeSelfSigned(domain, certPath, keyPath); err != nil {
+		return nil, fmt.Errorf("failed to generate fallback SSL certificate: %w", err)
+	}
+
 	return &SSLStatus{
 		Domain:       domain,
-		Issuer:       "Local Self-Signed (Temporary Fallback)",
+		Issuer:       "Self-Signed Fallback",
 		Status:       "Self-Signed (Pending DNS / Let's Encrypt Retry)",
 		CertPath:     certPath,
 		KeyPath:      keyPath,
 		IsSelfSigned: true,
 		Message:      fmt.Sprintf("%s Self-signed certificate activated so HTTPS remains functional.", failReason),
 	}, nil
+}
+
+type CertFileInfo struct {
+	Issuer     string
+	SelfSigned bool
+	DaysLeft   int
+	ExpiryDate string
+}
+
+func InspectCertificateFile(certPath string) (CertFileInfo, bool) {
+	info := CertFileInfo{Issuer: "Self-Signed Fallback", SelfSigned: true, DaysLeft: 0}
+	certData, err := os.ReadFile(certPath)
+	if err != nil {
+		return info, false
+	}
+	block, _ := pem.Decode(certData)
+	if block == nil {
+		return info, false
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return info, false
+	}
+
+	info.ExpiryDate = cert.NotAfter.Format("2006-01-02")
+	info.DaysLeft = int(time.Until(cert.NotAfter).Hours() / 24)
+	if info.DaysLeft < 0 {
+		info.DaysLeft = 0
+	}
+
+	info.SelfSigned = cert.CheckSignatureFrom(cert) == nil
+	org := ""
+	if len(cert.Issuer.Organization) > 0 {
+		org = cert.Issuer.Organization[0]
+	}
+	cn := cert.Issuer.CommonName
+	switch {
+	case info.SelfSigned:
+		info.Issuer = "Self-Signed Fallback"
+	case org != "":
+		info.Issuer = org
+	case cn != "":
+		info.Issuer = cn
+	default:
+		info.Issuer = "Custom Certificate"
+	}
+	return info, true
 }
 
 type CertificateDetail struct {
@@ -266,34 +332,29 @@ func (a *ACMEService) GetAllCertificates() []CertificateDetail {
 			continue
 		}
 
-		issuer := "Local Self-Signed"
+		issuer := "Self-Signed Fallback"
 		status := "Self-Signed (Fallback)"
 		isSelfSigned := true
-		expiryStr := time.Now().AddDate(0, 3, 0).Format("2006-01-02")
-		daysLeft := 90
-		sans := []string{domain, "www." + domain}
+		expiryStr := ""
+		daysLeft := 0
+		sans := []string{domain}
 
-		cmd := exec.Command("openssl", "x509", "-in", certPath, "-noout", "-issuer", "-enddate")
-		if out, err := cmd.Output(); err == nil {
-			outStr := string(out)
-			if strings.Contains(outStr, "Let's Encrypt") || strings.Contains(outStr, "R3") || strings.Contains(outStr, "E1") {
-				issuer = "Let's Encrypt (acme.sh)"
+		if info, ok := InspectCertificateFile(certPath); ok {
+			issuer = info.Issuer
+			expiryStr = info.ExpiryDate
+			daysLeft = info.DaysLeft
+			isSelfSigned = info.SelfSigned
+			if info.SelfSigned {
+				status = "Self-Signed (Fallback)"
+			} else if daysLeft == 0 {
+				status = "Expired"
+			} else {
 				status = "Active (Trusted)"
-				isSelfSigned = false
-			} else if strings.Contains(outStr, "ZeroSSL") {
-				issuer = "ZeroSSL (acme.sh)"
-				status = "Active (Trusted)"
-				isSelfSigned = false
 			}
 		}
 
-		displayDomain := domain
-		if domain == "server" {
-			displayDomain = "server (Panel Hostname SSL :2087/:2083)"
-		}
-
 		list = append(list, CertificateDetail{
-			Domain:       displayDomain,
+			Domain:       domain,
 			Issuer:       issuer,
 			Status:       status,
 			ExpiryDate:   expiryStr,
@@ -360,6 +421,10 @@ func (a *ACMEService) RenewAll() (string, error) {
 	_ = exec.Command("service", "apache2", "reload").Run()
 
 	return string(out), nil
+}
+
+func (a *ACMEService) RenewDomain(domain string) (*SSLStatus, error) {
+	return a.IssueSSL(domain, "", "")
 }
 
 // IssueWildcard requests a wildcard cert for domain and *.domain using DNS-01 (BIND nsupdate).

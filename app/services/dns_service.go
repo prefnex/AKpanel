@@ -629,6 +629,29 @@ func (s *DNSService) SaveSettings(settings DNSSettings) error {
 	return nil
 }
 
+// ProvisionAuthoritativeHostnameZone writes the registrar NS zone + hostname A record into BIND.
+func (s *DNSService) ProvisionAuthoritativeHostnameZone(hostname, ns1, ns2, ip string) error {
+	settings := s.GetSettings()
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	if hostname != "" {
+		settings.ServerHostname = hostname
+	}
+	if strings.TrimSpace(ns1) != "" {
+		settings.PrimaryNS = strings.ToLower(strings.TrimSpace(ns1))
+	}
+	if strings.TrimSpace(ns2) != "" {
+		settings.SecondaryNS = strings.ToLower(strings.TrimSpace(ns2))
+	}
+	if strings.TrimSpace(ip) != "" {
+		settings.PrimaryIP = strings.TrimSpace(ip)
+		if settings.SecondaryIP == "" {
+			settings.SecondaryIP = settings.PrimaryIP
+		}
+	}
+	settings.BindEnabled = true
+	return s.SaveSettings(settings)
+}
+
 func extractRootDomain(hostnameOrNS string) string {
 	cleaned := strings.Trim(strings.TrimSpace(strings.ToLower(hostnameOrNS)), ".")
 	parts := strings.Split(cleaned, ".")
@@ -654,6 +677,13 @@ func (s *DNSService) autoProvisionMasterNameserverZoneUnsafe(settings DNSSetting
 	secondaryIP := settings.SecondaryIP
 	if secondaryIP == "" {
 		secondaryIP = primaryIP
+	}
+
+	hostLabel := "server"
+	if hn := strings.ToLower(strings.TrimSpace(settings.ServerHostname)); hn != "" && strings.HasSuffix(hn, "."+rootDom) {
+		if lbl := strings.TrimSuffix(hn, "."+rootDom); lbl != "" {
+			hostLabel = lbl
+		}
 	}
 
 	zones, _ := s.readZones()
@@ -683,7 +713,7 @@ func (s *DNSService) autoProvisionMasterNameserverZoneUnsafe(settings DNSSetting
 				{Name: "@", Type: "A", Value: primaryIP, TTL: 14400},
 				{Name: "ns1", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Glue Record NS1"},
 				{Name: "ns2", Type: "A", Value: secondaryIP, TTL: 14400, Comment: "Glue Record NS2"},
-				{Name: "server", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Master Server Hostname"},
+				{Name: hostLabel, Type: "A", Value: primaryIP, TTL: 14400, Comment: "Master Server Hostname"},
 				{Name: "*", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Wildcard A"},
 				{Name: "www", Type: "A", Value: primaryIP, TTL: 14400},
 				{Name: "mail", Type: "A", Value: primaryIP, TTL: 14400},
@@ -700,6 +730,7 @@ func (s *DNSService) autoProvisionMasterNameserverZoneUnsafe(settings DNSSetting
 		hasNS1 := false
 		hasNS2 := false
 		hasServer := false
+		hasHost := false
 		for i := range zone.Records {
 			if zone.Records[i].Name == "ns1" && zone.Records[i].Type == "A" {
 				zone.Records[i].Value = primaryIP
@@ -708,6 +739,10 @@ func (s *DNSService) autoProvisionMasterNameserverZoneUnsafe(settings DNSSetting
 			if zone.Records[i].Name == "ns2" && zone.Records[i].Type == "A" {
 				zone.Records[i].Value = secondaryIP
 				hasNS2 = true
+			}
+			if zone.Records[i].Name == hostLabel && zone.Records[i].Type == "A" {
+				zone.Records[i].Value = primaryIP
+				hasHost = true
 			}
 			if zone.Records[i].Name == "server" && zone.Records[i].Type == "A" {
 				zone.Records[i].Value = primaryIP
@@ -723,8 +758,11 @@ func (s *DNSService) autoProvisionMasterNameserverZoneUnsafe(settings DNSSetting
 		if !hasNS2 {
 			zone.Records = append(zone.Records, DNSRecord{Name: "ns2", Type: "A", Value: secondaryIP, TTL: 14400, Comment: "Glue Record NS2"})
 		}
-		if !hasServer {
+		if !hasServer && hostLabel != "server" {
 			zone.Records = append(zone.Records, DNSRecord{Name: "server", Type: "A", Value: primaryIP, TTL: 14400, Comment: "Master Server Hostname"})
+		}
+		if !hasHost {
+			zone.Records = append(zone.Records, DNSRecord{Name: hostLabel, Type: "A", Value: primaryIP, TTL: 14400, Comment: "Master Server Hostname"})
 		}
 		if zoneIndex >= 0 {
 			zones[zoneIndex] = *zone

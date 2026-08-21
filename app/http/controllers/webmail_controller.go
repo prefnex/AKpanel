@@ -11,6 +11,7 @@ import (
 	"time"
 
 	goravelhttp "github.com/goravel/framework/contracts/http"
+	"goravel/app/services"
 )
 
 type WebmailController struct {
@@ -119,11 +120,19 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 	}
 	proxyReq.Host = "127.0.0.1:8086"
 	proxyReq.Header.Set("X-Forwarded-Host", req.Host)
-	proxyReq.Header.Set("X-Forwarded-Proto", "http")
-	proxyReq.Header.Set("X-Forwarded-Prefix", "/roundcube")
+	fwdProto := "http"
+	if req.TLS != nil || strings.EqualFold(req.Header.Get("X-Forwarded-Proto"), "https") {
+		fwdProto = "https"
+	}
+	proxyReq.Header.Set("X-Forwarded-Proto", fwdProto)
+	proxyReq.Header.Set("X-Forwarded-Prefix", "/webmail")
 	proxyReq.Header.Set("X-Forwarded-For", req.RemoteAddr)
 
 	resp, err := r.client.Do(proxyReq)
+	if err != nil {
+		_ = services.NewNginxService().EnsureRoundcubeListener()
+		resp, err = r.client.Do(proxyReq)
+	}
 	if err != nil {
 		if req.Header.Get("X-Requested-With") == "XMLHttpRequest" || strings.Contains(req.Header.Get("Accept"), "application/json") {
 			return ctx.Response().Status(200).Json(goravelhttp.Json{

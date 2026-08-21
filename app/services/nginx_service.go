@@ -52,10 +52,67 @@ func (n *NginxService) getActivePHPSocket() string {
 	return "unix:/run/php/php8.2-fpm.sock"
 }
 
+func (n *NginxService) phpFastcgiLocation(socket string) string {
+	if socket == "" {
+		socket = n.getActivePHPSocket()
+	}
+	n.ensureFastcgiParams()
+	return fmt.Sprintf(`    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.*)$;
+        fastcgi_pass %s;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+        fastcgi_read_timeout 300;
+        fastcgi_buffers 16 16k;
+        fastcgi_buffer_size 32k;
+    }
+`, socket)
+}
+
+func (n *NginxService) ensureFastcgiParams() {
+	_ = os.MkdirAll("/etc/nginx/snippets", 0755)
+	if _, err := os.Stat("/etc/nginx/fastcgi_params"); err != nil {
+		_ = os.WriteFile("/etc/nginx/fastcgi_params", []byte(`fastcgi_param QUERY_STRING      $query_string;
+fastcgi_param REQUEST_METHOD    $request_method;
+fastcgi_param CONTENT_TYPE      $content_type;
+fastcgi_param CONTENT_LENGTH    $content_length;
+fastcgi_param SCRIPT_NAME       $fastcgi_script_name;
+fastcgi_param REQUEST_URI       $request_uri;
+fastcgi_param DOCUMENT_URI      $document_uri;
+fastcgi_param DOCUMENT_ROOT     $document_root;
+fastcgi_param SERVER_PROTOCOL   $server_protocol;
+fastcgi_param REQUEST_SCHEME    $scheme;
+fastcgi_param HTTPS             $https if_not_empty;
+fastcgi_param GATEWAY_INTERFACE CGI/1.1;
+fastcgi_param SERVER_SOFTWARE   nginx;
+fastcgi_param REMOTE_ADDR       $remote_addr;
+fastcgi_param REMOTE_PORT       $remote_port;
+fastcgi_param SERVER_ADDR       $server_addr;
+fastcgi_param SERVER_PORT       $server_port;
+fastcgi_param SERVER_NAME       $server_name;
+fastcgi_param REDIRECT_STATUS   200;
+`), 0644)
+	}
+	// Distro snippets/fastcgi-php.conf uses a regex that does not match bare
+	// /index.php (PATH_INFO required), which 404s the default site. Keep a
+	// safe AKpanel snippet for templates that still include it.
+	_ = os.WriteFile("/etc/nginx/snippets/akpanel-php.conf", []byte(`fastcgi_split_path_info ^(.+\.php)(/.*)$;
+fastcgi_index index.php;
+include fastcgi_params;
+fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+fastcgi_param PATH_INFO $fastcgi_path_info;
+fastcgi_read_timeout 300;
+`), 0644)
+}
+
 func (n *NginxService) EnsureDefaultNginxConfig() {
 	_ = os.MkdirAll("/var/www/html", 0755)
 	_ = os.MkdirAll(n.sitesAvailablePath, 0755)
 	_ = os.MkdirAll(n.sitesEnabledPath, 0755)
+	n.ensureFastcgiParams()
 
 	sslCert, sslKey := n.ensureFallbackSSL()
 	phpSock := n.getActivePHPSocket()
@@ -68,69 +125,64 @@ func (n *NginxService) EnsureDefaultNginxConfig() {
 
     server_name _;
     root /var/www/html;
-    index index.html index.htm index.php;
+    index index.php index.html index.htm;
 
     ssl_certificate %s;
     ssl_certificate_key %s;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
 
-    # Roundcube Webmail Direct Alias
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
     location /webmail {
         alias /var/www/roundcube;
         index index.php index.html;
-        try_files $uri $uri/ @webmail_php;
+        try_files $uri $uri/ /webmail/index.php?$query_string;
         location ~ \.php$ {
-            include snippets/fastcgi-php.conf;
+            try_files $uri =404;
+            include fastcgi_params;
             fastcgi_pass %s;
             fastcgi_param SCRIPT_FILENAME $request_filename;
-            include fastcgi_params;
         }
-    }
-
-    location /roundcube {
-        alias /var/www/roundcube;
-        index index.php index.html;
-        try_files $uri $uri/ @webmail_php;
-        location ~ \.php$ {
-            include snippets/fastcgi-php.conf;
-            fastcgi_pass %s;
-            fastcgi_param SCRIPT_FILENAME $request_filename;
-            include fastcgi_params;
-        }
-    }
-
-    location @webmail_php {
-        rewrite ^/webmail/(.*)$ /webmail/index.php?$1 last;
-        rewrite ^/roundcube/(.*)$ /roundcube/index.php?$1 last;
     }
 
     location / {
-        try_files $uri $uri/ /index.html =404;
+        try_files $uri $uri/ /index.php?$query_string;
     }
 
-    location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass %s;
-        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
+%s
     location ~ /\.ht {
         deny all;
     }
 }
-`, sslCert, sslKey, phpSock, phpSock, phpSock)
+`, sslCert, sslKey, phpSock, n.phpFastcgiLocation(phpSock))
 
 	defaultPath := filepath.Join(n.sitesAvailablePath, "default")
-	_ = os.WriteFile(defaultPath, []byte(defaultConf), 0644)
+	if existing, err := os.ReadFile(defaultPath); err != nil || string(existing) != defaultConf {
+		_ = os.WriteFile(defaultPath, []byte(defaultConf), 0644)
+	}
 
 	enabledPath := filepath.Join(n.sitesEnabledPath, "default")
 	_ = os.Remove(enabledPath)
 	_ = os.Symlink(defaultPath, enabledPath)
+	// Avoid two default_server blocks (Debian default vs AKpanel).
+	_ = os.Remove("/etc/nginx/sites-enabled/000-default")
 
-	_ = exec.Command("nginx", "-t").Run()
-	_ = exec.Command("systemctl", "reload", "nginx").Run()
+	if _, err := os.Stat("/var/www/html/index.php"); err != nil {
+		_ = os.WriteFile("/var/www/html/index.php", []byte(`<?php
+header('Content-Type: text/html; charset=UTF-8');
+echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>AKpanel</title></head><body>';
+echo '<h1>AKpanel default site</h1><p>PHP '.PHP_VERSION.' via php-fpm is ready.</p></body></html>';
+`), 0644)
+	}
+
+	if err := n.TestConfig(); err == nil {
+		_ = n.ReloadNginx()
+	}
 }
 
 // CreateWebsite configures the selected web server engine (Nginx, Apache, or Hybrid)
@@ -358,21 +410,25 @@ func (n *NginxService) ensureFallbackSSL() (string, string) {
 }
 
 func (n *NginxService) getSSLCertAndKey(domainName string) (string, string) {
-	// 1. Canonical AKpanel SSL path (written by ACMEService) — always check first
-	if domain.SSLCertsExist(domainName) {
-		return domain.SSLCertPath(domainName), domain.SSLKeyPath(domainName)
+	candidates := []string{domainName}
+	parts := strings.Split(domainName, ".")
+	if len(parts) > 2 {
+		candidates = append(candidates, strings.Join(parts[1:], "."))
 	}
 
-	// 2. Legacy Let's Encrypt path — for certs issued before migration
-	legacyCert := fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", domainName)
-	legacyKey := fmt.Sprintf("/etc/letsencrypt/live/%s/privkey.pem", domainName)
-	if _, err := os.Stat(legacyCert); err == nil {
-		if _, errKey := os.Stat(legacyKey); errKey == nil {
-			return legacyCert, legacyKey
+	for _, name := range candidates {
+		if domain.SSLCertsExist(name) {
+			return domain.SSLCertPath(name), domain.SSLKeyPath(name)
+		}
+		legacyCert := fmt.Sprintf("/etc/letsencrypt/live/%s/fullchain.pem", name)
+		legacyKey := fmt.Sprintf("/etc/letsencrypt/live/%s/privkey.pem", name)
+		if _, err := os.Stat(legacyCert); err == nil {
+			if _, errKey := os.Stat(legacyKey); errKey == nil {
+				return legacyCert, legacyKey
+			}
 		}
 	}
 
-	// 3. Fallback: global self-signed cert
 	return n.ensureFallbackSSL()
 }
 
@@ -517,18 +573,12 @@ func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) str
         try_files $uri $uri/ /index.php?$query_string;
     }
 
-    location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
-        fastcgi_pass %s;
-        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
-        include fastcgi_params;
-    }
-
+%s
     location ~ /\.ht {
         deny all;
     }
 }
-`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, phpSocket)
+`, cfg.Domain, cfg.Domain, cfg.RootPath, sslCert, sslKey, cfg.Domain, cfg.Domain, n.phpFastcgiLocation(phpSocket))
 }
 
 // CreateProxyVhost writes an nginx vhost that reverse-proxies to a local port with optional extra headers.
@@ -621,7 +671,16 @@ server {
     listen 80;
     listen [::]:80;
     server_name %s;
-    return 301 https://$host$request_uri;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {
@@ -636,6 +695,7 @@ server {
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/html;
+        default_type text/plain;
         allow all;
     }
 
@@ -661,4 +721,148 @@ server {
 		return err
 	}
 	return n.ReloadNginx()
+}
+
+func (n *NginxService) phpFastcgiPass() string {
+	return n.getActivePHPSocket()
+}
+
+func (n *NginxService) roundcubePHPLocations() string {
+	sock := n.phpFastcgiPass()
+	return fmt.Sprintf(`    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+%s
+    location ~ /\.(ht|git) {
+        deny all;
+    }
+`, n.phpFastcgiLocation(sock))
+}
+
+// EnsureRoundcubeListener serves Roundcube on 127.0.0.1:8086 for the panel /webmail proxy.
+func (n *NginxService) EnsureRoundcubeListener() error {
+	_ = os.MkdirAll(paths.RoundcubeRoot, 0755)
+	conf := fmt.Sprintf(`# AKpanel internal Roundcube (panel /webmail reverse proxy)
+server {
+    listen 127.0.0.1:8086;
+    server_name _;
+    root %s;
+    index index.php index.html;
+
+%s
+}
+`, paths.RoundcubeRoot, n.roundcubePHPLocations())
+
+	availablePath := filepath.Join(n.sitesAvailablePath, "akpanel-roundcube-internal.conf")
+	if existing, err := os.ReadFile(availablePath); err == nil && string(existing) == conf {
+		enabledPath := filepath.Join(n.sitesEnabledPath, "akpanel-roundcube-internal.conf")
+		if _, err := os.Lstat(enabledPath); err == nil {
+			return nil
+		}
+	}
+	if err := os.WriteFile(availablePath, []byte(conf), 0644); err != nil {
+		return err
+	}
+	enabledPath := filepath.Join(n.sitesEnabledPath, "akpanel-roundcube-internal.conf")
+	_ = os.Remove(enabledPath)
+	if err := os.Symlink(availablePath, enabledPath); err != nil {
+		return err
+	}
+	if err := n.TestConfig(); err != nil {
+		return err
+	}
+	return n.ReloadNginx()
+}
+
+// CreateWebmailVhost serves Roundcube over HTTP/HTTPS for webmail.{domain}.
+func (n *NginxService) CreateWebmailVhost(host string) error {
+	sslCert, sslKey := n.getSSLCertAndKey(host)
+	vhost := fmt.Sprintf(`server {
+    listen 80;
+    listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name %s;
+    root %s;
+    index index.php index.html;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
+%s
+}
+`, host, paths.RoundcubeRoot, sslCert, sslKey, n.roundcubePHPLocations())
+	return n.writeAndEnableVhost(host, vhost)
+}
+
+// CreateClientPanelVhost proxies cpanel.{domain} to the tenant portal (not root WHM).
+func (n *NginxService) CreateClientPanelVhost(host string) error {
+	sslCert, sslKey := n.getSSLCertAndKey(host)
+	vhost := fmt.Sprintf(`server {
+    listen 80;
+    listen [::]:80;
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name %s;
+
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:2088;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Port 2083;
+        proxy_set_header X-Panel-Scope client;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+`, host, sslCert, sslKey)
+	return n.writeAndEnableVhost(host, vhost)
+}
+
+// RepairPanelServiceVhosts rewrites existing webmail.* / cpanel.* vhosts to the current templates.
+func (n *NginxService) RepairPanelServiceVhosts() {
+	_ = n.EnsureRoundcubeListener()
+	entries, err := os.ReadDir(n.sitesAvailablePath)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".conf") {
+			continue
+		}
+		host := strings.TrimSuffix(name, ".conf")
+		content, _ := os.ReadFile(filepath.Join(n.sitesAvailablePath, name))
+		body := string(content)
+		if strings.HasPrefix(host, "webmail.") {
+			if strings.Contains(body, "proxy_pass http://127.0.0.1:8086") || !strings.Contains(body, paths.RoundcubeRoot) {
+				_ = n.CreateWebmailVhost(host)
+			}
+		}
+		if strings.HasPrefix(host, "cpanel.") {
+			if !strings.Contains(body, "X-Panel-Scope client") || !strings.Contains(body, "X-Forwarded-Port 2083") {
+				_ = n.CreateClientPanelVhost(host)
+			}
+		}
+	}
 }

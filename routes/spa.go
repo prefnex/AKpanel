@@ -1,6 +1,8 @@
 package routes
 
 import (
+	"strings"
+
 	"github.com/goravel/framework/contracts/http"
 
 	"goravel/app/facades"
@@ -8,8 +10,19 @@ import (
 
 // serveSPA renders the React SPA shell for browser routes and the fallback handler.
 func serveSPA(ctx http.Context) http.Response {
+	scope := "admin"
+	hdr := strings.ToLower(ctx.Request().Header("X-Panel-Scope", ""))
+	fwdPort := ctx.Request().Header("X-Forwarded-Port", "")
+	host := strings.ToLower(ctx.Request().Host())
+	if i := strings.Index(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	if hdr == "client" || fwdPort == "2083" || strings.HasPrefix(host, "cpanel.") {
+		scope = "client"
+	}
 	return ctx.Response().View().Make("dashboard.tmpl", map[string]any{
 		"version": "v1.0.0",
+		"scope":   scope,
 	})
 }
 

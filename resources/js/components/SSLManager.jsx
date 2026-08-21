@@ -2,20 +2,14 @@ import React, { useState, useEffect } from 'react';
 import {
   Lock, 
   ShieldCheck, 
-  RefreshCw, 
   Plus, 
   CheckCircle2, 
   AlertTriangle, 
-  Globe, 
-  FileText, 
-  Key, 
-  ExternalLink, 
-  Clock, 
-  Zap, 
-  Calendar,
   Search,
   Upload,
-  RotateCw
+  RotateCw,
+  Zap,
+  Clock
 } from 'lucide-react';
 import { Card } from './ui/card';
 import { Button } from './ui/button';
@@ -26,14 +20,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 export default function SSLManager({ showToast }) {
   const [certs, setCerts] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [renewLoading, setRenewLoading] = useState(false);
   const [search, setSearch] = useState('');
-  
-  // Modals
   const [isIssueModalOpen, setIsIssueModalOpen] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
-  const [selectedCert, setSelectedCert] = useState(null);
-
   const [issueForm, setIssueForm] = useState({ domain: '', email: '' });
   const [customForm, setCustomForm] = useState({
     domain: '',
@@ -41,6 +30,23 @@ export default function SSLManager({ showToast }) {
     private_key: '',
     ca_bundle: ''
   });
+
+  const [sslTaskId, setSslTaskId] = useState(localStorage.getItem('akpanel_ssl_task') || '');
+  const [sslTask, setSslTask] = useState(null);
+
+  const ISSUE_STEPS = [
+    { key: 'ValidateDomain', label: 'Validate domain' },
+    { key: 'PrepareChallenge', label: 'Prepare HTTP-01' },
+    { key: 'IssueCertificate', label: "Let's Encrypt / ZeroSSL" },
+    { key: 'InstallCertificate', label: 'Install & reload nginx' },
+    { key: 'VerifySSL', label: 'Verify certificate' },
+  ];
+  const RENEW_ALL_STEPS = [
+    { key: 'ScanCertificates', label: 'Scan certificates' },
+    { key: 'RunAcmeCron', label: 'acme.sh cron' },
+    { key: 'ReloadWebServers', label: 'Reload nginx' },
+    { key: 'VerifySSL', label: 'Verify result' },
+  ];
 
   const fetchCertificates = async () => {
     setLoading(true);
@@ -61,26 +67,73 @@ export default function SSLManager({ showToast }) {
     fetchCertificates();
   }, []);
 
+  useEffect(() => {
+    if (!sslTaskId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/ssl/task/status?task_id=${encodeURIComponent(sslTaskId)}`);
+        if (!res.ok) return;
+        const json = await res.json();
+        const task = json.data;
+        if (!task || cancelled) return;
+        setSslTask(task);
+        if (task.status === 'completed' || task.status === 'failed') {
+          localStorage.removeItem('akpanel_ssl_task');
+          setSslTaskId('');
+          fetchCertificates();
+          const logs = task.logs || [];
+          const joined = logs.join('\n');
+          if (task.status === 'failed') {
+            showToast((task.error || 'SSL task failed').split('\n')[0], 'error');
+          } else if (/self_signed/i.test(joined)) {
+            showToast('Finished with a self-signed fallback — public DNS/HTTP-01 is not ready.', 'error');
+          } else {
+            showToast('Trusted SSL certificate is active');
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    poll();
+    const id = setInterval(poll, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [sslTaskId]);
+
+  const startSslTask = async (url, body) => {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const json = await res.json();
+    if (!res.ok) throw new Error(json.message);
+    if (!json.task_id) throw new Error('No task_id returned');
+    localStorage.setItem('akpanel_ssl_task', json.task_id);
+    setSslTask({
+      id: json.task_id,
+      title: json.message,
+      status: 'running',
+      progress: 5,
+      current_step: 'queued',
+      logs: ['Task queued — waiting for first stage...'],
+    });
+    setSslTaskId(json.task_id);
+    showToast(json.message || 'SSL task started');
+  };
+
   const handleIssueSSL = async (e) => {
     e.preventDefault();
-    setRenewLoading(true);
     try {
-      const res = await fetch('/api/security/ssl/issue', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(issueForm)
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
-
-      showToast(json.message || 'SSL Certificate issued successfully');
+      await startSslTask('/api/ssl/issue', issueForm);
       setIsIssueModalOpen(false);
       setIssueForm({ domain: '', email: '' });
-      fetchCertificates();
     } catch (err) {
       showToast(err.message, 'error');
-    } finally {
-      setRenewLoading(false);
     }
   };
 
@@ -104,25 +157,42 @@ export default function SSLManager({ showToast }) {
     }
   };
 
-  const handleRenewAll = async () => {
-    setRenewLoading(true);
+  const handleRenewDomain = async (domain) => {
     try {
-      const res = await fetch('/api/ssl/renew-all', { method: 'POST' });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.message);
-
-      showToast('All SSL certificates checked and renewed successfully');
-      fetchCertificates();
+      await startSslTask('/api/ssl/renew', { domain });
     } catch (err) {
       showToast(err.message, 'error');
-    } finally {
-      setRenewLoading(false);
     }
   };
 
+  const handleRenewAll = async () => {
+    try {
+      await startSslTask('/api/ssl/renew-all', {});
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const resetSslTask = () => {
+    localStorage.removeItem('akpanel_ssl_task');
+    setSslTaskId('');
+    setSslTask(null);
+  };
+
+  const taskBusy = sslTask?.status === 'running';
+  const steps = (sslTask?.title || '').toLowerCase().includes('all') ? RENEW_ALL_STEPS : ISSUE_STEPS;
+  const currentStep = sslTask?.current_step || '';
+  const currentIdx = steps.findIndex((s) => s.key === currentStep);
+  const logs = sslTask?.logs || [];
+  const lastLog = logs[logs.length - 1] || '';
+  const waitingFor = lastLog.startsWith('Waiting:') ? lastLog.replace(/^Waiting:\s*/, '') : '';
+  const failed = sslTask?.status === 'failed';
+  const completed = sslTask?.status === 'completed';
+  const selfSignedDone = completed && logs.some((l) => /self_signed/i.test(l));
+
   const filteredCerts = (certs || []).filter(c => 
-    c.domain.toLowerCase().includes(search.toLowerCase()) || 
-    c.issuer.toLowerCase().includes(search.toLowerCase())
+    (c.domain || '').toLowerCase().includes(search.toLowerCase()) || 
+    (c.issuer || '').toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -142,12 +212,12 @@ export default function SSLManager({ showToast }) {
         <div className="flex items-center gap-2">
           <Button 
             onClick={handleRenewAll}
-            disabled={renewLoading}
+            disabled={taskBusy}
             variant="outline" 
             size="sm" 
             className="rounded-xl border-zinc-800 bg-zinc-900 text-xs text-zinc-300 hover:text-white"
           >
-            <RotateCw className={`w-3.5 h-3.5 mr-1.5 ${renewLoading ? 'animate-spin' : ''}`} />
+            <RotateCw className={`w-3.5 h-3.5 mr-1.5 ${taskBusy ? 'animate-spin' : ''}`} />
             <span>Renew All via acme.sh</span>
           </Button>
 
@@ -190,6 +260,86 @@ export default function SSLManager({ showToast }) {
         </Badge>
       </Card>
 
+      {sslTask && (
+        <Card className={`rounded-2xl p-5 border ${
+          failed ? 'bg-red-950/20 border-red-800/70' : selfSignedDone ? 'bg-amber-950/20 border-amber-800/60' : completed ? 'bg-emerald-950/20 border-emerald-800/50' : 'bg-[#121215] border-indigo-800/50'
+        }`}>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold text-white">{sslTask.title || 'SSL task'}</div>
+              <div className={`text-xs mt-1 flex items-center gap-1.5 ${failed ? 'text-red-300' : selfSignedDone ? 'text-amber-300' : completed ? 'text-emerald-300' : 'text-indigo-300'}`}>
+                {taskBusy && <Clock className="w-3.5 h-3.5 animate-pulse" />}
+                {failed && <AlertTriangle className="w-3.5 h-3.5" />}
+                {completed && !failed && <CheckCircle2 className="w-3.5 h-3.5" />}
+                <span>
+                  {failed
+                    ? `Failed at ${currentStep || 'unknown step'}`
+                    : selfSignedDone
+                      ? 'Completed with self-signed fallback (not a trusted CA)'
+                      : completed
+                        ? 'Completed — trusted certificate is active'
+                        : waitingFor
+                          ? `Waiting: ${waitingFor}`
+                          : `Running: ${currentStep || 'starting'} (${sslTask.progress || 0}%)`}
+                </span>
+              </div>
+            </div>
+            <span className="text-xs font-mono text-zinc-400">{sslTask.progress || 0}%</span>
+          </div>
+
+          <div className="h-2 bg-zinc-800 rounded-full overflow-hidden mt-3">
+            <div
+              className={`h-full transition-all ${failed ? 'bg-red-500' : selfSignedDone ? 'bg-amber-500' : completed ? 'bg-emerald-500' : 'bg-indigo-500'}`}
+              style={{ width: `${sslTask.progress || 0}%` }}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mt-4">
+            {steps.map((step, idx) => {
+              const done = completed || (currentIdx >= 0 && idx < currentIdx);
+              const active = !completed && !failed && (step.key === currentStep || (currentStep === 'queued' && idx === 0));
+              return (
+                <div
+                  key={step.key}
+                  className={`rounded-xl border px-2.5 py-2 text-[11px] ${
+                    failed && active
+                      ? 'border-red-700 bg-red-950/40 text-red-200'
+                      : active
+                        ? 'border-indigo-500 bg-indigo-950/40 text-white'
+                        : done
+                          ? 'border-emerald-800/60 bg-emerald-950/20 text-emerald-300'
+                          : 'border-zinc-800 text-zinc-500'
+                  }`}
+                >
+                  <div className="font-bold">{idx + 1}. {step.label}</div>
+                  <div className="mt-0.5 text-[10px]">
+                    {failed && active ? 'Failed' : active ? 'In progress' : done ? 'Done' : 'Queued'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-3 max-h-32 overflow-y-auto rounded-xl bg-black/40 border border-zinc-800 p-3 font-mono text-[10px] text-zinc-400 space-y-0.5">
+            {logs.slice(-12).map((line, i) => (
+              <div key={i} className={line.startsWith('Failed') ? 'text-red-400' : line.startsWith('Waiting:') ? 'text-indigo-300' : line.startsWith('RESULT') ? 'text-emerald-300' : ''}>
+                {line}
+              </div>
+            ))}
+          </div>
+
+          {failed && sslTask.error && (
+            <div className="mt-2 text-[11px] text-red-300 font-mono">{sslTask.error}</div>
+          )}
+
+          {(completed || failed) && (
+            <button type="button" onClick={resetSslTask} className="mt-3 text-[11px] text-zinc-400 hover:text-white underline">
+              Dismiss
+            </button>
+          )}
+        </Card>
+      )}
+
       {/* Search Bar */}
       <Card className="bg-[#121215] border-zinc-800/80 rounded-2xl p-4">
         <div className="relative">
@@ -231,7 +381,7 @@ export default function SSLManager({ showToast }) {
                   <tr key={c.domain} className="hover:bg-zinc-900/40 transition">
                     <td className="py-3.5 px-4 font-mono font-bold text-white flex items-center gap-2">
                       <Lock className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>{c.domain}</span>
+                      <span>{c.domain === 'server' ? 'server (Hostname SSL :2087/:2083)' : c.domain}</span>
                     </td>
 
                     <td className="py-3.5 px-4 text-zinc-300">
@@ -263,7 +413,17 @@ export default function SSLManager({ showToast }) {
                       </span>
                     </td>
 
-                    <td className="py-3.5 px-4 text-right">
+                    <td className="py-3.5 px-4 text-right flex items-center justify-end gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={taskBusy}
+                        onClick={() => handleRenewDomain(c.domain)}
+                        className="rounded-lg border-zinc-800 bg-zinc-900 text-zinc-300 hover:text-white text-[11px] h-7 px-2.5 gap-1"
+                      >
+                        <RotateCw className={`w-3 h-3 text-cyan-400 ${taskBusy ? 'animate-spin' : ''}`} />
+                        <span>Renew</span>
+                      </Button>
                       <Button
                         size="sm"
                         variant="outline"
@@ -336,11 +496,11 @@ export default function SSLManager({ showToast }) {
               </Button>
               <Button 
                 type="submit" 
-                disabled={renewLoading}
+                disabled={taskBusy}
                 className="rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold gap-1.5"
               >
-                <Zap className={`w-3.5 h-3.5 ${renewLoading ? 'animate-spin' : ''}`} />
-                <span>{renewLoading ? 'Issuing...' : 'Issue Certificate'}</span>
+                <Zap className={`w-3.5 h-3.5 ${taskBusy ? 'animate-spin' : ''}`} />
+                <span>{taskBusy ? 'Issuing...' : 'Issue Certificate'}</span>
               </Button>
             </DialogFooter>
           </form>

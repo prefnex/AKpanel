@@ -3,9 +3,7 @@ package services
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"os"
 	"os/exec"
@@ -239,31 +237,19 @@ func (s *ServerSettingsService) GetHostnameSSL() (*HostnameSSLInfo, error) {
 	isSelfSigned := true
 	expiryDate := time.Now().AddDate(1, 0, 0).Format("2006-01-02")
 	daysLeft := 365
+	message := "Hostname SSL is using a self-signed fallback until public DNS points to this server."
 
-	// Parse PEM certificate directly in Go
-	if certData, err := os.ReadFile(certPath); err == nil {
-		block, _ := pem.Decode(certData)
-		if block != nil {
-			if cert, errParse := x509.ParseCertificate(block.Bytes); errParse == nil {
-				expiryDate = cert.NotAfter.Format("2006-01-02")
-				daysLeft = int(time.Until(cert.NotAfter).Hours() / 24)
-				if daysLeft < 0 {
-					daysLeft = 0
-				}
-				org := cert.Issuer.Organization
-				commonName := cert.Issuer.CommonName
-				if len(org) > 0 && (strings.Contains(org[0], "Let's Encrypt") || strings.Contains(org[0], "ZeroSSL") || strings.Contains(org[0], "Google Trust Services") || strings.Contains(org[0], "DigiCert") || strings.Contains(org[0], "Sectigo")) {
-					issuer = org[0]
-					status = "Active (Trusted)"
-					isSelfSigned = false
-				} else if commonName != "" {
-					issuer = commonName
-					if !strings.Contains(strings.ToLower(commonName), "self") && !strings.Contains(strings.ToLower(commonName), "akpanel") && !strings.Contains(strings.ToLower(commonName), "localhost") {
-						status = "Active (Trusted)"
-						isSelfSigned = false
-					}
-				}
-			}
+	if info, ok := InspectCertificateFile(certPath); ok {
+		issuer = info.Issuer
+		expiryDate = info.ExpiryDate
+		daysLeft = info.DaysLeft
+		isSelfSigned = info.SelfSigned
+		if info.SelfSigned {
+			status = "Self-Signed (Pending DNS / Let's Encrypt Retry)"
+			message = "Certificate is self-signed. Issue/Renew after ns1/ns2 at the registrar point to this server."
+		} else {
+			status = "Active (Trusted)"
+			message = fmt.Sprintf("Trusted certificate from %s.", info.Issuer)
 		}
 	}
 
@@ -276,7 +262,7 @@ func (s *ServerSettingsService) GetHostnameSSL() (*HostnameSSLInfo, error) {
 		ExpiryDate:   expiryDate,
 		DaysLeft:     daysLeft,
 		IsSelfSigned: isSelfSigned,
-		Message:      "Hostname SSL certificate configured.",
+		Message:      message,
 	}, nil
 }
 
@@ -387,7 +373,7 @@ func (s *ServerSettingsService) runHostnameSSLTask(taskID, hostname, email strin
 	}{
 		{
 			name: "ValidateHostname",
-			pct:  10,
+			pct:  8,
 			fn: func() (string, error) {
 				if hostname == "" || hostname == "localhost" {
 					return "", fmt.Errorf("invalid hostname: %q", hostname)
@@ -396,15 +382,33 @@ func (s *ServerSettingsService) runHostnameSSLTask(taskID, hostname, email strin
 			},
 		},
 		{
+			name: "SyncAuthoritativeDNS",
+			pct:  18,
+			fn: func() (string, error) {
+				ss, _ := s.GetSettings()
+				if err := s.dnsService.ProvisionAuthoritativeHostnameZone(hostname, ss.PrimaryNS, ss.SecondaryNS, ss.SharedIP); err != nil {
+					return fmt.Sprintf("BIND sync skipped: %v", err), nil
+				}
+				return "BIND nameserver zone synced (same action as DNS settings sync)", nil
+			},
+		},
+		{
 			name: "PrepareAcmeChallenge",
-			pct:  20,
+			pct:  28,
 			fn: func() (string, error) {
 				_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0777)
 				_ = exec.Command("chmod", "-R", "777", "/var/www/html/.well-known").Run()
+				if _, _, err := s.acmeService.GenerateSelfSigned(hostname); err != nil {
+					return "", err
+				}
+				nginx := NewNginxService()
+				if err := nginx.EnsurePanelHostnameVhost(hostname); err != nil {
+					return "", fmt.Errorf("nginx ACME vhost: %w", err)
+				}
 				if err := s.acmeService.EnsureAcmeInstalled(); err != nil {
 					return "", err
 				}
-				return "ACME webroot prepared", nil
+				return "ACME webroot + HTTP-01 nginx vhost ready", nil
 			},
 		},
 		{

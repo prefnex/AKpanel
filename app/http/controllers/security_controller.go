@@ -3,6 +3,7 @@ package controllers
 import (
 	"github.com/goravel/framework/contracts/http"
 	"goravel/app/services"
+	"goravel/app/services/tasks"
 )
 
 type SecurityController struct {
@@ -15,7 +16,7 @@ func NewSecurityController() *SecurityController {
 	}
 }
 
-// IssueSSL requests Let's Encrypt / ZeroSSL with automatic local self-signed fallback
+// IssueSSL starts async Let's Encrypt issuance and returns a task_id for live progress.
 func (r *SecurityController) IssueSSL(ctx http.Context) http.Response {
 	domain := ctx.Request().Input("domain")
 	email := ctx.Request().Input("email")
@@ -27,18 +28,40 @@ func (r *SecurityController) IssueSSL(ctx http.Context) http.Response {
 		})
 	}
 
-	result, err := r.securityService.IssueSSL(domain, email)
+	taskID, err := r.securityService.StartSSLTask("issue", domain, email)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
-			"message": "SSL configuration error: " + err.Error(),
+			"message": "Failed to start SSL issuance: " + err.Error(),
 		})
 	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": result.Message,
-		"data":    result,
+		"task_id": taskID,
+		"message": "SSL issuance started — watch the live stages below",
+	})
+}
+
+func (r *SecurityController) RenewDomain(ctx http.Context) http.Response {
+	domain := ctx.Request().Input("domain")
+	if domain == "" {
+		return ctx.Response().Status(422).Json(http.Json{
+			"status":  "error",
+			"message": "Domain is required",
+		})
+	}
+	taskID, err := r.securityService.StartSSLTask("renew", domain, "")
+	if err != nil {
+		return ctx.Response().Status(500).Json(http.Json{
+			"status":  "error",
+			"message": "Failed to start SSL renewal: " + err.Error(),
+		})
+	}
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"task_id": taskID,
+		"message": "SSL renewal started — watch the live stages below",
 	})
 }
 
@@ -51,20 +74,41 @@ func (r *SecurityController) Certificates(ctx http.Context) http.Response {
 	})
 }
 
-// RenewAll triggers batch renewal via acme.sh
+// RenewAll triggers batch renewal via acme.sh as an async task.
 func (r *SecurityController) RenewAll(ctx http.Context) http.Response {
-	out, err := r.securityService.RenewAll()
+	taskID, err := r.securityService.StartSSLTask("renew-all", "", "")
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  "error",
-			"message": "Renewal failed: " + err.Error(),
+			"message": "Failed to start renewal: " + err.Error(),
 		})
 	}
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": "SSL renewal executed successfully",
-		"output":  out,
+		"task_id": taskID,
+		"message": "Renew-all started — watch the live stages below",
+	})
+}
+
+func (r *SecurityController) SSLTaskStatus(ctx http.Context) http.Response {
+	taskID := ctx.Request().Input("task_id")
+	if taskID == "" {
+		return ctx.Response().Status(400).Json(http.Json{
+			"status":  "error",
+			"message": "task_id is required",
+		})
+	}
+	task, err := tasks.GetRegistry().Get(taskID)
+	if err != nil {
+		return ctx.Response().Status(404).Json(http.Json{
+			"status":  "error",
+			"message": "Task not found",
+		})
+	}
+	return ctx.Response().Success().Json(http.Json{
+		"status": "success",
+		"data":   task,
 	})
 }
 

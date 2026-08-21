@@ -420,10 +420,10 @@ func (s *CreateServiceSubdomainsStep) Execute(ctx context.Context, plan *UserPro
 		fn   func() error
 	}{
 		{"webmail." + d, func() error {
-			return nginx.CreateProxyVhost("webmail."+d, 8086, nil)
+			return nginx.CreateWebmailVhost("webmail." + d)
 		}},
 		{"cpanel." + d, func() error {
-			return nginx.CreateProxyVhost("cpanel."+d, 2088, map[string]string{"X-Panel-Scope": "client"})
+			return nginx.CreateClientPanelVhost("cpanel." + d)
 		}},
 		{"ftp." + d, func() error {
 			return nginx.CreateStaticInfoVhost("ftp."+d, "FTP", "<h1>FTP Server</h1><p>Use FTP client on port 21.</p>")
@@ -502,8 +502,8 @@ func (s *RegenerateVhostsStep) Execute(ctx context.Context, plan *UserProvisionP
 		Domain: plan.MainDomain, RootPath: plan.RootPath, ServerEngine: plan.WebEngine,
 		PHPVersion: plan.PHPVersion, SiteType: "php", PHPSocket: sock, SkipOwnershipFix: true,
 	})
-	_ = nginx.CreateProxyVhost("webmail."+plan.MainDomain, 8086, nil)
-	_ = nginx.CreateProxyVhost("cpanel."+plan.MainDomain, 2088, map[string]string{"X-Panel-Scope": "client"})
+	_ = nginx.CreateWebmailVhost("webmail." + plan.MainDomain)
+	_ = nginx.CreateClientPanelVhost("cpanel." + plan.MainDomain)
 	progressLog(plan, s.Name(), 78, "Vhosts regenerated with SSL paths")
 	return nil
 }

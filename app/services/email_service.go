@@ -754,6 +754,10 @@ $config['auto_create_user'] = true;
 	_ = exec.Command("chown", "-R", "www-data:www-data", rcDir).Run()
 	_ = exec.Command("chmod", "-R", "777", rcDir+"/db", rcDir+"/temp", rcDir+"/logs").Run()
 
+	nginx := NewNginxService()
+	_ = nginx.EnsureRoundcubeListener()
+	nginx.RepairPanelServiceVhosts()
+
 	// Ensure Apache configuration
 	apacheConf := `Alias /webmail /var/www/roundcube
 Alias /roundcube /var/www/roundcube
@@ -783,16 +787,14 @@ Alias /roundcube /var/www/roundcube
 	nginxSnippet := fmt.Sprintf(`location /webmail {
     alias /var/www/roundcube;
     index index.php index.html;
-    try_files $uri $uri/ @rc_php;
+    try_files $uri $uri/ /webmail/index.php?$query_string;
     location ~ \.php$ {
-        include snippets/fastcgi-php.conf;
+        try_files $uri =404;
+        include fastcgi_params;
         fastcgi_pass %s;
         fastcgi_param SCRIPT_FILENAME $request_filename;
-        include fastcgi_params;
+        fastcgi_read_timeout 300;
     }
-}
-location @rc_php {
-    rewrite ^/webmail/(.*)$ /webmail/index.php?$1 last;
 }
 `, phpSock)
 	_ = os.WriteFile("/etc/nginx/snippets/webmail.conf", []byte(nginxSnippet), 0644)

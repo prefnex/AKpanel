@@ -2,8 +2,12 @@ package services
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
+
+	"goravel/app/paths"
+	"goravel/app/services/tasks"
 )
 
 type SSLCertificateInfo struct {
@@ -55,7 +59,13 @@ func NewSecurityService() *SecurityService {
 
 // IssueSSL requests Let's Encrypt / ZeroSSL via acme.sh with self-signed fallback
 func (s *SecurityService) IssueSSL(domain, email string) (*SSLStatus, error) {
-	return s.acmeService.IssueSSL(domain, "", email)
+	webroot := paths.ResolveWebsiteRoot("", domain)
+	res, err := s.acmeService.IssueSSL(domain, webroot, email)
+	if err != nil {
+		return nil, err
+	}
+	_ = NewNginxService().ReloadNginx()
+	return res, nil
 }
 
 // IssueLetsEncrypt backward compatibility wrapper
@@ -73,7 +83,150 @@ func (s *SecurityService) InstallCustomCertificate(domain, certContent, keyConte
 }
 
 func (s *SecurityService) RenewAll() (string, error) {
-	return s.acmeService.RenewAll()
+	out, err := s.acmeService.RenewAll()
+	_ = NewNginxService().ReloadNginx()
+	return out, err
+}
+
+func (s *SecurityService) RenewDomain(domain string) (*SSLStatus, error) {
+	return s.IssueSSL(domain, "")
+}
+
+func (s *SecurityService) StartSSLTask(action, domain, email string) (string, error) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if action != "renew-all" && domain == "" {
+		return "", fmt.Errorf("domain is required")
+	}
+
+	title := fmt.Sprintf("Issue SSL for %s", domain)
+	kind := "domain_ssl"
+	switch action {
+	case "renew":
+		title = fmt.Sprintf("Renew SSL for %s", domain)
+	case "renew-all":
+		domain = "all"
+		title = "Renew all SSL certificates"
+	}
+
+	task, err := tasks.GetRegistry().Create(kind, domain, title)
+	if err != nil {
+		return "", err
+	}
+	go s.runSSLTask(task.ID, action, domain, email)
+	return task.ID, nil
+}
+
+func (s *SecurityService) runSSLTask(taskID, action, domain, email string) {
+	reg := tasks.GetRegistry()
+	type sslStep struct {
+		name string
+		wait string
+		pct  int
+		fn   func() (string, error)
+	}
+
+	var steps []sslStep
+	if action == "renew-all" {
+		steps = []sslStep{
+			{name: "ScanCertificates", wait: "Reading installed certificates on disk", pct: 15, fn: func() (string, error) {
+				certs := s.GetAllCertificates()
+				return fmt.Sprintf("Found %d certificate(s) to check", len(certs)), nil
+			}},
+			{name: "RunAcmeCron", wait: "Waiting for acme.sh --cron (Let's Encrypt renewal). This can take a few minutes.", pct: 70, fn: func() (string, error) {
+				out, err := s.acmeService.RenewAll()
+				if err != nil {
+					return "", err
+				}
+				msg := strings.TrimSpace(out)
+				if len(msg) > 400 {
+					msg = msg[len(msg)-400:]
+				}
+				if msg == "" {
+					msg = "acme.sh cron finished"
+				}
+				return msg, nil
+			}},
+			{name: "ReloadWebServers", wait: "Reloading nginx so new certs are live", pct: 88, fn: func() (string, error) {
+				if err := NewNginxService().ReloadNginx(); err != nil {
+					return fmt.Sprintf("nginx reload warning: %v", err), nil
+				}
+				return "nginx reloaded", nil
+			}},
+			{name: "VerifySSL", wait: "Checking certificate files after renewal", pct: 96, fn: func() (string, error) {
+				certs := s.GetAllCertificates()
+				trusted, fallback := 0, 0
+				for _, c := range certs {
+					if c.IsSelfSigned {
+						fallback++
+					} else {
+						trusted++
+					}
+				}
+				return fmt.Sprintf("RESULT trusted=%d self_signed=%d", trusted, fallback), nil
+			}},
+		}
+	} else {
+		steps = []sslStep{
+			{name: "ValidateDomain", wait: "Checking domain name", pct: 8, fn: func() (string, error) {
+				if domain == "" || domain == "localhost" {
+					return "", fmt.Errorf("invalid domain: %q", domain)
+				}
+				return fmt.Sprintf("Domain accepted: %s", domain), nil
+			}},
+			{name: "PrepareChallenge", wait: "Preparing HTTP-01 webroot and nginx challenge path", pct: 22, fn: func() (string, error) {
+				_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0755)
+				if err := s.acmeService.EnsureAcmeInstalled(); err != nil {
+					return "", err
+				}
+				webroot := paths.ResolveWebsiteRoot("", domain)
+				if webroot == "" {
+					webroot = "/var/www/html"
+				}
+				return fmt.Sprintf("Challenge webroot ready: %s", webroot), nil
+			}},
+			{name: "IssueCertificate", wait: "Waiting for Let's Encrypt / ZeroSSL. DNS must point here; this often takes 30–120 seconds.", pct: 65, fn: func() (string, error) {
+				res, err := s.IssueSSL(domain, email)
+				if err != nil {
+					return "", err
+				}
+				if res.IsSelfSigned {
+					return "RESULT self_signed: " + res.Message, nil
+				}
+				return "RESULT trusted: " + res.Message, nil
+			}},
+			{name: "InstallCertificate", wait: "Installing certificate files and reloading nginx", pct: 85, fn: func() (string, error) {
+				if err := NewNginxService().ReloadNginx(); err != nil {
+					return fmt.Sprintf("nginx reload warning: %v", err), nil
+				}
+				return "Certificate files in /etc/akpanel/ssl/" + domain + " — nginx reloaded", nil
+			}},
+			{name: "VerifySSL", wait: "Reading the live certificate to confirm issuer and expiry", pct: 96, fn: func() (string, error) {
+				certPath := fmt.Sprintf("/etc/akpanel/ssl/%s/fullchain.pem", domain)
+				info, ok := InspectCertificateFile(certPath)
+				if !ok {
+					return "Certificate file not readable yet", nil
+				}
+				if info.SelfSigned {
+					return fmt.Sprintf("RESULT self_signed issuer=%s days_left=%d", info.Issuer, info.DaysLeft), nil
+				}
+				return fmt.Sprintf("RESULT trusted issuer=%s days_left=%d", info.Issuer, info.DaysLeft), nil
+			}},
+		}
+	}
+
+	for _, step := range steps {
+		_ = reg.UpdateProgress(taskID, step.name, step.pct, "Waiting: "+step.wait)
+		line, err := step.fn()
+		if err != nil {
+			_ = reg.Fail(taskID, err.Error(), fmt.Sprintf("Failed at %s: %v", step.name, err))
+			return
+		}
+		if line != "" {
+			_ = reg.UpdateProgress(taskID, step.name, step.pct, line)
+		}
+	}
+	_ = reg.Complete(taskID, "SSL task finished")
 }
 
 // GetFirewallStatus gets UFW status and active port rules

@@ -271,6 +271,100 @@ EOF
     chmod 644 /etc/akpanel/install.conf /etc/akpanel/server_profile.conf 2>/dev/null || true
 }
 
+# Default nginx site must execute PHP (index.php) via php-fpm immediately
+# after install. Distro snippets/fastcgi-php.conf 404s bare /index.php.
+configure_nginx_php() {
+    mkdir -p /etc/nginx/snippets /etc/nginx/sites-available /etc/nginx/sites-enabled /var/www/html /etc/akpanel/ssl/default
+
+    local sock=""
+    local v
+    for v in $AKPANEL_PHP_VERSIONS 8.4 8.3 8.2 8.1 8.0; do
+        systemctl enable "php${v}-fpm" >> "$LOG_FILE" 2>&1 || true
+        service "php${v}-fpm" start >> "$LOG_FILE" 2>&1 || systemctl start "php${v}-fpm" >> "$LOG_FILE" 2>&1 || true
+        if [ -S "/run/php/php${v}-fpm.sock" ]; then
+            sock="unix:/run/php/php${v}-fpm.sock"
+            break
+        fi
+    done
+    if [ -z "$sock" ] && [ -S /run/php/php-fpm.sock ]; then
+        sock="unix:/run/php/php-fpm.sock"
+    fi
+    [ -z "$sock" ] && sock="unix:/run/php/php8.3-fpm.sock"
+
+    if [ ! -f /etc/akpanel/ssl/default/fullchain.pem ] || [ ! -f /etc/akpanel/ssl/default/privkey.pem ]; then
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+            -keyout /etc/akpanel/ssl/default/privkey.pem \
+            -out /etc/akpanel/ssl/default/fullchain.pem \
+            -subj "/CN=localhost" >> "$LOG_FILE" 2>&1 || true
+        chmod 600 /etc/akpanel/ssl/default/privkey.pem 2>/dev/null || true
+    fi
+
+    cat > /etc/nginx/snippets/akpanel-php.conf << 'EOF'
+fastcgi_split_path_info ^(.+\.php)(/.*)$;
+fastcgi_index index.php;
+include fastcgi_params;
+fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+fastcgi_param PATH_INFO $fastcgi_path_info;
+fastcgi_read_timeout 300;
+EOF
+
+    cat > /etc/nginx/sites-available/default << NGINX_EOF
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+    root /var/www/html;
+    index index.php index.html index.htm;
+
+    ssl_certificate /etc/akpanel/ssl/default/fullchain.pem;
+    ssl_certificate_key /etc/akpanel/ssl/default/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    location ~ \\.php\$ {
+        try_files \$uri =404;
+        fastcgi_split_path_info ^(.+\\.php)(/.*)\$;
+        fastcgi_pass ${sock};
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param PATH_INFO \$fastcgi_path_info;
+        fastcgi_read_timeout 300;
+    }
+
+    location ~ /\\.ht {
+        deny all;
+    }
+}
+NGINX_EOF
+
+    ln -sfn /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+    rm -f /etc/nginx/sites-enabled/000-default /etc/nginx/sites-enabled/000-default.conf
+
+    if [ ! -f /var/www/html/index.php ]; then
+        cat > /var/www/html/index.php << 'EOF'
+<?php
+header('Content-Type: text/html; charset=UTF-8');
+echo '<!DOCTYPE html><html><head><meta charset="utf-8"><title>AKpanel</title></head><body>';
+echo '<h1>AKpanel default site</h1><p>PHP '.PHP_VERSION.' via php-fpm is ready.</p></body></html>';
+EOF
+        chmod 644 /var/www/html/index.php
+    fi
+
+    nginx -t >> "$LOG_FILE" 2>&1 && (systemctl reload nginx >> "$LOG_FILE" 2>&1 || service nginx reload >> "$LOG_FILE" 2>&1) || true
+}
+
 apply_webserver_profile() {
     case "$AKPANEL_WEB_PROFILE" in
         nginx_phpfpm)
@@ -359,7 +453,158 @@ run_task() {
     return 0
 }
 
-# Configure optional hostname, nameservers, and SSL after panel is online
+provision_bind_master_zone() {
+    local hostname="$1"
+    local ns1="$2"
+    local ns2="$3"
+    local ip="$4"
+    local root_domain="$5"
+    local host_label=""
+
+    [ -z "$hostname" ] || [ -z "$root_domain" ] || [ -z "$ip" ] && return 0
+
+    if [ "$hostname" != "$root_domain" ]; then
+        host_label="${hostname%.${root_domain}}"
+        [ "$host_label" = "$hostname" ] && host_label=""
+    fi
+
+    mkdir -p /etc/bind/zones /etc/akpanel
+    if [ -f /etc/bind/named.conf ] && ! grep -q 'named.conf.local' /etc/bind/named.conf 2>/dev/null; then
+        echo 'include "/etc/bind/named.conf.local";' >> /etc/bind/named.conf
+    fi
+
+    local serial
+    serial=$(date +%Y%m%d%H)
+    local zone_file="/etc/bind/zones/db.${root_domain}"
+    cat > "$zone_file" << ZONE_EOF
+\$TTL 14400
+@ IN SOA ${ns1}. admin.${root_domain}. (
+    ${serial}
+    3600
+    1800
+    604800
+    86400
+)
+
+@                        14400 IN NS     ${ns1}.
+@                        14400 IN NS     ${ns2}.
+@                        14400 IN A      ${ip}
+ns1                      14400 IN A      ${ip}
+ns2                      14400 IN A      ${ip}
+www                      14400 IN A      ${ip}
+mail                     14400 IN A      ${ip}
+*                        14400 IN A      ${ip}
+@                        14400 IN MX 10  mail.${root_domain}.
+@                        14400 IN TXT    "v=spf1 a mx ip4:${ip} ~all"
+_dmarc                   14400 IN TXT    "v=DMARC1; p=none; sp=none"
+ZONE_EOF
+    if [ -n "$host_label" ] && [ "$host_label" != "ns1" ] && [ "$host_label" != "ns2" ] && [ "$host_label" != "www" ] && [ "$host_label" != "mail" ]; then
+        echo "${host_label}                      14400 IN A      ${ip}" >> "$zone_file"
+    fi
+
+    local zone_block
+    zone_block=$(cat << ZONE_CONF
+zone "${root_domain}" {
+    type master;
+    file "${zone_file}";
+    allow-transfer { none; };
+    allow-query { any; };
+};
+ZONE_CONF
+)
+    touch /etc/bind/named.conf.local
+    if ! grep -q "zone \"${root_domain}\"" /etc/bind/named.conf.local 2>/dev/null; then
+        printf '\n%s\n' "$zone_block" >> /etc/bind/named.conf.local
+    fi
+
+    named-checkzone "$root_domain" "$zone_file" >> "$LOG_FILE" 2>&1 || true
+    named-checkconf >> "$LOG_FILE" 2>&1 || true
+    rndc reload "$root_domain" >> "$LOG_FILE" 2>&1 || \
+        systemctl reload bind9 >> "$LOG_FILE" 2>&1 || \
+        systemctl reload named >> "$LOG_FILE" 2>&1 || \
+        service bind9 reload >> "$LOG_FILE" 2>&1 || true
+
+    local now
+    now=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    cat > /etc/akpanel/dns_zones.json << JSON_EOF
+[
+  {
+    "domain": "${root_domain}",
+    "owner_user": "root",
+    "server_ip": "${ip}",
+    "email_admin": "hostmaster@${root_domain}",
+    "serial": "${serial}",
+    "bind_status": "synced",
+    "created_at": "${now}",
+    "updated_at": "${now}",
+    "records": [
+      {"name": "@", "type": "NS", "value": "${ns1}.", "ttl": 14400},
+      {"name": "@", "type": "NS", "value": "${ns2}.", "ttl": 14400},
+      {"name": "@", "type": "A", "value": "${ip}", "ttl": 14400},
+      {"name": "ns1", "type": "A", "value": "${ip}", "ttl": 14400, "comment": "Glue Record NS1"},
+      {"name": "ns2", "type": "A", "value": "${ip}", "ttl": 14400, "comment": "Glue Record NS2"},
+      {"name": "www", "type": "A", "value": "${ip}", "ttl": 14400},
+      {"name": "mail", "type": "A", "value": "${ip}", "ttl": 14400},
+      {"name": "*", "type": "A", "value": "${ip}", "ttl": 14400, "comment": "Wildcard A"},
+      {"name": "@", "type": "MX", "value": "mail.${root_domain}.", "ttl": 14400, "priority": 10},
+      {"name": "@", "type": "TXT", "value": "v=spf1 a mx ip4:${ip} ~all", "ttl": 14400},
+      {"name": "_dmarc", "type": "TXT", "value": "v=DMARC1; p=none; sp=none", "ttl": 14400}
+    ]
+  }
+]
+JSON_EOF
+    echo "BIND master zone provisioned for ${root_domain} (${hostname} -> ${ip})" >> "$LOG_FILE"
+}
+
+write_hostname_nginx_vhost() {
+    local hostname="$1"
+    local safe_name
+    safe_name=$(echo "$hostname" | tr '.' '_')
+    mkdir -p /var/www/html/.well-known/acme-challenge
+    chmod -R 755 /var/www/html/.well-known 2>/dev/null || true
+    cat << NGINX_EOF > "/etc/nginx/sites-available/akpanel-hostname-${safe_name}.conf"
+# AKpanel Panel Hostname — auto-managed by install.sh
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${hostname};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name ${hostname};
+
+    ssl_certificate /etc/akpanel/ssl/server/fullchain.pem;
+    ssl_certificate_key /etc/akpanel/ssl/server/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/html;
+        default_type text/plain;
+        allow all;
+    }
+
+    location / {
+        return 302 https://\$host:2087\$request_uri;
+    }
+}
+NGINX_EOF
+    ln -sfn "/etc/nginx/sites-available/akpanel-hostname-${safe_name}.conf" "/etc/nginx/sites-enabled/akpanel-hostname-${safe_name}.conf"
+    nginx -t >> "$LOG_FILE" 2>&1 && systemctl reload nginx >> "$LOG_FILE" 2>&1 || service nginx reload >> "$LOG_FILE" 2>&1 || true
+}
+
+# Configure optional hostname, nameservers, BIND zone, and SSL after panel is online
 configure_panel_identity() {
     [ -z "$AKPANEL_HOSTNAME" ] && return 0
 
@@ -407,8 +652,20 @@ EOF
 }
 EOF
 
-    mkdir -p /var/www/html/.well-known/acme-challenge
-    chmod -R 777 /var/www/html/.well-known 2>/dev/null || true
+    provision_bind_master_zone "$AKPANEL_HOSTNAME" "$NS1" "$NS2" "$SERVER_IP" "$ROOT_DOMAIN"
+
+    mkdir -p /etc/akpanel/ssl/server "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}" /var/www/html/.well-known/acme-challenge
+    chmod -R 755 /var/www/html/.well-known 2>/dev/null || true
+
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout /etc/akpanel/ssl/server/privkey.pem \
+        -out /etc/akpanel/ssl/server/fullchain.pem \
+        -subj "/C=US/ST=Cloud/L=Server/O=AKpanel/CN=${AKPANEL_HOSTNAME}" >> "$LOG_FILE" 2>&1 || true
+    cp -f /etc/akpanel/ssl/server/fullchain.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/fullchain.pem" 2>/dev/null || true
+    cp -f /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
+    chmod 600 /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
+
+    write_hostname_nginx_vhost "$AKPANEL_HOSTNAME"
 
     if [ ! -f /root/.acme.sh/acme.sh ]; then
         curl -fsSL https://get.acme.sh | sh -s "email=${ADMIN_EMAIL}" >> "$LOG_FILE" 2>&1 || true
@@ -416,66 +673,39 @@ EOF
 
     local ACME_BIN="/root/.acme.sh/acme.sh"
     local SSL_OK=false
+    local attempt
     if [ -f "$ACME_BIN" ]; then
-        if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server letsencrypt --force >> "$LOG_FILE" 2>&1; then
-            SSL_OK=true
-        elif "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server zerossl --force >> "$LOG_FILE" 2>&1; then
-            SSL_OK=true
-        fi
+        for attempt in 1 2 3; do
+            echo "ACME attempt ${attempt} for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
+            local resolved
+            resolved=$(dig +short A "$AKPANEL_HOSTNAME" @127.0.0.1 2>/dev/null | head -1)
+            echo "Local BIND A ${AKPANEL_HOSTNAME}=${resolved:-none}" >> "$LOG_FILE"
+            if "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server letsencrypt --force >> "$LOG_FILE" 2>&1; then
+                SSL_OK=true
+                break
+            elif "$ACME_BIN" --issue -d "$AKPANEL_HOSTNAME" -w /var/www/html --server zerossl --force >> "$LOG_FILE" 2>&1; then
+                SSL_OK=true
+                break
+            fi
+            sleep $((attempt * 8))
+        done
     fi
-
-    mkdir -p /etc/akpanel/ssl/server "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}"
 
     if [ "$SSL_OK" = true ] && [ -f "$ACME_BIN" ]; then
         "$ACME_BIN" --install-cert -d "$AKPANEL_HOSTNAME" \
             --key-file /etc/akpanel/ssl/server/privkey.pem \
             --fullchain-file /etc/akpanel/ssl/server/fullchain.pem \
             --reloadcmd "service nginx reload 2>/dev/null || true" >> "$LOG_FILE" 2>&1 || SSL_OK=false
+        if [ "$SSL_OK" = true ]; then
+            cp -f /etc/akpanel/ssl/server/fullchain.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/fullchain.pem" 2>/dev/null || true
+            cp -f /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
+            chmod 600 /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
+            write_hostname_nginx_vhost "$AKPANEL_HOSTNAME"
+            echo "Trusted Hostname SSL installed for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
+        fi
+    else
+        echo "ACME not ready (public DNS/NS glue). Keeping self-signed fallback for ${AKPANEL_HOSTNAME}" >> "$LOG_FILE"
     fi
-
-    if [ "$SSL_OK" = false ]; then
-        openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout /etc/akpanel/ssl/server/privkey.pem \
-            -out /etc/akpanel/ssl/server/fullchain.pem \
-            -subj "/C=US/ST=Cloud/L=Server/O=AKpanel/CN=${AKPANEL_HOSTNAME}" >> "$LOG_FILE" 2>&1 || true
-    fi
-
-    cp -f /etc/akpanel/ssl/server/fullchain.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/fullchain.pem" 2>/dev/null || true
-    cp -f /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
-    chmod 600 /etc/akpanel/ssl/server/privkey.pem "/etc/akpanel/ssl/${AKPANEL_HOSTNAME}/privkey.pem" 2>/dev/null || true
-
-    local SAFE_NAME
-    SAFE_NAME=$(echo "$AKPANEL_HOSTNAME" | tr '.' '_')
-    cat << NGINX_EOF > "/etc/nginx/sites-available/akpanel-hostname-${SAFE_NAME}.conf"
-# AKpanel Panel Hostname — auto-managed by install.sh
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${AKPANEL_HOSTNAME};
-    return 301 https://\$host\$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name ${AKPANEL_HOSTNAME};
-
-    ssl_certificate /etc/akpanel/ssl/server/fullchain.pem;
-    ssl_certificate_key /etc/akpanel/ssl/server/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-
-    location ^~ /.well-known/acme-challenge/ {
-        root /var/www/html;
-        allow all;
-    }
-
-    location / {
-        return 302 https://\$host:2087\$request_uri;
-    }
-}
-NGINX_EOF
-    ln -sfn "/etc/nginx/sites-available/akpanel-hostname-${SAFE_NAME}.conf" "/etc/nginx/sites-enabled/akpanel-hostname-${SAFE_NAME}.conf"
-    nginx -t >> "$LOG_FILE" 2>&1 && systemctl reload nginx >> "$LOG_FILE" 2>&1 || service nginx reload >> "$LOG_FILE" 2>&1 || true
 
     systemctl restart akpanel >> "$LOG_FILE" 2>&1 || true
 }
@@ -949,6 +1179,8 @@ EOF
     for v in $AKPANEL_PHP_VERSIONS; do
         service "php${v}-fpm" start >> "$LOG_FILE" 2>&1 || systemctl start "php${v}-fpm" >> "$LOG_FILE" 2>&1 || true
     done
+
+    configure_nginx_php
 
     write_install_metadata
     apply_webserver_profile

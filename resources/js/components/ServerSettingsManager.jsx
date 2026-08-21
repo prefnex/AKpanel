@@ -83,7 +83,13 @@ export default function ServerSettingsManager({ showToast }) {
           setSslError('');
           localStorage.removeItem('akpanel_hostname_ssl_task');
           setSslTaskId('');
-          showToast('Hostname SSL configured successfully');
+          const logs = task.logs || [];
+          const fallback = logs.some((l) => /self-signed/i.test(l));
+          if (fallback) {
+            showToast('HTTPS is up with a self-signed fallback — Let’s Encrypt needs public DNS (ns1/ns2 → this server).', 'error');
+          } else {
+            showToast('Trusted Hostname SSL issued successfully');
+          }
           fetchSettings();
         } else if (task.status === 'failed') {
           setSslLoading(false);
@@ -332,6 +338,11 @@ export default function ServerSettingsManager({ showToast }) {
               <p className="text-xs text-zinc-300 mt-1">
                 Secures Root WHM (<span className="text-indigo-300 font-mono">:2087 HTTPS</span>), Client Portal (<span className="text-indigo-300 font-mono">:2083 HTTPS</span>), Mail (<span className="text-indigo-300 font-mono">IMAP/SMTP SSL</span>), and FTP.
               </p>
+              {hostnameSSL?.message && (
+                <p className={`text-[11px] mt-2 ${hostnameSSL.is_self_signed ? 'text-amber-300/90' : 'text-zinc-500'}`}>
+                  {hostnameSSL.message}
+                </p>
+              )}
 
               <div className="flex flex-wrap items-center gap-4 mt-3 text-xs text-zinc-400">
                 <div><strong className="text-zinc-300">Hostname:</strong> <span className="font-mono text-white">{settings.hostname || window.location.hostname}</span></div>
@@ -361,16 +372,18 @@ export default function ServerSettingsManager({ showToast }) {
           </div>
         </div>
 
-        {(sslLoading || sslStatus === 'failed' || sslTaskId) && (
+        {(sslLoading || sslStatus === 'failed' || sslStatus === 'completed' || sslTaskId) && (
           <div className={`mt-4 p-3 rounded-xl space-y-2 border ${
-            sslStatus === 'failed' ? 'bg-red-950/30 border-red-800' : 'bg-zinc-950/60 border-indigo-900/40'
+            sslStatus === 'failed' ? 'bg-red-950/30 border-red-800' : sslStatus === 'completed' && hostnameSSL?.is_self_signed ? 'bg-amber-950/30 border-amber-800/60' : 'bg-zinc-950/60 border-indigo-900/40'
           }`}>
-            <div className={`flex justify-between text-xs ${sslStatus === 'failed' ? 'text-red-400' : 'text-indigo-300'}`}>
+            <div className={`flex justify-between text-xs ${sslStatus === 'failed' ? 'text-red-400' : hostnameSSL?.is_self_signed && sslStatus === 'completed' ? 'text-amber-300' : 'text-indigo-300'}`}>
               <span className="flex items-center gap-1.5">
                 {sslStatus === 'failed' && <AlertTriangle className="w-3.5 h-3.5" />}
                 {sslStatus === 'failed'
                   ? `SSL failed${sslStep ? ` at ${sslStep}` : ''}`
-                  : `SSL issuance${sslStep ? `: ${sslStep}` : '...'}`}
+                  : sslStatus === 'completed' && hostnameSSL?.is_self_signed
+                    ? 'Completed with self-signed fallback (not a trusted CA)'
+                    : `SSL issuance${sslStep ? `: ${sslStep}` : '...'}`}
               </span>
               <span>{sslProgress}%</span>
             </div>
@@ -390,7 +403,7 @@ export default function ServerSettingsManager({ showToast }) {
                 <div key={i} className={line.startsWith('Failed:') ? 'text-red-400' : ''}>{line}</div>
               ))}
             </div>
-            {sslStatus === 'failed' && (
+            {(sslStatus === 'failed' || sslStatus === 'completed') && (
               <button type="button" onClick={resetSslUI} className="text-[10px] text-zinc-400 hover:text-white underline">
                 Dismiss
               </button>
