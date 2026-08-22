@@ -157,6 +157,11 @@ func (r *PhpMyAdminController) Proxy(ctx goravelhttp.Context) goravelhttp.Respon
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ctx.Response().Status(502).String("phpMyAdmin proxy read failed: " + err.Error())
+	}
+
 	response := ctx.Response()
 	for _, cookie := range resp.Cookies() {
 		response.Cookie(goravelhttp.Cookie{
@@ -200,10 +205,6 @@ func (r *PhpMyAdminController) Proxy(ctx goravelhttp.Context) goravelhttp.Respon
 	if contentType == "" {
 		contentType = "text/html; charset=utf-8"
 	}
-	response.Header("Content-Type", contentType)
 
-	return response.Status(resp.StatusCode).Stream(func(w goravelhttp.StreamWriter) error {
-		_, err := io.Copy(streamCopyWriter{w: w}, resp.Body)
-		return err
-	})
+	return response.Status(resp.StatusCode).Data(contentType, bodyBytes)
 }

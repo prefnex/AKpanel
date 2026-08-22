@@ -145,6 +145,11 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ctx.Response().Status(502).String("Roundcube proxy read failed: " + err.Error())
+	}
+
 	response := ctx.Response()
 	for _, cookie := range resp.Cookies() {
 		response.Cookie(goravelhttp.Cookie{
@@ -186,12 +191,8 @@ func (r *WebmailController) Proxy(ctx goravelhttp.Context) goravelhttp.Response 
 	if contentType == "" {
 		contentType = "text/html; charset=utf-8"
 	}
-	response.Header("Content-Type", contentType)
 
-	return response.Status(resp.StatusCode).Stream(func(w goravelhttp.StreamWriter) error {
-		_, err := io.Copy(streamCopyWriter{w: w}, resp.Body)
-		return err
-	})
+	return response.Status(resp.StatusCode).Data(contentType, bodyBytes)
 }
 
 // SSO renders an auto-submit Roundcube login using the Dovecot master user.
