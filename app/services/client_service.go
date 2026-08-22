@@ -101,6 +101,12 @@ type ClientFTPUser struct {
 	HomeDir   string `json:"home_dir"`
 	QuotaMB   int    `json:"quota_mb"`
 	CreatedAt string `json:"created_at"`
+	IsPrimary bool   `json:"is_primary,omitempty"`
+}
+
+type ClientFTPListResult struct {
+	Users  []ClientFTPUser `json:"users"`
+	Server FTPServerInfo   `json:"server"`
 }
 
 type ClientBackupArchive struct {
@@ -135,13 +141,11 @@ func GetClientService() *ClientService {
 }
 
 func (c *ClientService) findUser(username string) *UserAccount {
-	users := c.userService.ListUsers()
-	for _, u := range users {
-		if u.Username == username {
-			return &u
-		}
+	user, err := c.userService.GetUser(username)
+	if err != nil {
+		return nil
 	}
-	return nil
+	return user
 }
 
 // resolveJailPath enforces strict confinement inside /home/<username>
@@ -212,8 +216,11 @@ func (c *ClientService) GetDashboardStats(username string) (*ClientDashboardStat
 	emailsCount := len(emails)
 
 	// 5. Count FTP Accounts
-	ftpUsers, _ := c.ListFTPUsers(username)
-	ftpCount := len(ftpUsers)
+	ftpList, _ := c.ListFTPUsers(username)
+	ftpCount := 0
+	if ftpList != nil {
+		ftpCount = len(ftpList.Users)
+	}
 
 	// 6. Get Server IP & Nameservers
 	serverIP := "127.0.0.1"
@@ -1024,18 +1031,40 @@ func (c *ClientService) writeFTPUsers(list []ClientFTPUser) error {
 	return os.WriteFile("/etc/akpanel/ftp_users.json", bytes, 0644)
 }
 
-func (c *ClientService) ListFTPUsers(username string) ([]ClientFTPUser, error) {
+func (c *ClientService) ListFTPUsers(username string) (*ClientFTPListResult, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
+	user, _ := c.userService.GetUser(username)
+	domain := ""
+	if user != nil {
+		domain = user.MainDomain
+	}
+
 	stored := c.readFTPUsers()
-	var myUsers []ClientFTPUser
+	var subUsers []ClientFTPUser
 	for _, u := range stored {
 		if u.OwnerUser == username || username == "root" || username == "admin" {
-			myUsers = append(myUsers, u)
+			subUsers = append(subUsers, u)
 		}
 	}
-	return myUsers, nil
+
+	primary := ClientFTPUser{
+		Username:  username,
+		OwnerUser: username,
+		HomeDir:   paths.UserHome(username),
+		CreatedAt: "Primary account",
+		IsPrimary: true,
+	}
+	if user != nil && user.SetupTime != "" {
+		primary.CreatedAt = user.SetupTime
+	}
+
+	users := append([]ClientFTPUser{primary}, subUsers...)
+	return &ClientFTPListResult{
+		Users:  users,
+		Server: GetFTPService().ServerInfo(domain),
+	}, nil
 }
 
 func (c *ClientService) CreateFTPUser(username, ftpUser, ftpPass, subDir string, quotaMB int) error {

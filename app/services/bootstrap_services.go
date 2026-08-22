@@ -28,7 +28,10 @@ func BootstrapPanelServices() error {
 			return GetMailAuthService().EnsureDovecotConfig()
 		}},
 		{"postfix virtual mailboxes", func() error {
-			return GetMailAuthService().EnsurePostfixVirtualConfig()
+			if err := GetMailAuthService().EnsurePostfixVirtualConfig(); err != nil {
+				return err
+			}
+			return NewEmailService().RebuildPostfixMailboxMaps()
 		}},
 		{"postfix identity and milters", func() error {
 			GetMailAuthService().EnsureMailIdentity()
@@ -49,6 +52,14 @@ func BootstrapPanelServices() error {
 		}},
 		{"ssh jail", func() error {
 			EnsureSSHJail()
+			return nil
+		}},
+		{"pure-ftpd", func() error {
+			ftp := GetFTPService()
+			if err := ftp.EnsureConfigured(); err != nil {
+				return err
+			}
+			ftp.EnsurePassiveFirewall()
 			return nil
 		}},
 		{"internal listeners", func() error {

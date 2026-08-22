@@ -182,7 +182,7 @@ func (m *MailPolicyService) applyAntiSpamLocked(s AntiSpamSettings) {
 	_ = os.MkdirAll("/var/spool/postfix/spamass", 0755)
 	_ = exec.Command("chown", "spamass-milter:postfix", "/var/spool/postfix/spamass").Run()
 	defaults := `# Managed by AKpanel
-OPTIONS="-u spamass-milter -i 127.0.0.1 -m -r -1"
+OPTIONS="-u spamass-milter -i 127.0.0.1 -m -r 15"
 SOCKET="/var/spool/postfix/spamass/spamass.sock"
 SOCKETOWNER="spamass-milter:postfix"
 SOCKETMODE="0660"

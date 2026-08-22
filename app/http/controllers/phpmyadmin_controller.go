@@ -157,9 +157,6 @@ func (r *PhpMyAdminController) Proxy(ctx goravelhttp.Context) goravelhttp.Respon
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
-
-	// 3. Process and forward all session cookies
 	response := ctx.Response()
 	for _, cookie := range resp.Cookies() {
 		response.Cookie(goravelhttp.Cookie{
@@ -175,10 +172,9 @@ func (r *PhpMyAdminController) Proxy(ctx goravelhttp.Context) goravelhttp.Respon
 		})
 	}
 
-	// 4. Copy and rewrite response headers
 	for key, values := range resp.Header {
 		if strings.EqualFold(key, "Set-Cookie") || hopByHopHeaders[key] {
-			continue // Handled via response.Cookie above
+			continue
 		}
 		for _, value := range values {
 			if strings.EqualFold(key, "Location") {
@@ -204,6 +200,10 @@ func (r *PhpMyAdminController) Proxy(ctx goravelhttp.Context) goravelhttp.Respon
 	if contentType == "" {
 		contentType = "text/html; charset=utf-8"
 	}
+	response.Header("Content-Type", contentType)
 
-	return response.Status(resp.StatusCode).Data(contentType, bodyBytes)
+	return response.Status(resp.StatusCode).Stream(func(w goravelhttp.StreamWriter) error {
+		_, err := io.Copy(streamCopyWriter{w: w}, resp.Body)
+		return err
+	})
 }

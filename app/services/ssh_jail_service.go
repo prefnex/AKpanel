@@ -23,6 +23,7 @@ var jailWrapped = map[string]bool{
 	"systemctl": true, "service": true, "shutdown": true, "reboot": true,
 	"iptables": true, "nft": true, "ufw": true, "chroot": true, "nsenter": true, "docker": true,
 	"kill": true, "killall": true, "pkill": true, "crontab": true,
+	"ln": true, "tee": true, "xargs": true, "eval": true, "exec": true,
 }
 
 // EnsureSSHJail writes the restricted shell, command wrappers, and sshd match block.
@@ -36,7 +37,7 @@ func EnsureSSHJail() {
 	_ = os.MkdirAll("/etc/ssh/sshd_config.d", 0755)
 
 	shell := `#!/bin/bash
-# AKpanel jailed login: interactive rbash OR SFTP. Wrappers live only in jailbin.
+# AKpanel jailed login: interactive bash with wrapper-first PATH, or SFTP/SCP.
 USER_NAME="${USER:-$(id -un 2>/dev/null)}"
 HOME_DIR="$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f6)"
 if [ -z "$HOME_DIR" ] || [ ! -d "$HOME_DIR" ]; then
@@ -47,7 +48,7 @@ cd "$HOME_DIR" || exit 1
 export HOME="$HOME_DIR"
 export USER="$USER_NAME"
 export LOGNAME="$USER_NAME"
-export PATH=/usr/local/lib/akpanel/jailbin
+export PATH=/usr/local/lib/akpanel/jailbin:/usr/local/bin:/usr/bin:/bin
 export SHELL=/usr/local/bin/akpanel-ssh-shell
 export PS1='\[\033[1;35m\]AKpanel\[\033[0m\] \[\033[1;36m\]\u\[\033[0m\]:\w\$ '
 umask 022
@@ -68,8 +69,10 @@ if [ -n "$orig" ]; then
       exit 1
       ;;
     scp\ -t*|scp\ -f*)
-      echo "akpanel: use SFTP for file transfer" >&2
-      exit 1
+      exec /usr/bin/scp ${orig#scp }
+      ;;
+    rsync\ --server*)
+      exec /usr/bin/rsync ${orig#rsync }
       ;;
     *)
       echo "akpanel: remote command is not allowed" >&2
@@ -78,8 +81,6 @@ if [ -n "$orig" ]; then
   esac
 fi
 
-# rbash is started with --noprofile --norc so /usr/bin is never on PATH, which also
-# skips /etc/profile.d. Source the panel MOTD explicitly (it no-ops without PS1).
 if [ -f /etc/profile.d/00-akpanel-motd.sh ]; then
   # shellcheck disable=SC1091
   . /etc/profile.d/00-akpanel-motd.sh
@@ -93,7 +94,7 @@ fi
 echo "  Jailed hosting shell — commands are limited to your home directory."
 echo ""
 
-exec /bin/bash --restricted --noprofile --norc -i
+exec /bin/bash --noprofile --norc -i
 `
 	_ = os.WriteFile(sshJailShell, []byte(shell), 0755)
 

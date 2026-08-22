@@ -893,8 +893,8 @@ func (n *NginxService) CreateClientPanelVhost(host string) error {
         proxy_set_header X-Panel-Scope client;
         proxy_cache_bypass $http_upgrade;
         proxy_connect_timeout 10s;
-        proxy_send_timeout 90s;
-        proxy_read_timeout 90s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
     }
 }
 `, host, sslCert, sslKey)

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"goravel/app/facades"
 	"goravel/app/paths"
@@ -55,11 +56,16 @@ type UserAccount struct {
 }
 
 type UserAccountService struct {
-	mu              sync.RWMutex
-	filePath        string
-	packagesService *PackagesService
-	nginxService    *NginxService
+	mu                  sync.RWMutex
+	filePath            string
+	packagesService     *PackagesService
+	nginxService        *NginxService
+	telemetryMu         sync.Mutex
+	telemetryLastRun    time.Time
+	telemetryRefreshing bool
 }
+
+const userTelemetryTTL = 90 * time.Second
 
 var (
 	userAccountServiceInstance *UserAccountService
@@ -125,41 +131,70 @@ func (s *UserAccountService) writeUsers(list []UserAccount) error {
 	return os.WriteFile(s.filePath, bytes, 0644)
 }
 
-// ListUsers returns all users enriched with live Linux system telemetry
+// ListUsers returns all users from JSON. Live telemetry refreshes in the background
+// so admin API calls never block on du/find/nginx reload per request.
 func (s *UserAccountService) ListUsers() []UserAccount {
+	s.mu.RLock()
+	list, err := s.readUsers()
+	s.mu.RUnlock()
+	if err != nil {
+		return []UserAccount{}
+	}
+	s.maybeRefreshTelemetryAsync()
+	return list
+}
+
+func (s *UserAccountService) maybeRefreshTelemetryAsync() {
+	s.telemetryMu.Lock()
+	if time.Since(s.telemetryLastRun) < userTelemetryTTL || s.telemetryRefreshing {
+		s.telemetryMu.Unlock()
+		return
+	}
+	s.telemetryRefreshing = true
+	s.telemetryMu.Unlock()
+	go s.refreshAllUserTelemetry()
+}
+
+func (s *UserAccountService) refreshAllUserTelemetry() {
+	defer func() {
+		s.telemetryMu.Lock()
+		s.telemetryRefreshing = false
+		s.telemetryLastRun = time.Now()
+		s.telemetryMu.Unlock()
+	}()
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	list, err := s.readUsers()
 	if err != nil {
-		return []UserAccount{}
+		return
 	}
 
 	for i := range list {
 		u := &list[i]
-		// Live Disk Usage calculation (MB)
 		if u.HomeDir != "" {
 			if _, err := os.Stat(u.HomeDir); err == nil {
-				cmd := exec.Command("bash", "-c", fmt.Sprintf("du -sm %s 2>/dev/null | awk '{print $1}'", u.HomeDir))
-				if out, err := cmd.Output(); err == nil {
-					if mb, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil {
-						u.DiskUsedMB = mb
+				if out, err := exec.Command("du", "-sm", u.HomeDir).Output(); err == nil {
+					fields := strings.Fields(string(out))
+					if len(fields) > 0 {
+						if mb, err := strconv.Atoi(fields[0]); err == nil {
+							u.DiskUsedMB = mb
+						}
 					}
 				}
-
-				// Live Inodes count calculation
-				cmdInodes := exec.Command("bash", "-c", fmt.Sprintf("find %s 2>/dev/null | wc -l", u.HomeDir))
-				if out, err := cmdInodes.Output(); err == nil {
-					if inodes, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil {
-						u.InodesUsed = inodes
+				if out, err := exec.Command("du", "--inodes", "-s", u.HomeDir).Output(); err == nil {
+					fields := strings.Fields(string(out))
+					if len(fields) > 0 {
+						if inodes, err := strconv.Atoi(fields[0]); err == nil {
+							u.InodesUsed = inodes
+						}
 					}
 				}
 			}
 		}
 
-		// Live active process count
-		cmdProc := exec.Command("bash", "-c", fmt.Sprintf("ps -u %s 2>/dev/null | wc -l", u.Username))
-		if out, err := cmdProc.Output(); err == nil {
+		if out, err := exec.Command("bash", "-c", fmt.Sprintf("ps -u %s 2>/dev/null | wc -l", u.Username)).Output(); err == nil {
 			if procs, err := strconv.Atoi(strings.TrimSpace(string(out))); err == nil {
 				if procs > 1 {
 					u.ActiveProcesses = procs - 1
@@ -173,7 +208,6 @@ func (s *UserAccountService) ListUsers() []UserAccount {
 	}
 
 	_ = s.writeUsers(list)
-	return list
 }
 
 func (s *UserAccountService) GetUser(username string) (*UserAccount, error) {

@@ -227,6 +227,7 @@ func (m *MailAuthService) writeDovecotListenersLocked() bool {
 	cert, key := mailTLSPair()
 	var b strings.Builder
 	fmt.Fprintf(&b, `# AKpanel TLS + Postfix SASL (do not redeclare IMAP ports — Debian already binds 143/993)
+protocols = imap pop3 lmtp
 ssl = yes
 ssl_cert = <%s
 ssl_key = <%s
@@ -328,6 +329,9 @@ func (m *MailAuthService) ensurePostfixMailStackLocked(uid, gid string) {
 	_ = exec.Command("postconf", "-e", "smtpd_sasl_path = private/auth").Run()
 	_ = exec.Command("postconf", "-e", "smtpd_sasl_auth_enable = yes").Run()
 	_ = exec.Command("postconf", "-e", "smtpd_relay_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination").Run()
+	_ = exec.Command("postconf", "-e", "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination").Run()
+	_ = exec.Command("postconf", "-e", "mydestination = $myhostname, localhost.$mydomain, localhost").Run()
+	_ = exec.Command("postconf", "-e", "local_recipient_maps =").Run()
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_base = /var/vmail").Run()
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_domains = /etc/postfix/vmailbox_domains").Run()
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_maps = hash:/etc/postfix/vmailbox").Run()
@@ -604,10 +608,16 @@ func (m *MailAuthService) RemoveMailboxPassword(email string) error {
 // EnsurePostfixVirtualConfig applies virtual mailbox domain settings.
 func (m *MailAuthService) EnsurePostfixVirtualConfig() error {
 	uid, gid := ensureVmailIdentity()
+	_ = exec.Command("postconf", "-e", "mydestination = $myhostname, localhost.$mydomain, localhost").Run()
+	_ = exec.Command("postconf", "-e", "smtpd_recipient_restrictions = permit_mynetworks, permit_sasl_authenticated, reject_unauth_destination").Run()
+	_ = exec.Command("postconf", "-e", "local_recipient_maps =").Run()
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_domains=/etc/postfix/vmailbox_domains").Run()
 	_ = exec.Command("postconf", "-e", "virtual_mailbox_maps=hash:/etc/postfix/vmailbox").Run()
+	_ = exec.Command("postconf", "-e", "virtual_alias_maps=hash:/etc/postfix/virtual").Run()
+	_ = exec.Command("postconf", "-e", "virtual_transport=lmtp:unix:private/dovecot-lmtp").Run()
 	_ = exec.Command("postconf", "-e", "virtual_uid_maps=static:"+uid).Run()
 	_ = exec.Command("postconf", "-e", "virtual_gid_maps=static:"+gid).Run()
+	ensurePostfixVirtualAliasMapFile()
 	runTimeout(8*time.Second, "systemctl", "reload", "postfix")
 	return nil
 }

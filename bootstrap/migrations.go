@@ -13,5 +13,6 @@ func Migrations() []schema.Migration {
 		&migrations.M20260201000001AddOwnerToWebsitesTable{},
 		&migrations.M20260201000002CreateUsersTable{},
 		&migrations.M20260201000003CreateProvisionTasksTable{},
+		&migrations.M20260222000001CreateMailDeliveriesTable{},
 	}
 }

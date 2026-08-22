@@ -395,11 +395,16 @@ func (c *ClientController) DeleteDatabase(ctx http.Context) http.Response {
 // GET /api/client/ftp
 func (c *ClientController) FTPUsers(ctx http.Context) http.Response {
 	username := c.getUsername(ctx)
-	users, err := c.clientService.ListFTPUsers(username)
+	result, err := c.clientService.ListFTPUsers(username)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
 	}
-	return ctx.Response().Success().Json(http.Json{"status": true, "data": users, "ftp_users": users})
+	return ctx.Response().Success().Json(http.Json{
+		"status":    true,
+		"data":      result.Users,
+		"ftp_users": result.Users,
+		"server":    result.Server,
+	})
 }
 
 // POST /api/client/ftp/create

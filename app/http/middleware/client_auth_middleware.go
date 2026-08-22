@@ -113,17 +113,9 @@ func (m *ClientAuthMiddleware) Handle(ctx http.Context) {
 		return
 	}
 
-	// Check if client account is active (not suspended)
+	// Check if client account is active (not suspended) — fast JSON lookup only.
 	if username != "root" && username != "admin" {
-		users := m.userService.ListUsers()
-		var foundUser *services.UserAccount
-		for _, u := range users {
-			if u.Username == username {
-				foundUser = &u
-				break
-			}
-		}
-
+		foundUser, _ := m.userService.GetUser(username)
 		if foundUser != nil && foundUser.Status == "suspended" {
 			ctx.Response().Status(403).Json(http.Json{
 				"status":  false,

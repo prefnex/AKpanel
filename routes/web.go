@@ -30,8 +30,10 @@ func Web() {
 
 	authMiddleware := middleware.NewAuthMiddleware()
 	clientAuthMiddleware := middleware.NewClientAuthMiddleware()
+	staticAssetMiddleware := middleware.NewStaticAssetMiddleware()
 
 	// Register Global Auth Middleware for full endpoint protection
+	facades.Route().GlobalMiddleware(staticAssetMiddleware)
 	facades.Route().GlobalMiddleware(authMiddleware)
 	facades.Route().GlobalMiddleware(clientAuthMiddleware)
 

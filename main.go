@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"sync"
 	"strings"
 	"time"
 
@@ -19,30 +20,65 @@ import (
 	"goravel/bootstrap"
 )
 
-// getHostCertificate dynamically loads the active Hostname SSL certificate on every TLS handshake
-func getHostCertificate(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	// 1. Check server host certificate
-	certPath := "/etc/akpanel/ssl/server/fullchain.pem"
-	keyPath := "/etc/akpanel/ssl/server/privkey.pem"
+var (
+	tlsCertCacheMu sync.RWMutex
+	tlsCertCache   *tls.Certificate
+	tlsCertKey     string
+	tlsCertMod     time.Time
+)
 
+func resolveCertPaths() (certPath, keyPath string) {
+	certPath = "/etc/akpanel/ssl/server/fullchain.pem"
+	keyPath = "/etc/akpanel/ssl/server/privkey.pem"
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
-		// 2. Check self-signed certificate
 		certPath = "/etc/ssl/certs/akpanel-selfsigned.crt"
 		keyPath = "/etc/ssl/private/akpanel-selfsigned.key"
 	}
-
 	if _, err := os.Stat(certPath); os.IsNotExist(err) {
-		// 3. Fallback: generate self-signed on the fly
 		acme := services.NewACMEService()
 		c, k, _ := acme.GenerateSelfSigned("localhost")
 		certPath = c
 		keyPath = k
 	}
+	return certPath, keyPath
+}
+
+// getHostCertificate loads the active panel TLS certificate (cached until file mtime changes).
+func getHostCertificate(info *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	certPath, keyPath := resolveCertPaths()
+	cacheKey := certPath + "|" + keyPath
+
+	certInfo, err := os.Stat(certPath)
+	if err != nil {
+		return nil, err
+	}
+	keyInfo, err := os.Stat(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	modTime := certInfo.ModTime()
+	if keyInfo.ModTime().After(modTime) {
+		modTime = keyInfo.ModTime()
+	}
+
+	tlsCertCacheMu.RLock()
+	if tlsCertCache != nil && tlsCertKey == cacheKey && !modTime.After(tlsCertMod) {
+		cached := tlsCertCache
+		tlsCertCacheMu.RUnlock()
+		return cached, nil
+	}
+	tlsCertCacheMu.RUnlock()
 
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return nil, err
 	}
+
+	tlsCertCacheMu.Lock()
+	tlsCertCache = &cert
+	tlsCertKey = cacheKey
+	tlsCertMod = modTime
+	tlsCertCacheMu.Unlock()
 	return &cert, nil
 }
 
@@ -101,6 +137,14 @@ func (l *cmuxListener) Accept() (net.Conn, error) {
 func createPanelHandler(targetURL string, port string, scope string) nethttp.Handler {
 	target, _ := url.Parse(targetURL)
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = &nethttp.Transport{
+		Proxy:                 nethttp.ProxyFromEnvironment,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	originalDirector := proxy.Director
 
 	proxy.Director = func(req *nethttp.Request) {

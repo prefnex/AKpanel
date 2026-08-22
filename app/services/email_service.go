@@ -552,13 +552,13 @@ func (s *EmailService) CreateAccount(email, password string, quotaMB int) error 
 	}
 
 	s.syncPostfixMailboxMaps(list)
+	_ = exec.Command("chown", "-R", "vmail:vmail", fmt.Sprintf("/var/vmail/%s", domain)).Run()
 	s.mu.Unlock()
 
 	go func() {
 		defer func() { _ = recover() }()
 		_ = GetMailAuthService().EnsureDovecotConfig()
 		_, _ = s.dnsService.CreateZone(domain, s.dnsService.GetSystemIP(), "root", "")
-		_ = exec.Command("chown", "-R", "vmail:vmail", fmt.Sprintf("/var/vmail/%s", domain)).Run()
 		_ = GetMailAuthService().EnsurePostfixVirtualConfig()
 	}()
 
@@ -590,6 +590,18 @@ func (s *EmailService) syncPostfixMailboxMaps(list []EmailAccount) {
 	_ = os.WriteFile(vmailFile, []byte(strings.Join(mailboxes, "\n")+"\n"), 0644)
 	_ = exec.Command("postmap", vmailFile).Run()
 	_ = os.WriteFile("/etc/postfix/vmailbox_domains", []byte(strings.Join(domains, "\n")+"\n"), 0644)
+}
+
+// RebuildPostfixMailboxMaps syncs Postfix virtual maps from emails.json (bootstrap/repair).
+func (s *EmailService) RebuildPostfixMailboxMaps() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.readEmails()
+	if err != nil {
+		return err
+	}
+	s.syncPostfixMailboxMaps(list)
+	return nil
 }
 
 // ChangePassword updates mailbox password

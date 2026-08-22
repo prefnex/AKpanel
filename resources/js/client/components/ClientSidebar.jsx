@@ -31,7 +31,7 @@ export default function ClientSidebar({ stats }) {
     { id: 'websites', path: '/websites', label: 'Websites & Domains', icon: Globe, count: stats?.domains_used },
     { id: 'dns', path: '/dns', label: 'DNS Zone Records', icon: Zap },
     { id: 'databases', path: '/databases', label: 'MySQL Databases', icon: Database, count: stats?.databases_used },
-    { id: 'files', path: '/files', altPath: '/filemanager', label: 'File Manager', icon: FolderTree, badge: 'Jail' },
+    { id: 'files', path: '/files', altPath: '/filemanager', externalPath: '/filemanager/standalone', label: 'File Manager', icon: FolderTree, badge: 'Jail' },
     { id: 'ftp', path: '/ftp', label: 'FTP Accounts', icon: Server, count: stats?.ftp_used },
     { id: 'emails', path: '/emails', label: 'Email Accounts', icon: Mail, count: stats?.emails_used },
     { id: 'cron', path: '/cron', label: 'Cron Tasks', icon: Clock },
@@ -59,6 +59,23 @@ export default function ClientSidebar({ stats }) {
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive = currentPath === item.path || (item.altPath && currentPath === item.altPath) || (item.id === 'dashboard' && currentPath === '/');
+              if (item.externalPath) {
+                return (
+                  <a
+                    key={item.id}
+                    href={item.externalPath}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition group text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/60"
+                  >
+                    <div className="flex items-center gap-3">
+                      <Icon className="w-4 h-4 text-zinc-500 group-hover:text-zinc-300" />
+                      <span>{item.label}</span>
+                    </div>
+                    <ExternalLink className="w-3.5 h-3.5 text-zinc-500" />
+                  </a>
+                );
+              }
               return (
                 <button
                   key={item.id}

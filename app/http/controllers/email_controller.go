@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"errors"
+	"strconv"
 
 	goravelhttp "github.com/goravel/framework/contracts/http"
 
@@ -9,12 +10,14 @@ import (
 )
 
 type EmailController struct {
-	emailService *services.EmailService
+	emailService        *services.EmailService
+	mailDeliveryService *services.MailDeliveryService
 }
 
 func NewEmailController() *EmailController {
 	return &EmailController{
-		emailService: services.NewEmailService(),
+		emailService:        services.NewEmailService(),
+		mailDeliveryService: services.NewMailDeliveryService(),
 	}
 }
 
@@ -259,12 +262,78 @@ func (c *EmailController) ControlService(ctx goravelhttp.Context) goravelhttp.Re
 	})
 }
 
-// Queue returns Postfix mail queue
+// Queue returns Postfix mail queue with delivery stats and recent log events.
 func (c *EmailController) Queue(ctx goravelhttp.Context) goravelhttp.Response {
-	queue, _ := c.emailService.GetMailQueue()
+	overview := c.mailDeliveryService.GetOverview(50)
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status": "success",
-		"data":   queue,
+		"data":   overview.Queue,
+		"stats":  overview.Stats,
+		"recent": overview.Recent,
+	})
+}
+
+// MailDiagnostics returns filtered postconf, LMTP socket state, and mail log tail.
+func (c *EmailController) MailDiagnostics(ctx goravelhttp.Context) goravelhttp.Response {
+	diag := c.mailDeliveryService.GetDiagnostics()
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status": "success",
+		"data":   diag,
+	})
+}
+
+// Deliveries lists parsed delivery history with pagination.
+func (c *EmailController) Deliveries(ctx goravelhttp.Context) goravelhttp.Response {
+	page, _ := strconv.Atoi(ctx.Request().Query("page", "1"))
+	perPage, _ := strconv.Atoi(ctx.Request().Query("per_page", "25"))
+	status := ctx.Request().Query("status", "")
+	recipient := ctx.Request().Query("recipient", "")
+	rows, total, err := c.mailDeliveryService.ListDeliveries(page, perPage, status, recipient)
+	if err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{"status": "error", "message": err.Error()})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":   "success",
+		"data":     rows,
+		"total":    total,
+		"page":     page,
+		"per_page": perPage,
+	})
+}
+
+// DeliveryDetail returns one stored delivery record.
+func (c *EmailController) DeliveryDetail(ctx goravelhttp.Context) goravelhttp.Response {
+	id, _ := strconv.ParseUint(ctx.Request().Input("id", "0"), 10, 64)
+	row, err := c.mailDeliveryService.GetDelivery(uint(id))
+	if err != nil {
+		return ctx.Response().Status(404).Json(goravelhttp.Json{"status": "error", "message": "delivery not found"})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{"status": "success", "data": row})
+}
+
+// QueueMessageContent returns postcat headers/body for a queued message.
+func (c *EmailController) QueueMessageContent(ctx goravelhttp.Context) goravelhttp.Response {
+	queueID := ctx.Request().Input("queue_id", "")
+	headers, body, err := c.mailDeliveryService.GetQueueMessageContent(queueID)
+	if err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{"status": "error", "message": err.Error()})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"headers": headers,
+		"body":    body,
+	})
+}
+
+// RetryQueue retries a single queued message.
+func (c *EmailController) RetryQueue(ctx goravelhttp.Context) goravelhttp.Response {
+	queueID := ctx.Request().Input("queue_id", "")
+	if err := c.mailDeliveryService.RetryQueueItem(queueID); err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{"status": "error", "message": err.Error()})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status":  "success",
+		"message": "Queue item scheduled for immediate delivery",
 	})
 }
 

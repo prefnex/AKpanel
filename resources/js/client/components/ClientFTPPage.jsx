@@ -22,7 +22,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 
 export default function ClientFTPPage({ showToast, username, serverIP }) {
   const [ftpUsers, setFTPUsers] = useState([]);
+  const [serverInfo, setServerInfo] = useState({ host: serverIP || '', port: 21, tls_enabled: false });
   const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [copiedField, setCopiedField] = useState(null);
 
@@ -42,6 +44,9 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
       const data = await res.json();
       if (data.status) {
         setFTPUsers(data.data || data.ftp_users || []);
+        if (data.server) {
+          setServerInfo(data.server);
+        }
       }
     } catch (err) {
       showToast('Failed to load FTP accounts', 'error');
@@ -61,6 +66,7 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
       return;
     }
 
+    setSubmitting(true);
     try {
       const res = await fetch('/api/client/ftp/create', {
         method: 'POST',
@@ -87,6 +93,8 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
       }
     } catch (err) {
       showToast('Network error', 'error');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -120,6 +128,10 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
+  const ftpHost = serverInfo.host || serverIP || '127.0.0.1';
+  const ftpPort = serverInfo.port || 21;
+  const tlsReady = !!serverInfo.tls_enabled;
+
   return (
     <div className="space-y-6">
       {/* Top Banner & Quick Connect Info */}
@@ -127,8 +139,8 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
         <div>
           <div className="flex items-center gap-2">
             <h2 className="text-xl font-bold text-white tracking-tight">FTP Accounts & Jailed Access</h2>
-            <Badge variant="outline" className="bg-emerald-950/40 text-emerald-400 border-emerald-500/30 text-xs">
-              TLS / SFTP Ready
+            <Badge variant="outline" className={`text-xs ${tlsReady ? 'bg-emerald-950/40 text-emerald-400 border-emerald-500/30' : 'bg-amber-950/40 text-amber-400 border-amber-500/30'}`}>
+              {tlsReady ? 'FTPS Enabled' : 'Plain FTP (TLS pending)'}
             </Badge>
           </div>
           <p className="text-xs text-zinc-400 mt-1">Manage chrooted FTP accounts for uploading files via FileZilla, Cyberduck, or WinSCP.</p>
@@ -144,9 +156,9 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
         <div className="p-4 bg-zinc-900/40 rounded-xl border border-zinc-800 flex items-center justify-between">
           <div>
             <span className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">FTP Server Host</span>
-            <p className="text-sm font-mono font-bold text-white mt-0.5">{serverIP || '127.0.0.1'}</p>
+            <p className="text-sm font-mono font-bold text-white mt-0.5">{ftpHost}</p>
           </div>
-          <Button size="sm" variant="ghost" onClick={() => copyToClipboard(serverIP || '127.0.0.1', 'host')} className="text-zinc-400 hover:text-white">
+          <Button size="sm" variant="ghost" onClick={() => copyToClipboard(ftpHost, 'host')} className="text-zinc-400 hover:text-white">
             {copiedField === 'host' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
           </Button>
         </div>
@@ -154,9 +166,9 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
         <div className="p-4 bg-zinc-900/40 rounded-xl border border-zinc-800 flex items-center justify-between">
           <div>
             <span className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">FTP Port</span>
-            <p className="text-sm font-mono font-bold text-white mt-0.5">21 (or 22 SFTP)</p>
+            <p className="text-sm font-mono font-bold text-white mt-0.5">{ftpPort}{tlsReady ? ' (FTPS)' : ''}</p>
           </div>
-          <Button size="sm" variant="ghost" onClick={() => copyToClipboard('21', 'port')} className="text-zinc-400 hover:text-white">
+          <Button size="sm" variant="ghost" onClick={() => copyToClipboard(String(ftpPort), 'port')} className="text-zinc-400 hover:text-white">
             {copiedField === 'port' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
           </Button>
         </div>
@@ -198,10 +210,10 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
               <RefreshCw className="w-5 h-5 animate-spin text-emerald-500" />
               <span>Loading accounts...</span>
             </div>
-          ) : ftpUsers.length === 0 ? (
+          ) : ftpUsers.filter((u) => !u.is_primary).length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-zinc-500 gap-2">
               <Server className="w-10 h-10 text-zinc-700" />
-              <p className="text-sm">No custom FTP accounts created yet.</p>
+              <p className="text-sm">No extra FTP sub-accounts yet. Your primary login is listed above.</p>
               <Button size="sm" onClick={() => setIsCreateOpen(true)} className="bg-emerald-600 text-xs text-white mt-1">
                 Create First FTP User
               </Button>
@@ -223,6 +235,9 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
                     <td className="py-3.5 px-4 font-mono font-bold text-emerald-400 flex items-center gap-2">
                       <Lock className="w-3.5 h-3.5 text-zinc-500" />
                       {u.username}
+                      {u.is_primary && (
+                        <Badge variant="outline" className="text-[9px] border-emerald-500/30 text-emerald-400">Primary</Badge>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 font-mono text-zinc-300">
                       {u.home_dir || `/home/${username}/public_html`}
@@ -234,6 +249,7 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
                       {u.created_at}
                     </td>
                     <td className="py-3.5 px-4 text-right">
+                      {!u.is_primary && (
                       <Button 
                         size="sm" 
                         variant="ghost" 
@@ -242,6 +258,7 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -300,7 +317,9 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
 
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => setIsCreateOpen(false)}>Cancel</Button>
-              <Button type="submit" className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold">Create FTP User</Button>
+              <Button type="submit" disabled={submitting} className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold">
+                {submitting ? 'Creating…' : 'Create FTP User'}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>

@@ -122,6 +122,17 @@ export default function ClientApp() {
     navigate('/files');
   };
 
+  useEffect(() => {
+    const urlToken = new URLSearchParams(location.search).get('token');
+    if (urlToken && location.pathname === '/filemanager/standalone') {
+      localStorage.setItem('akpanel_client_token', urlToken);
+      localStorage.setItem('ak_client_token', urlToken);
+      setToken(urlToken);
+    }
+  }, [location.search, location.pathname]);
+
+  const isStandaloneFileManager = location.pathname === '/filemanager/standalone';
+
   const isFileManager =
     location.pathname === '/files' ||
     location.pathname === '/filemanager' ||
@@ -130,6 +141,31 @@ export default function ClientApp() {
   // If unauthenticated, show Client Login View
   if (!token) {
     return <ClientLoginView onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  if (isStandaloneFileManager) {
+    return (
+      <div className="h-screen w-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans overflow-hidden">
+        {toastMessage && (
+          <div className="fixed bottom-6 right-6 z-50">
+            <div className={`px-4 py-3 rounded-2xl shadow-2xl border text-xs font-bold ${
+              toastMessage.type === 'error'
+                ? 'bg-rose-950/90 border-rose-800/80 text-rose-200'
+                : 'bg-emerald-950/90 border-emerald-800/80 text-emerald-200'
+            }`}>
+              {toastMessage.message}
+            </div>
+          </div>
+        )}
+        <FileManagerV2
+          showToast={showToast}
+          standalone={true}
+          apiBase="/api/client/files"
+          jailRoot={`/home/${user?.username || 'user'}`}
+          dashboardHref="/"
+        />
+      </div>
+    );
   }
 
   const fileManager = (

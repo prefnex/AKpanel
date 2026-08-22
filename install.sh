@@ -892,7 +892,7 @@ task_step3() {
         apt-get update -y
         apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-            dovecot-core dovecot-imapd dovecot-pop3d dovecot-sieve dovecot-managesieved \
+            dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-managesieved \
             opendkim opendkim-tools spamassassin spamc spamass-milter redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers
         relocate_apache_ports
@@ -904,7 +904,7 @@ task_step3() {
         akp_crawl 36 38 "Refreshing apt after PHP repo" apt-get update -y
         akp_crawl 38 48 "Installing nginx, BIND, MariaDB, mail" apt-get install $APT_OPTS \
             nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
-            dovecot-core dovecot-imapd dovecot-pop3d dovecot-sieve dovecot-managesieved \
+            dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-managesieved \
             opendkim opendkim-tools spamassassin spamc spamass-milter redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
         relocate_apache_ports
@@ -1408,6 +1408,7 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -z "$SERVER_IP" ] && SERVER_IP=$(curl -s --connect-timeout 2 https://api.ipify.org 2>/dev/null || true)
 [ -z "$SERVER_IP" ] && SERVER_IP="127.0.0.1"
 
 PANEL_HOST=""

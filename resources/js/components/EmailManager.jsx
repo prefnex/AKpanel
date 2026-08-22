@@ -69,6 +69,11 @@ export default function EmailManager({ showToast }) {
   const [aliases, setAliases] = useState([]);
   const [autoresponders, setAutoresponders] = useState([]);
   const [queue, setQueue] = useState([]);
+  const [queueStats, setQueueStats] = useState({ queued: 0, deferred: 0, sent: 0, bounced: 0, active: 0 });
+  const [recentDeliveries, setRecentDeliveries] = useState([]);
+  const [isQueueDetailOpen, setIsQueueDetailOpen] = useState(false);
+  const [queueDetail, setQueueDetail] = useState(null);
+  const [queueContent, setQueueContent] = useState({ headers: '', body: '' });
   const [servicesStatus, setServicesStatus] = useState({
     postfix_running: false,
     dovecot_running: false,
@@ -186,7 +191,11 @@ export default function EmailManager({ showToast }) {
 
   const fetchQueue = async () => {
     const json = await loadJson('/api/emails/queue', 'mail queue');
-    if (json) setQueue(json.data || []);
+    if (json) {
+      setQueue(json.data || []);
+      setQueueStats(json.stats || {});
+      setRecentDeliveries(json.recent || []);
+    }
   };
 
   const fetchServicesStatus = async () => {
@@ -379,6 +388,24 @@ export default function EmailManager({ showToast }) {
     if (data) {
       showToast(id === 'ALL' ? 'All mail queue purged!' : 'Message removed from queue');
       fetchQueue();
+    }
+  };
+
+  const handleRetryQueueItem = async (queueId) => {
+    const data = await postJson('/api/emails/queue/retry', { queue_id: queueId }, 'Failed to retry queue item');
+    if (data) {
+      showToast(data.message || 'Message queued for retry');
+      fetchQueue();
+    }
+  };
+
+  const openQueueDetail = async (item) => {
+    setQueueDetail(item);
+    setQueueContent({ headers: '', body: '' });
+    setIsQueueDetailOpen(true);
+    const json = await loadJson(`/api/emails/queue/content?queue_id=${encodeURIComponent(item.queue_id)}`, 'message content');
+    if (json) {
+      setQueueContent({ headers: json.headers || '', body: json.body || '' });
     }
   };
 
@@ -1088,12 +1115,30 @@ export default function EmailManager({ showToast }) {
       {/* ========================================================================= */}
       {activeTab === 'queue' && (
         <div className="space-y-4">
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            {[
+              { label: 'In Queue', value: queueStats.queued || 0, color: 'text-sky-400' },
+              { label: 'Deferred', value: queueStats.deferred || 0, color: 'text-amber-400' },
+              { label: 'Active', value: queueStats.active || 0, color: 'text-violet-400' },
+              { label: 'Delivered', value: queueStats.sent || 0, color: 'text-emerald-400' },
+              { label: 'Bounced', value: queueStats.bounced || 0, color: 'text-rose-400' },
+            ].map((card) => (
+              <Card key={card.label} className="bg-[#111217] border-zinc-800/90 p-4 rounded-2xl">
+                <div className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">{card.label}</div>
+                <div className={`text-2xl font-bold font-mono mt-1 ${card.color}`}>{card.value}</div>
+              </Card>
+            ))}
+          </div>
+
           <div className="flex justify-between items-center bg-[#111217] border border-zinc-800/90 p-4 rounded-2xl shadow-sm">
             <div>
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider font-mono">Postfix Outgoing & Inbound Mail Queue Spool</h3>
-              <p className="text-xs text-zinc-400">Live Postfix mail spool inspector and delivery retry engine</p>
+              <h3 className="text-xs font-bold text-white uppercase tracking-wider font-mono">Postfix Mail Queue & Delivery Tracker</h3>
+              <p className="text-xs text-zinc-400">Live spool, defer reasons, delivery log events, and per-message retry</p>
             </div>
             <div className="flex gap-2">
+              <Button onClick={fetchQueue} variant="outline" className="border-zinc-800 bg-zinc-900 text-xs h-9 px-3 rounded-xl">
+                <RefreshCw className="w-3.5 h-3.5 mr-1" /> Refresh
+              </Button>
               <Button
                 onClick={() => handleDeleteQueue('ALL')}
                 variant="outline"
@@ -1108,7 +1153,7 @@ export default function EmailManager({ showToast }) {
                 className="bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs h-9 px-4 rounded-xl shadow-md"
               >
                 <Send className={`w-3.5 h-3.5 mr-1.5 ${isFlushLoading ? 'animate-bounce' : ''}`} />
-                <span>Retry Delivery Now</span>
+                <span>Retry All Deferred</span>
               </Button>
             </div>
           </div>
@@ -1119,40 +1164,45 @@ export default function EmailManager({ showToast }) {
                 <tr className="border-b border-zinc-800 bg-zinc-950/60 text-zinc-400 font-semibold uppercase">
                   <th className="py-3.5 px-4">Queue ID</th>
                   <th className="py-3.5 px-4">Sender</th>
+                  <th className="py-3.5 px-4">Recipient(s)</th>
                   <th className="py-3.5 px-4">Size</th>
-                  <th className="py-3.5 px-4">Arrival Time</th>
-                  <th className="py-3.5 px-4">Queue Status</th>
+                  <th className="py-3.5 px-4">Arrival</th>
+                  <th className="py-3.5 px-4">Status / Reason</th>
                   <th className="py-3.5 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
                 {queue.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-10 text-center text-zinc-500 font-medium">
-                      ✨ Mail queue is empty! All outgoing and incoming messages delivered.
+                    <td colSpan={7} className="py-10 text-center text-zinc-500 font-medium">
+                      Mail queue is empty — nothing waiting in Postfix spool.
                     </td>
                   </tr>
                 ) : (
                   queue.map((q, idx) => (
-                    <tr key={idx} className="hover:bg-zinc-800/30 transition">
+                    <tr key={idx} className="hover:bg-zinc-800/30 transition cursor-pointer" onClick={() => openQueueDetail(q)}>
                       <td className="py-3.5 px-4 font-mono font-bold text-sky-400">{q.queue_id}</td>
                       <td className="py-3.5 px-4 font-mono">{q.sender}</td>
+                      <td className="py-3.5 px-4 font-mono text-emerald-300">
+                        {(q.recipients && q.recipients.length ? q.recipients : [q.recipient]).filter(Boolean).join(', ') || '—'}
+                      </td>
                       <td className="py-3.5 px-4 font-mono text-zinc-400">{q.size}</td>
                       <td className="py-3.5 px-4 text-zinc-400">{q.arrival}</td>
                       <td className="py-3.5 px-4">
-                        <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/30">
+                        <Badge className={q.status === 'deferred' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' : 'bg-sky-500/10 text-sky-400 border-sky-500/30'}>
                           {q.status}
                         </Badge>
+                        {q.reason && <p className="text-[10px] text-zinc-500 mt-1 max-w-xs truncate">{q.reason}</p>}
                       </td>
-                      <td className="py-3.5 px-4 text-right">
-                        <Button
-                          onClick={() => handleDeleteQueue(q.queue_id)}
-                          variant="ghost"
-                          size="sm"
-                          className="text-zinc-500 hover:text-rose-400 p-1.5 h-auto rounded-lg"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
+                      <td className="py-3.5 px-4 text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-end gap-1">
+                          <Button onClick={() => handleRetryQueueItem(q.queue_id)} variant="ghost" size="sm" className="text-sky-400 p-1.5 h-auto rounded-lg" title="Retry now">
+                            <RotateCw className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button onClick={() => handleDeleteQueue(q.queue_id)} variant="ghost" size="sm" className="text-zinc-500 hover:text-rose-400 p-1.5 h-auto rounded-lg">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -1160,6 +1210,66 @@ export default function EmailManager({ showToast }) {
               </tbody>
             </table>
           </Card>
+
+          <Card className="bg-[#111217] border-zinc-800/90 rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-4 border-b border-zinc-800 text-xs font-bold text-white uppercase tracking-wider">Recent Delivery Events</div>
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-zinc-800 bg-zinc-950/60 text-zinc-400 uppercase">
+                  <th className="py-3 px-4">Time</th>
+                  <th className="py-3 px-4">Recipient</th>
+                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4">DSN</th>
+                  <th className="py-3 px-4">Relay</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-800/60">
+                {recentDeliveries.length === 0 ? (
+                  <tr><td colSpan={5} className="py-8 text-center text-zinc-500">No delivery events imported yet — send/receive mail to populate.</td></tr>
+                ) : recentDeliveries.map((d) => (
+                  <tr key={d.id} className="hover:bg-zinc-800/20">
+                    <td className="py-2.5 px-4 font-mono text-[11px] text-zinc-500">{d.updated_at || d.created_at}</td>
+                    <td className="py-2.5 px-4 font-mono text-emerald-300">{d.recipient}</td>
+                    <td className="py-2.5 px-4">
+                      <Badge className={
+                        d.status === 'sent' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                        : d.status === 'bounced' ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                        : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                      }>{d.status}</Badge>
+                    </td>
+                    <td className="py-2.5 px-4 font-mono text-zinc-400">{d.dsn || '—'}</td>
+                    <td className="py-2.5 px-4 font-mono text-zinc-500 truncate max-w-[200px]">{d.relay || d.reason || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+
+          <Dialog open={isQueueDetailOpen} onOpenChange={setIsQueueDetailOpen}>
+            <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-200 max-w-3xl max-h-[85vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="text-white font-mono">Queue Item {queueDetail?.queue_id}</DialogTitle>
+              </DialogHeader>
+              {queueDetail && (
+                <div className="space-y-3 text-xs">
+                  <div className="grid grid-cols-2 gap-2 font-mono">
+                    <div><span className="text-zinc-500">From:</span> {queueDetail.sender}</div>
+                    <div><span className="text-zinc-500">Status:</span> {queueDetail.status}</div>
+                    <div className="col-span-2"><span className="text-zinc-500">To:</span> {(queueDetail.recipients || []).join(', ')}</div>
+                    {queueDetail.reason && <div className="col-span-2 text-amber-400">{queueDetail.reason}</div>}
+                  </div>
+                  <div>
+                    <div className="text-zinc-500 mb-1 uppercase tracking-wider text-[10px]">Headers</div>
+                    <pre className="bg-zinc-950 p-3 rounded-lg overflow-x-auto text-[11px] whitespace-pre-wrap">{queueContent.headers || 'Loading…'}</pre>
+                  </div>
+                  <div>
+                    <div className="text-zinc-500 mb-1 uppercase tracking-wider text-[10px]">Body</div>
+                    <pre className="bg-zinc-950 p-3 rounded-lg overflow-x-auto text-[11px] whitespace-pre-wrap max-h-64">{queueContent.body || 'Loading…'}</pre>
+                  </div>
+                </div>
+              )}
+            </DialogContent>
+          </Dialog>
         </div>
       )}
 
