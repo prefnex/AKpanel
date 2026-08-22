@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"errors"
+
 	goravelhttp "github.com/goravel/framework/contracts/http"
 
 	"goravel/app/services"
@@ -70,7 +72,13 @@ func (c *EmailController) Store(ctx goravelhttp.Context) goravelhttp.Response {
 	}
 
 	if err := c.emailService.CreateAccount(req.Email, req.Password, req.QuotaMB); err != nil {
-		return ctx.Response().Status(400).Json(goravelhttp.Json{
+		if errors.Is(err, services.ErrMailboxExists) {
+			return ctx.Response().Status(409).Json(goravelhttp.Json{
+				"status":  "error",
+				"message": err.Error(),
+			})
+		}
+		return ctx.Response().Status(500).Json(goravelhttp.Json{
 			"status":  "error",
 			"message": err.Error(),
 		})

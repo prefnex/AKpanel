@@ -713,7 +713,7 @@ func (s *SystemService) readServerSystemInfo(stats *SystemStats) ServerSystemInf
 		FTPVersion:        "1.0.49 (Pure-FTPd)",
 		VarnishVersion:    varnishVer,
 		BINDVersion:       bindVer,
-		SSHPort:           "22 / 2087",
+		SSHPort:           strconv.Itoa(CurrentSSHPort()),
 		MySQLPort:         "3306",
 		WebServersProfile: "Nginx + Varnish + Apache",
 		NS1Name:           ns1Name,

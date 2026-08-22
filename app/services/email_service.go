@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -105,6 +106,7 @@ type EmailService struct {
 var (
 	emailServiceInstance *EmailService
 	emailOnce            sync.Once
+	ErrMailboxExists     = errors.New("mailbox already exists")
 )
 
 func NewEmailService() *EmailService {
@@ -495,33 +497,33 @@ func (s *EmailService) ListAccounts(domain string) []EmailAccount {
 // CreateAccount provisions virtual mailbox for Postfix/Dovecot
 func (s *EmailService) CreateAccount(email, password string, quotaMB int) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	email = strings.TrimSpace(strings.ToLower(email))
 	parts := strings.Split(email, "@")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		s.mu.Unlock()
 		return fmt.Errorf("invalid email address format: %s", email)
 	}
 
 	username := parts[0]
 	domain := parts[1]
 
-	list, _ := s.readEmails()
+	list, err := s.readEmails()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
 	for _, e := range list {
 		if e.Email == email {
-			return fmt.Errorf("email account '%s' already exists", email)
+			s.mu.Unlock()
+			return ErrMailboxExists
 		}
 	}
 
-	// 1. Provision Virtual Mailbox Directory
 	mailDir := fmt.Sprintf("/var/vmail/%s/%s/Maildir", domain, username)
 	_ = os.MkdirAll(fmt.Sprintf("%s/cur", mailDir), 0700)
 	_ = os.MkdirAll(fmt.Sprintf("%s/new", mailDir), 0700)
 	_ = os.MkdirAll(fmt.Sprintf("%s/tmp", mailDir), 0700)
-	_ = GetMailAuthService().EnsureDovecotConfig()
-
-	// Ensure DNS zone has MX, SPF, DKIM, DMARC
-	_, _ = s.dnsService.CreateZone(domain, s.dnsService.GetSystemIP(), "root", "")
 
 	if quotaMB < 0 {
 		quotaMB = 0
@@ -539,15 +541,26 @@ func (s *EmailService) CreateAccount(email, password string, quotaMB int) error 
 	}
 
 	list = append(list, newAcc)
-	_ = s.writeEmails(list)
+	if err := s.writeEmails(list); err != nil {
+		s.mu.Unlock()
+		return err
+	}
 
 	if err := GetMailAuthService().SetMailboxPassword(email, password); err != nil {
+		s.mu.Unlock()
 		return err
 	}
 
 	s.syncPostfixMailboxMaps(list)
-	_ = exec.Command("chown", "-R", "vmail:vmail", fmt.Sprintf("/var/vmail/%s", domain)).Run()
-	_ = GetMailAuthService().EnsurePostfixVirtualConfig()
+	s.mu.Unlock()
+
+	go func() {
+		defer func() { _ = recover() }()
+		_ = GetMailAuthService().EnsureDovecotConfig()
+		_, _ = s.dnsService.CreateZone(domain, s.dnsService.GetSystemIP(), "root", "")
+		_ = exec.Command("chown", "-R", "vmail:vmail", fmt.Sprintf("/var/vmail/%s", domain)).Run()
+		_ = GetMailAuthService().EnsurePostfixVirtualConfig()
+	}()
 
 	return nil
 }

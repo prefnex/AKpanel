@@ -46,6 +46,7 @@ export default function ClientEmailsPage({ showToast }) {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [quota, setQuota] = useState(1024);
+  const [submitting, setSubmitting] = useState(false);
   const [isPassOpen, setIsPassOpen] = useState(false);
   const [passTarget, setPassTarget] = useState('');
   const [newMailboxPass, setNewMailboxPass] = useState('');
@@ -98,6 +99,8 @@ export default function ClientEmailsPage({ showToast }) {
 
   const handleCreateEmail = async (e) => {
     e.preventDefault();
+    if (submitting) return;
+    setSubmitting(true);
     try {
       const token = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
       const res = await fetch('/api/client/emails', {
@@ -114,16 +117,24 @@ export default function ClientEmailsPage({ showToast }) {
         })
       });
 
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
+      setIsAddOpen(false);
+      await fetchEmails();
+      if (res.status === 409) {
+        showToast(json.message || 'Mailbox already exists', 'error');
+        return;
+      }
       if (!res.ok) throw new Error(json.message || 'Failed to create email');
 
-      showToast('Mailbox created successfully!');
-      setIsAddOpen(false);
       setEmailUser('');
       setPassword('');
-      fetchEmails();
+      showToast('Mailbox created successfully!');
     } catch (err) {
+      setIsAddOpen(false);
       showToast(err.message, 'error');
+      fetchEmails();
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -294,9 +305,9 @@ export default function ClientEmailsPage({ showToast }) {
         )}
       </div>
 
-      {/* Modal: Mail Client Manual Settings Guide */}
+      {/* Panel: Mail Client Manual Settings */}
       <Dialog open={isConfigOpen} onOpenChange={setIsConfigOpen}>
-        <DialogContent className="bg-[#0f1015] border-zinc-800 text-white max-w-lg rounded-2xl p-6 shadow-2xl">
+        <DialogContent position="bottom" className="bg-[#0f1015] border-zinc-800 text-white p-6 shadow-2xl">
           <DialogHeader>
             <DialogTitle className="text-base font-bold flex items-center gap-2 text-white">
               <Smartphone className="w-5 h-5 text-cyan-400" />
@@ -306,42 +317,45 @@ export default function ClientEmailsPage({ showToast }) {
 
           {activeMailbox && (
             <div className="space-y-4 text-xs pt-2">
-              <div className="p-3 bg-zinc-950/80 border border-zinc-800 rounded-xl font-mono">
-                <span className="text-zinc-500 text-[11px] block">Mailbox Account</span>
-                <span className="text-white font-bold text-sm">{activeMailbox.email}</span>
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+                <ShieldCheck className="w-4 h-4" />
+                <span>Secure SSL/TLS Settings (Recommended)</span>
               </div>
-
-              {/* Secure SSL/TLS (Recommended) */}
-              <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
-                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>Secure SSL/TLS Settings (Recommended)</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-zinc-300 font-mono pt-1">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-zinc-300 font-mono">
+                <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                  <span className="text-emerald-300 font-bold text-xs uppercase tracking-wider">IMAP</span>
                   <div>
-                    <span className="text-zinc-500 block text-[10px]">Username</span>
-                    <strong className="text-white">{activeMailbox.email}</strong>
+                    <span className="text-zinc-500 block text-[10px]">Server</span>
+                    <strong className="text-white">mail.{activeMailbox.domain}</strong>
                   </div>
                   <div>
-                    <span className="text-zinc-500 block text-[10px]">Password</span>
-                    <strong className="text-white">[Mailbox Password]</strong>
-                  </div>
-                  <div>
-                    <span className="text-zinc-500 block text-[10px]">Incoming Server (IMAP)</span>
-                    <span className="text-emerald-300">mail.{activeMailbox.domain}</span> : <strong>Port 993 (SSL/TLS)</strong>
-                  </div>
-                  <div>
-                    <span className="text-zinc-500 block text-[10px]">Incoming Server (POP3)</span>
-                    <span className="text-emerald-300">mail.{activeMailbox.domain}</span> : <strong>Port 995 (SSL/TLS)</strong>
-                  </div>
-                  <div className="col-span-2 pt-1">
-                    <span className="text-zinc-500 block text-[10px]">Outgoing Server (SMTP)</span>
-                    <span className="text-emerald-300">mail.{activeMailbox.domain}</span> : <strong>Port 465 (SSL/TLS)</strong> or <strong>Port 587 (STARTTLS)</strong>
+                    <span className="text-zinc-500 block text-[10px]">Port</span>
+                    <strong className="text-white">993 (SSL/TLS)</strong>
                   </div>
                 </div>
+                <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                  <span className="text-emerald-300 font-bold text-xs uppercase tracking-wider">POP3</span>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Server</span>
+                    <strong className="text-white">mail.{activeMailbox.domain}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Port</span>
+                    <strong className="text-white">995 (SSL/TLS)</strong>
+                  </div>
+                </div>
+                <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                  <span className="text-emerald-300 font-bold text-xs uppercase tracking-wider">SMTP</span>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Server</span>
+                    <strong className="text-white">mail.{activeMailbox.domain}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Port</span>
+                    <strong className="text-white">465 (SSL/TLS)</strong> or <strong className="text-white">587 (STARTTLS)</strong>
+                  </div>
+                </div>
               </div>
-
-              {/* Non-SSL Settings */}
               <div className="p-3 bg-zinc-950/60 border border-zinc-800/80 rounded-xl space-y-1.5 text-[11px] text-zinc-400 font-mono">
                 <span className="text-zinc-500 font-bold text-[10px] uppercase">Non-SSL Settings (Not Recommended)</span>
                 <div>Incoming (IMAP): <code>mail.{activeMailbox.domain}</code> : <strong>Port 143</strong></div>
@@ -351,7 +365,12 @@ export default function ClientEmailsPage({ showToast }) {
             </div>
           )}
 
-          <DialogFooter className="pt-2">
+          <DialogFooter className="pt-2 sm:justify-between sm:items-center">
+            <div className="font-mono text-xs text-left">
+              <span className="text-zinc-500 text-[11px] block">Mailbox Account</span>
+              <span className="text-white font-bold text-sm">{activeMailbox?.email}</span>
+            </div>
+            <div className="flex gap-2">
             <Button
               type="button"
               onClick={() => {
@@ -367,6 +386,7 @@ export default function ClientEmailsPage({ showToast }) {
             <Button type="button" variant="ghost" onClick={() => setIsConfigOpen(false)} className="rounded-xl text-xs">
               Close
             </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -446,8 +466,8 @@ export default function ClientEmailsPage({ showToast }) {
               <Button type="button" variant="ghost" onClick={() => setIsAddOpen(false)} className="rounded-xl text-xs">
                 Cancel
               </Button>
-              <Button type="submit" className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-5 rounded-xl shadow-lg shadow-purple-600/20">
-                Provision Mailbox
+              <Button type="submit" disabled={submitting} className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-5 rounded-xl shadow-lg shadow-purple-600/20">
+                {submitting ? 'Provisioning…' : 'Provision Mailbox'}
               </Button>
             </DialogFooter>
           </form>

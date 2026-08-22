@@ -26,8 +26,9 @@ func init() {
 		"host": config.Env("APP_INTERNAL_HOST", "127.0.0.1"),
 		// HTTP Port (internal backend listener)
 		"port": config.Env("APP_INTERNAL_PORT", "2088"),
-		// HTTP Timeout, default is 3 seconds
-		"request_timeout": 3,
+		// HTTP Timeout (seconds). A control panel proxies Roundcube/phpMyAdmin
+		// and runs provisioning inline, so the Goravel default of 3s cannot hold.
+		"request_timeout": config.Env("HTTP_REQUEST_TIMEOUT", 300),
 		// HTTPS Configuration
 		"tls": map[string]any{
 			// HTTPS Host

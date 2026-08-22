@@ -184,7 +184,7 @@ func (m *MailPolicyService) applyAntiSpamLocked(s AntiSpamSettings) {
 	defaults := `# Managed by AKpanel
 OPTIONS="-u spamass-milter -i 127.0.0.1 -m -r -1"
 SOCKET="/var/spool/postfix/spamass/spamass.sock"
-SOCKETOWNER="postfix:postfix"
+SOCKETOWNER="spamass-milter:postfix"
 SOCKETMODE="0660"
 `
 	defaultsChanged := writeIfChanged("/etc/default/spamass-milter", defaults, 0644)

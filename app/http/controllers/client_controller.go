@@ -3,6 +3,7 @@ package controllers
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -586,6 +587,9 @@ func (c *ClientController) StoreEmail(ctx http.Context) http.Response {
 	}
 
 	if err := c.clientService.CreateEmail(username, req.Email, req.Password, req.QuotaMB); err != nil {
+		if errors.Is(err, services.ErrMailboxExists) {
+			return ctx.Response().Status(409).Json(http.Json{"status": false, "message": err.Error()})
+		}
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
 	}
 

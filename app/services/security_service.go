@@ -48,6 +48,7 @@ type FirewallData struct {
 	BannedIPs       []BannedIPInfo `json:"banned_ips"`
 	WAFMode         string         `json:"waf_mode"` // "on", "detection_only", "off"
 	Fail2BanActive  bool           `json:"fail2ban_active"`
+	SSHPort         int            `json:"ssh_port"`
 }
 
 type SecurityService struct {
@@ -256,6 +257,9 @@ func runUFW(args ...string) error {
 }
 
 func firewallCommentForPort(port string) string {
+	if n, err := strconv.Atoi(port); err == nil && n == CurrentSSHPort() {
+		return "SSH Remote Terminal"
+	}
 	switch port {
 	case "22":
 		return "SSH Remote Terminal"
@@ -417,6 +421,7 @@ func (s *SecurityService) GetFullFirewallInfo() FirewallData {
 		BannedIPs:       bannedList,
 		WAFMode:         "on",
 		Fail2BanActive:  true,
+		SSHPort:         CurrentSSHPort(),
 	}
 }
 
@@ -537,4 +542,134 @@ func (s *SecurityService) TogglePort(port string, allow bool) error {
 		return runUFW("allow", "53/udp", "comment", firewallCommentForPort(port))
 	}
 	return runUFW("allow", port+"/tcp", "comment", firewallCommentForPort(port))
+}
+
+const (
+	sshPortDropIn = "/etc/ssh/sshd_config.d/zz-akpanel-port.conf"
+	sshPortState  = "/etc/akpanel/ssh.port"
+)
+
+var reservedSSHPorts = map[int]string{
+	21: "FTP", 25: "SMTP", 53: "DNS", 80: "HTTP", 110: "POP3", 143: "IMAP",
+	443: "HTTPS", 465: "SMTPS", 587: "submission", 993: "IMAPS", 995: "POP3S",
+	2083: "client panel", 2087: "WHM", 2088: "internal API", 3306: "MariaDB",
+	8081: "Apache backend", 8085: "phpMyAdmin", 8086: "Roundcube",
+}
+
+// CurrentSSHPort is the port sshd is configured to listen on.
+func CurrentSSHPort() int {
+	if b, err := os.ReadFile(sshPortState); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && n > 0 && n < 65536 {
+			return n
+		}
+	}
+	if n := liveSSHDPort(); n > 0 {
+		return n
+	}
+	return 22
+}
+
+func liveSSHDPort() int {
+	out, err := exec.Command("sshd", "-T").Output()
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(strings.ToLower(line))
+		if len(fields) >= 2 && fields[0] == "port" {
+			if n, err := strconv.Atoi(fields[1]); err == nil && n > 0 && n < 65536 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// ChangeSSHPort opens the new port in UFW, switches sshd, updates fail2ban, then closes the old port.
+func (s *SecurityService) ChangeSSHPort(port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("SSH port must be between 1 and 65535")
+	}
+	if name, ok := reservedSSHPorts[port]; ok {
+		return fmt.Errorf("port %d is reserved for %s", port, name)
+	}
+
+	current := CurrentSSHPort()
+	if current == port {
+		_ = os.WriteFile(sshPortState, []byte(strconv.Itoa(port)+"\n"), 0644)
+		return nil
+	}
+
+	prevDrop, _ := os.ReadFile(sshPortDropIn)
+	if err := runUFW("allow", fmt.Sprintf("%d/tcp", port), "comment", "SSH Remote Terminal"); err != nil {
+		return fmt.Errorf("open firewall for new SSH port: %w", err)
+	}
+
+	_ = os.MkdirAll("/etc/ssh/sshd_config.d", 0755)
+	body := fmt.Sprintf("# Managed by AKpanel — do not edit\nPort %d\n", port)
+	if err := os.WriteFile(sshPortDropIn, []byte(body), 0644); err != nil {
+		return err
+	}
+	commentSSHPortInMainConfig()
+
+	if out, err := exec.Command("sshd", "-t").CombinedOutput(); err != nil {
+		_ = restoreSSHDropIn(prevDrop)
+		return fmt.Errorf("sshd config test failed: %s", strings.TrimSpace(string(out)))
+	}
+
+	_ = exec.Command("systemctl", "reload", "ssh").Run()
+	_ = exec.Command("systemctl", "reload", "sshd").Run()
+
+	if got := liveSSHDPort(); got != 0 && got != port {
+		_ = restoreSSHDropIn(prevDrop)
+		_ = exec.Command("systemctl", "reload", "ssh").Run()
+		_ = exec.Command("systemctl", "reload", "sshd").Run()
+		return fmt.Errorf("sshd did not switch to port %d (still %d); reverted", port, got)
+	}
+
+	writeFail2banSSHPort(port)
+	_ = os.MkdirAll(paths.EtcAKpanel, 0755)
+	_ = os.WriteFile(sshPortState, []byte(strconv.Itoa(port)+"\n"), 0644)
+
+	if current > 0 && current != port {
+		_ = s.deleteRulesForPort(strconv.Itoa(current))
+	}
+	return nil
+}
+
+func restoreSSHDropIn(prev []byte) error {
+	if len(prev) == 0 {
+		return os.Remove(sshPortDropIn)
+	}
+	return os.WriteFile(sshPortDropIn, prev, 0644)
+}
+
+func commentSSHPortInMainConfig() {
+	path := "/etc/ssh/sshd_config"
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(b), "\n")
+	changed := false
+	for i, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(t), "port ") {
+			lines[i] = "# " + t + "  # Port is set in " + sshPortDropIn
+			changed = true
+		}
+	}
+	if changed {
+		_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
+	}
+}
+
+func writeFail2banSSHPort(port int) {
+	_ = os.MkdirAll("/etc/fail2ban/jail.d", 0755)
+	body := fmt.Sprintf("# Managed by AKpanel\n[sshd]\nenabled = true\nport = %d\n", port)
+	_ = os.WriteFile("/etc/fail2ban/jail.d/akpanel-sshd.conf", []byte(body), 0644)
+	_ = exec.Command("fail2ban-client", "reload").Run()
 }

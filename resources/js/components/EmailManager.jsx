@@ -1838,11 +1838,9 @@ export default function EmailManager({ showToast }) {
         </DialogContent>
       </Dialog>
 
-      {/* ========================================================================= */}
-      {/* MODAL: MAIL CLIENT MANUAL SETTINGS                                        */}
-      {/* ========================================================================= */}
+      {/* Panel: Mail Client Manual Settings */}
       <Dialog open={isConfigModalOpen} onOpenChange={setIsConfigModalOpen}>
-        <DialogContent className="bg-zinc-950 border-zinc-800 text-white max-w-lg rounded-2xl p-6 shadow-2xl">
+        <DialogContent position="bottom" className="bg-zinc-950 border-zinc-800 text-white p-6 shadow-2xl">
           <DialogHeader>
             <DialogTitle className="text-base font-bold flex items-center gap-2 text-white">
               <Smartphone className="w-5 h-5 text-cyan-400" />
@@ -1852,42 +1850,45 @@ export default function EmailManager({ showToast }) {
 
           {activeConfigMailbox && (
             <div className="space-y-4 text-xs pt-2">
-              <div className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl font-mono">
-                <span className="text-zinc-500 text-[11px] block">Mailbox Account</span>
-                <span className="text-white font-bold text-sm">{activeConfigMailbox.email}</span>
+              <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
+                <ShieldCheck className="w-4 h-4" />
+                <span>Secure SSL/TLS Settings (Recommended)</span>
               </div>
-
-              {/* Secure SSL/TLS (Recommended) */}
-              <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
-                <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>Secure SSL/TLS Settings (Recommended)</span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-zinc-300 font-mono pt-1">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] text-zinc-300 font-mono">
+                <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                  <span className="text-emerald-300 font-bold text-xs uppercase tracking-wider">IMAP</span>
                   <div>
-                    <span className="text-zinc-500 block text-[10px]">Username</span>
-                    <strong className="text-white">{activeConfigMailbox.email}</strong>
+                    <span className="text-zinc-500 block text-[10px]">Server</span>
+                    <strong className="text-white">mail.{activeConfigMailbox.domain || 'domain.com'}</strong>
                   </div>
                   <div>
-                    <span className="text-zinc-500 block text-[10px]">Password</span>
-                    <strong className="text-white">[Mailbox Password]</strong>
-                  </div>
-                  <div>
-                    <span className="text-zinc-500 block text-[10px]">Incoming Server (IMAP)</span>
-                    <span className="text-emerald-300">mail.{activeConfigMailbox.domain || 'domain.com'}</span> : <strong>Port 993 (SSL/TLS)</strong>
-                  </div>
-                  <div>
-                    <span className="text-zinc-500 block text-[10px]">Incoming Server (POP3)</span>
-                    <span className="text-emerald-300">mail.{activeConfigMailbox.domain || 'domain.com'}</span> : <strong>Port 995 (SSL/TLS)</strong>
-                  </div>
-                  <div className="col-span-2 pt-1">
-                    <span className="text-zinc-500 block text-[10px]">Outgoing Server (SMTP)</span>
-                    <span className="text-emerald-300">mail.{activeConfigMailbox.domain || 'domain.com'}</span> : <strong>Port 465 (SSL/TLS)</strong> or <strong>Port 587 (STARTTLS)</strong>
+                    <span className="text-zinc-500 block text-[10px]">Port</span>
+                    <strong className="text-white">993 (SSL/TLS)</strong>
                   </div>
                 </div>
+                <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                  <span className="text-emerald-300 font-bold text-xs uppercase tracking-wider">POP3</span>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Server</span>
+                    <strong className="text-white">mail.{activeConfigMailbox.domain || 'domain.com'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Port</span>
+                    <strong className="text-white">995 (SSL/TLS)</strong>
+                  </div>
+                </div>
+                <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl space-y-2">
+                  <span className="text-emerald-300 font-bold text-xs uppercase tracking-wider">SMTP</span>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Server</span>
+                    <strong className="text-white">mail.{activeConfigMailbox.domain || 'domain.com'}</strong>
+                  </div>
+                  <div>
+                    <span className="text-zinc-500 block text-[10px]">Port</span>
+                    <strong className="text-white">465 (SSL/TLS)</strong> or <strong className="text-white">587 (STARTTLS)</strong>
+                  </div>
+                </div>
               </div>
-
-              {/* Non-SSL Settings */}
               <div className="p-3 bg-zinc-900/60 border border-zinc-800/80 rounded-xl space-y-1 text-[11px] text-zinc-400 font-mono">
                 <span className="text-zinc-500 font-bold text-[10px] uppercase">Non-SSL Settings (Not Recommended)</span>
                 <div>Incoming (IMAP): <code>mail.{activeConfigMailbox.domain || 'domain.com'}</code> : <strong>Port 143</strong></div>
@@ -1897,7 +1898,12 @@ export default function EmailManager({ showToast }) {
             </div>
           )}
 
-          <DialogFooter className="pt-2">
+          <DialogFooter className="pt-2 sm:justify-between sm:items-center">
+            <div className="font-mono text-xs text-left">
+              <span className="text-zinc-500 text-[11px] block">Mailbox Account</span>
+              <span className="text-white font-bold text-sm">{activeConfigMailbox?.email}</span>
+            </div>
+            <div className="flex gap-2">
             <Button
               type="button"
               onClick={() => {
@@ -1914,6 +1920,7 @@ export default function EmailManager({ showToast }) {
             <Button type="button" variant="outline" onClick={() => setIsConfigModalOpen(false)} className="rounded-xl border-zinc-800 text-xs">
               Close
             </Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

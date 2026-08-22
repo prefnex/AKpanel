@@ -49,6 +49,7 @@ export USER="$USER_NAME"
 export LOGNAME="$USER_NAME"
 export PATH=/usr/local/lib/akpanel/jailbin
 export SHELL=/usr/local/bin/akpanel-ssh-shell
+export PS1='\[\033[1;35m\]AKpanel\[\033[0m\] \[\033[1;36m\]\u\[\033[0m\]:\w\$ '
 umask 022
 
 sftp_bin=""
@@ -77,7 +78,21 @@ if [ -n "$orig" ]; then
   esac
 fi
 
-# Skip /etc/profile and ~/.bashrc (they need /usr/bin on PATH).
+# rbash is started with --noprofile --norc so /usr/bin is never on PATH, which also
+# skips /etc/profile.d. Source the panel MOTD explicitly (it no-ops without PS1).
+if [ -f /etc/profile.d/00-akpanel-motd.sh ]; then
+  # shellcheck disable=SC1091
+  . /etc/profile.d/00-akpanel-motd.sh
+else
+  PURPLE='\033[0;35m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+  echo -e "${PURPLE}${BOLD}AKpanel${NC} ${CYAN}Next-Gen Cloud Server & Web Hosting Control Panel${NC}\n"
+  echo -e "${BOLD}Account:${NC} ${CYAN}${USER_NAME}${NC}    ${BOLD}Home:${NC} ${CYAN}${HOME_DIR}${NC}"
+  echo -e "${PURPLE}───────────────────────────────────────────────────────────────────────────────${NC}\n"
+  unset PURPLE CYAN BOLD NC
+fi
+echo "  Jailed hosting shell — commands are limited to your home directory."
+echo ""
+
 exec /bin/bash --restricted --noprofile --norc -i
 `
 	_ = os.WriteFile(sshJailShell, []byte(shell), 0755)
@@ -151,6 +166,7 @@ Match Group %s
 	writeJailWrapper("killall", blockedCmd("killall"))
 	writeJailWrapper("pkill", blockedCmd("pkill"))
 	writeJailWrapper("crontab", blockedCmd("crontab"))
+	repairJailedUserShells()
 }
 
 func restoreHijackedCoreutils() {
@@ -283,4 +299,36 @@ func ApplySSHJailToUser(username string, shellAccess bool) {
 
 func jailSafeUsername(u string) bool {
 	return u != "" && !strings.Contains(u, "/") && u != "root"
+}
+
+// repairJailedUserShells puts hosting accounts that drifted onto /bin/bash back
+// onto the jailed shell. nologin stays nologin (SSH disabled).
+func repairJailedUserShells() {
+	out, err := exec.Command("getent", "group", sshJailGroup).Output()
+	if err != nil {
+		return
+	}
+	fields := strings.Split(strings.TrimSpace(string(out)), ":")
+	if len(fields) < 4 || fields[3] == "" {
+		return
+	}
+	for _, username := range strings.Split(fields[3], ",") {
+		username = strings.TrimSpace(username)
+		if !jailSafeUsername(username) {
+			continue
+		}
+		pw, err := exec.Command("getent", "passwd", username).Output()
+		if err != nil {
+			continue
+		}
+		pwFields := strings.Split(strings.TrimSpace(string(pw)), ":")
+		if len(pwFields) < 7 {
+			continue
+		}
+		shell := pwFields[6]
+		if shell == sshJailShell || strings.Contains(shell, "nologin") || shell == "/bin/false" {
+			continue
+		}
+		_ = exec.Command("usermod", "-s", sshJailShell, username).Run()
+	}
 }

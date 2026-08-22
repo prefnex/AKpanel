@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,10 +57,23 @@ func (m *MailAuthService) EnsureDovecotConfig() error {
 	uid, gid := ensureVmailIdentity()
 
 	if _, err := os.Stat(m.passwdFile); os.IsNotExist(err) {
-		_ = os.WriteFile(m.passwdFile, []byte(""), 0600)
+		_ = os.WriteFile(m.passwdFile, []byte(""), 0640)
 	}
 	if _, err := os.Stat(dovecotSSOPasswdFile); os.IsNotExist(err) {
-		_ = os.WriteFile(dovecotSSOPasswdFile, []byte(""), 0600)
+		_ = os.WriteFile(dovecotSSOPasswdFile, []byte(""), 0640)
+	}
+	// os.WriteFile does not re-apply mode on an existing file, so chmod/chown
+	// must run unconditionally — that repairs already-installed servers.
+	secureDovecotFile(m.passwdFile)
+	secureDovecotFile(dovecotSSOPasswdFile)
+
+	authWorker := ""
+	if dovecotGroupGID() < 0 {
+		authWorker = `
+service auth-worker {
+  user = root
+}
+`
 	}
 
 	conf := fmt.Sprintf(`auth_master_user_separator = *
@@ -88,8 +103,9 @@ userdb {
 # Debian default (mbox in /var/mail/%%u) applies and IMAP shows an empty INBOX.
 mail_location = maildir:~/Maildir
 mail_privileged_group = vmail
-`, dovecotSSOPasswdFile, uid, gid)
+%s`, dovecotSSOPasswdFile, uid, gid, authWorker)
 	m.ensureMasterUserLocked()
+	secureDovecotFile("/etc/dovecot/akpanel-master-users")
 	m.pruneSSOPasswordsLocked()
 	authChanged := writeIfChanged(m.confFile, conf, 0644)
 	listenChanged := m.writeDovecotListenersLocked()
@@ -99,6 +115,38 @@ mail_privileged_group = vmail
 		runTimeout(8*time.Second, "systemctl", "reload", "dovecot")
 	}
 	return nil
+}
+
+// secureDovecotFile makes a Dovecot passwd-file readable by the auth worker
+// (euid=dovecot) without world-read: root:dovecot 0640.
+func secureDovecotFile(path string) {
+	if path == "" {
+		return
+	}
+	_ = os.Chmod(path, 0640)
+	if gid := dovecotGroupGID(); gid >= 0 {
+		_ = os.Chown(path, 0, gid)
+	}
+}
+
+func writeDovecotPasswdFile(path, body string) error {
+	if err := os.WriteFile(path, []byte(body), 0640); err != nil {
+		return err
+	}
+	secureDovecotFile(path)
+	return nil
+}
+
+func dovecotGroupGID() int {
+	g, err := user.LookupGroup("dovecot")
+	if err != nil || g == nil {
+		return -1
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return -1
+	}
+	return gid
 }
 
 func writeIfChanged(path, body string, mode os.FileMode) bool {
@@ -418,7 +466,7 @@ func (m *MailAuthService) ensureMasterUserLocked() {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile("/etc/dovecot/akpanel-master-users", []byte("akpanel-sso:"+hash+"\n"), 0600)
+	_ = writeDovecotPasswdFile("/etc/dovecot/akpanel-master-users", "akpanel-sso:"+hash+"\n")
 }
 
 type ssoPasswordEntry struct {
@@ -496,7 +544,7 @@ func (m *MailAuthService) writeSSOIndexLocked(index map[string]ssoPasswordEntry)
 		lines = append(lines, fmt.Sprintf("%s:%s", email, entry.Hash))
 	}
 	sort.Strings(lines)
-	return os.WriteFile(dovecotSSOPasswdFile, []byte(strings.Join(lines, "\n")+"\n"), 0600)
+	return writeDovecotPasswdFile(dovecotSSOPasswdFile, strings.Join(lines, "\n")+"\n")
 }
 
 // SetMailboxPassword adds or updates a mailbox password in Dovecot passwd-file.
@@ -530,7 +578,7 @@ func (m *MailAuthService) SetMailboxPassword(email, password string) error {
 	if !found {
 		out = append(out, fmt.Sprintf("%s:%s", email, hash))
 	}
-	return os.WriteFile(m.passwdFile, []byte(strings.Join(out, "\n")+"\n"), 0600)
+	return writeDovecotPasswdFile(m.passwdFile, strings.Join(out, "\n")+"\n")
 }
 
 // RemoveMailboxPassword removes an entry from passwd-file.
@@ -550,7 +598,7 @@ func (m *MailAuthService) RemoveMailboxPassword(email string) error {
 			out = append(out, line)
 		}
 	}
-	return os.WriteFile(m.passwdFile, []byte(strings.Join(out, "\n")+"\n"), 0600)
+	return writeDovecotPasswdFile(m.passwdFile, strings.Join(out, "\n")+"\n")
 }
 
 // EnsurePostfixVirtualConfig applies virtual mailbox domain settings.

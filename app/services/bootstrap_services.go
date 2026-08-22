@@ -47,6 +47,10 @@ func BootstrapPanelServices() error {
 			NewDatabaseService().EnsurePhpMyAdminSetup()
 			return nil
 		}},
+		{"ssh jail", func() error {
+			EnsureSSHJail()
+			return nil
+		}},
 		{"internal listeners", func() error {
 			nginx := NewNginxService()
 			if err := nginx.EnsureRoundcubeListener(); err != nil {

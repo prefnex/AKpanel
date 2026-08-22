@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"fmt"
+
 	"github.com/goravel/framework/contracts/http"
 	"goravel/app/services"
 	"goravel/app/services/tasks"
@@ -370,5 +372,27 @@ func (r *SecurityController) TogglePort(ctx http.Context) http.Response {
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
 		"message": "Port " + port + " updated successfully",
+	})
+}
+
+// ChangeSSHPort switches sshd, UFW, and fail2ban onto a new listen port.
+func (r *SecurityController) ChangeSSHPort(ctx http.Context) http.Response {
+	var req struct {
+		Port int `json:"port"`
+	}
+	_ = ctx.Request().Bind(&req)
+	if req.Port == 0 {
+		req.Port = ctx.Request().InputInt("port", 0)
+	}
+	if err := r.securityService.ChangeSSHPort(req.Port); err != nil {
+		return ctx.Response().Status(400).Json(http.Json{
+			"status":  "error",
+			"message": err.Error(),
+		})
+	}
+	return ctx.Response().Success().Json(http.Json{
+		"status":   "success",
+		"ssh_port": req.Port,
+		"message":  fmt.Sprintf("SSH is now listening on port %d. Reconnect your terminal before closing this session.", req.Port),
 	})
 }

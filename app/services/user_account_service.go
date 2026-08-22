@@ -447,11 +447,7 @@ func (s *UserAccountService) UpdateUser(username string, req UserUpdateRequest) 
 
 			if list[i].ShellAccess != req.ShellAccess {
 				list[i].ShellAccess = req.ShellAccess
-				shellPath := "/usr/sbin/nologin"
-				if req.ShellAccess {
-					shellPath = "/bin/bash"
-				}
-				_ = exec.Command("usermod", "-s", shellPath, username).Run()
+				ApplySSHJailToUser(username, req.ShellAccess)
 			}
 
 			updatedUser = &list[i]

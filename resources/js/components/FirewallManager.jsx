@@ -40,8 +40,11 @@ export default function FirewallManager({ showToast }) {
     rules: [],
     banned_ips: [],
     waf_mode: 'on',
-    fail2ban_active: true
+    fail2ban_active: true,
+    ssh_port: 22
   });
+  const [sshPortInput, setSshPortInput] = useState('22');
+  const [sshPortSaving, setSshPortSaving] = useState(false);
 
   const [activeTab, setActiveTab] = useState('rules'); // 'rules' | 'banned' | 'quick' | 'waf'
   const [isAddRuleOpen, setIsAddRuleOpen] = useState(false);
@@ -67,6 +70,7 @@ export default function FirewallManager({ showToast }) {
       if (res.ok) {
         const json = await res.json();
         if (json.data) {
+          const sshPort = json.data.ssh_port || 22;
           setFirewallData({
             is_active: json.data.is_active ?? true,
             default_incoming: json.data.default_incoming || 'DENY',
@@ -75,7 +79,9 @@ export default function FirewallManager({ showToast }) {
             banned_ips: Array.isArray(json.data.banned_ips) ? json.data.banned_ips : [],
             waf_mode: json.data.waf_mode || 'on',
             fail2ban_active: json.data.fail2ban_active ?? true,
+            ssh_port: sshPort,
           });
+          setSshPortInput(String(sshPort));
         }
       }
     } catch (e) {
@@ -202,6 +208,35 @@ export default function FirewallManager({ showToast }) {
   const rules = Array.isArray(firewallData?.rules) ? firewallData.rules : [];
   const bannedIps = Array.isArray(firewallData?.banned_ips) ? firewallData.banned_ips : [];
 
+  const handleChangeSSHPort = async (e) => {
+    e.preventDefault();
+    if (sshPortSaving) return;
+    const port = parseInt(sshPortInput, 10);
+    if (!port || port < 1 || port > 65535) {
+      showToast('Enter a valid SSH port (1–65535)', 'error');
+      return;
+    }
+    if (!confirm(`Change SSH from port ${firewallData.ssh_port || 22} to ${port}? Keep this panel session open and reconnect your terminal to the new port.`)) {
+      return;
+    }
+    setSshPortSaving(true);
+    try {
+      const res = await fetch('/api/security/firewall/ssh-port', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.message || `Request failed (${res.status})`);
+      showToast(json.message || `SSH port is now ${port}`);
+      fetchFirewall();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setSshPortSaving(false);
+    }
+  };
+
   const isPortAllowed = (port) => {
     const want = String(port);
     return rules.some((r) => {
@@ -216,7 +251,7 @@ export default function FirewallManager({ showToast }) {
     { name: 'Web HTTPS', port: '443', proto: 'TCP', icon: ShieldCheck, color: 'text-emerald-400', desc: 'Encrypted SSL/TLS Web' },
     { name: 'AKpanel WHM', port: '2087', proto: 'TCP', icon: Server, color: 'text-purple-400', desc: 'Root Administration Console' },
     { name: 'Client Portal', port: '2083', proto: 'TCP', icon: Globe, color: 'text-teal-400', desc: 'User Tenant Dashboard' },
-    { name: 'SSH Terminal', port: '22', proto: 'TCP', icon: Terminal, color: 'text-amber-400', desc: 'Secure Shell Remote Login' },
+    { name: 'SSH Terminal', port: String(firewallData.ssh_port || 22), proto: 'TCP', icon: Terminal, color: 'text-amber-400', desc: 'Secure Shell Remote Login' },
     { name: 'DNS Nameserver', port: '53', proto: 'TCP/UDP', icon: Radio, color: 'text-cyan-400', desc: 'BIND 9 Authoritative Queries' },
     { name: 'FTP Transfer', port: '21', proto: 'TCP', icon: FolderTree, color: 'text-orange-400', desc: 'Pure-FTPd File Transfers' },
     { name: 'MySQL Database', port: '3306', proto: 'TCP', icon: Database, color: 'text-indigo-400', desc: 'MySQL / MariaDB Daemon' },
@@ -332,6 +367,39 @@ export default function FirewallManager({ showToast }) {
           <p className="text-[11px] text-zinc-500 mt-1">OWASP Core Rule Set (CRS 3.3)</p>
         </Card>
       </div>
+
+      <Card className="bg-zinc-900/60 border-zinc-800/80 p-5 rounded-2xl backdrop-blur-xl">
+        <form onSubmit={handleChangeSSHPort} className="flex flex-col sm:flex-row sm:items-end gap-4">
+          <div className="flex-1">
+            <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+              <Terminal className="w-4 h-4 text-amber-400" />
+              <span>SSH Listen Port</span>
+            </div>
+            <p className="text-[11px] text-zinc-500 mt-1">
+              Current: <code className="text-amber-300 font-mono">{firewallData.ssh_port || 22}/tcp</code>.
+              Open the new port first, then reconnect your terminal before this session ends.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min="1"
+              max="65535"
+              value={sshPortInput}
+              onChange={(e) => setSshPortInput(e.target.value)}
+              className="bg-zinc-950 border-zinc-800 text-xs rounded-xl font-mono h-10 w-28"
+              required
+            />
+            <Button
+              type="submit"
+              disabled={sshPortSaving || String(sshPortInput) === String(firewallData.ssh_port || 22)}
+              className="bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs rounded-xl h-10 px-4"
+            >
+              {sshPortSaving ? 'Switching…' : 'Change SSH Port'}
+            </Button>
+          </div>
+        </form>
+      </Card>
 
       {/* Navigation Tabs */}
       <div className="flex items-center gap-2 border-b border-zinc-800 pb-2">

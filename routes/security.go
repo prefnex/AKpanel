@@ -24,6 +24,7 @@ func registerFirewallRoutes(securityController *controllers.SecurityController) 
 	facades.Route().Post("/api/security/firewall/rule", securityController.AddRule)
 	facades.Route().Delete("/api/security/firewall/rule", securityController.DeleteRule)
 	facades.Route().Post("/api/security/firewall/toggle-enabled", securityController.ToggleFirewall)
+	facades.Route().Post("/api/security/firewall/ssh-port", securityController.ChangeSSHPort)
 	facades.Route().Post("/api/security/firewall/unban", securityController.UnbanIP)
 	facades.Route().Post("/api/security/firewall/ban", securityController.BanIP)
 }
