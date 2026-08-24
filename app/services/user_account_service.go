@@ -23,6 +23,7 @@ type UserAccount struct {
 	Email            string `json:"email"`
 	MainDomain       string `json:"main_domain"`
 	IPAddress        string `json:"ip_address"`
+	IPv6Address      string `json:"ipv6_address,omitempty"`
 	SetupTime        string `json:"setup_time"`
 	PackageID        string `json:"package_id"`
 	PackageName      string `json:"package_name"`
@@ -523,6 +524,7 @@ func (s *UserAccountService) DeleteUser(username string) error {
 	// Delete Linux OS User & clean directories
 	_ = exec.Command("userdel", "-r", username).Run()
 	_ = GetRedisService().DeleteUser(username)
+	NewIPService().ReleaseUserIPv6(username)
 	if homeDir != "" && (strings.HasPrefix(homeDir, "/home/") || strings.HasPrefix(homeDir, "/var/www/vhosts/")) {
 		_ = os.RemoveAll(homeDir)
 	}

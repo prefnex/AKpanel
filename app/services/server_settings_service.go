@@ -25,6 +25,9 @@ type ServerSettings struct {
 	SecondaryNS        string `json:"secondary_ns"`
 	SharedIP           string `json:"shared_ip"`
 	IPStackMode        string `json:"ip_stack_mode"`
+	IPv6Enabled        bool   `json:"ipv6_enabled"`
+	IPv6Subnet         string `json:"ipv6_subnet"`
+	IPv6PerUser        bool   `json:"ipv6_per_user"`
 	Timezone           string `json:"timezone"`
 	Language           string `json:"language"`
 	AutoRenewSSL       bool   `json:"auto_renew_ssl"`
@@ -158,6 +161,22 @@ func (s *ServerSettingsService) SaveSettings(settings ServerSettings) error {
 	}
 	if settings.IPStackMode == "" {
 		settings.IPStackMode = "dual"
+	}
+
+	// IPv6 settings can only ever be as capable as the host. Enabling them on a server
+	// without a routed prefix would produce AAAA records and vhost bindings pointing at
+	// addresses that do not exist, so the flags are clamped to what was detected.
+	capability := NewIPService().DetectIPv6Capability()
+	if !capability.Available || settings.IPStackMode == "ipv4_only" {
+		settings.IPv6Enabled = false
+	}
+	if !settings.IPv6Enabled || !capability.CanAllocate {
+		settings.IPv6PerUser = false
+	}
+	if settings.IPv6Enabled {
+		settings.IPv6Subnet = capability.Subnet
+	} else {
+		settings.IPv6Subnet = ""
 	}
 
 	settings.UpdatedAt = time.Now().Format(time.RFC3339)

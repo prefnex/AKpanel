@@ -449,7 +449,48 @@ func (n *NginxService) getSSLCertAndKey(domainName string) (string, string) {
 	return n.ensureFallbackSSL()
 }
 
+// generateVhostConfig renders a vhost and then adjusts its listen directives to the address
+// families the host actually supports.
+//
+// A dedicated per-user IPv6 address needs no listen directive of its own: the wildcard
+// `listen [::]:80` already accepts connections on every IPv6 address bound to the machine,
+// and server_name routes the request. Binding each site to a literal address instead would
+// collide with the wildcard default_server and buys nothing.
 func (n *NginxService) generateVhostConfig(cfg WebsiteConfig, isHybrid bool) string {
+	return applyIPStackToVhost(n.renderVhostConfig(cfg, isHybrid))
+}
+
+// applyIPStackToVhost drops IPv6 listeners when the host cannot serve them. Kernels booted
+// with ipv6.disable=1 make nginx refuse to start on `listen [::]:80` with
+// "Address family not supported by protocol", which takes down every site on the server.
+func applyIPStackToVhost(conf string) string {
+	if ipv6ListenSupported() {
+		return conf
+	}
+	lines := strings.Split(conf, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "listen [::]") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// ipv6ListenSupported reports whether nginx can open an IPv6 socket on this host. The
+// admin's ipv4_only choice is honoured as an explicit opt out.
+func ipv6ListenSupported() bool {
+	if settings, err := NewServerSettingsService().GetSettings(); err == nil && settings.IPStackMode == "ipv4_only" {
+		return false
+	}
+	if _, err := os.Stat("/proc/net/if_inet6"); err != nil {
+		return false
+	}
+	return true
+}
+
+func (n *NginxService) renderVhostConfig(cfg WebsiteConfig, isHybrid bool) string {
 	cfg.PHPVersion = paths.DetectInstalledPHPVersion(cfg.PHPVersion)
 	phpSocket := n.resolvePHPSocket(cfg)
 	sslCert, sslKey := n.getSSLCertAndKey(cfg.Domain)

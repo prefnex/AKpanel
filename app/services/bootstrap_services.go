@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -35,6 +36,7 @@ func BootstrapPanelServices() error {
 		}},
 		{"postfix identity and milters", func() error {
 			GetMailAuthService().EnsureMailIdentity()
+			NewDNSService().RepairDKIMKeys()
 			NewMailPolicyService().ApplyAll()
 			return nil
 		}},
@@ -60,6 +62,7 @@ func BootstrapPanelServices() error {
 				return err
 			}
 			ftp.EnsurePassiveFirewall()
+			ftp.EnsureBruteForceProtection()
 			return nil
 		}},
 		{"internal listeners", func() error {
@@ -101,6 +104,47 @@ func BootstrapPanelServices() error {
 		fmt.Printf("bootstrap: %s backend answering on %s\n", probe.label, probe.addr)
 	}
 	return firstErr
+}
+
+// RepairOnBoot re-applies the idempotent half of the bootstrap stack every time the panel
+// process starts. BootstrapPanelServices only ever runs once, from the installer, and at
+// that point the machine may still carry the provider's default hostname — which makes
+// EnsureMailIdentity bail out and leaves Postfix announcing a non-FQDN HELO forever.
+// Re-running here also picks up config that landed after the last daemon restart.
+func RepairOnBoot() {
+	steps := []struct {
+		name string
+		run  func()
+	}{
+		{"postfix identity", func() { GetMailAuthService().EnsureMailIdentity() }},
+		{"dkim key repair", func() {
+			if repaired := NewDNSService().RepairDKIMKeys(); len(repaired) > 0 {
+				log.Printf("🔑 [AKpanel] regenerated unusable DKIM keys for: %v", repaired)
+			}
+		}},
+		{"mail policy and dkim", func() { NewMailPolicyService().ApplyAll() }},
+		{"postfix mailbox maps", func() { _ = NewEmailService().RebuildPostfixMailboxMaps() }},
+		{"pure-ftpd", func() {
+			ftp := GetFTPService()
+			if err := ftp.EnsureConfigured(); err != nil {
+				log.Printf("⚠️ [AKpanel] boot repair: pure-ftpd: %v", err)
+				return
+			}
+			ftp.EnsurePassiveFirewall()
+			ftp.EnsureBruteForceProtection()
+		}},
+	}
+
+	for _, step := range steps {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("⚠️ [AKpanel] boot repair: %s panicked: %v", step.name, r)
+				}
+			}()
+			step.run()
+		}()
+	}
 }
 
 func waitForHTTP(addr, url string, timeout time.Duration) error {

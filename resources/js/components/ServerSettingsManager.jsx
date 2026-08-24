@@ -18,6 +18,7 @@ import {
   ExternalLink,
   Upload,
   Key,
+  Network,
   X
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/card';
@@ -35,6 +36,9 @@ export default function ServerSettingsManager({ showToast }) {
     secondary_ns: '',
     shared_ip: '',
     ip_stack_mode: 'dual', // 'ipv4_only' | 'dual'
+    ipv6_enabled: false,
+    ipv6_subnet: '',
+    ipv6_per_user: false,
     timezone: 'UTC',
     language: 'en',
     auto_renew_ssl: true,
@@ -42,6 +46,7 @@ export default function ServerSettingsManager({ showToast }) {
     session_timeout_mins: 60
   });
 
+  const [ipv6, setIpv6] = useState(null);
   const [availableIps, setAvailableIps] = useState([]);
   const [hostnameSSL, setHostnameSSL] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -148,6 +153,7 @@ export default function ServerSettingsManager({ showToast }) {
       if (json.status === 'success') {
         setSettings(json.data || {});
         setHostnameSSL(json.hostname_ssl || null);
+        setIpv6(json.ipv6 || null);
       }
     } catch (err) {
       showToast('Failed to load server settings', 'error');
@@ -620,6 +626,75 @@ export default function ServerSettingsManager({ showToast }) {
                   </select>
                 </div>
               </div>
+
+              {ipv6 && (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Network className="w-3.5 h-3.5 text-indigo-400" />
+                        <span className="font-semibold text-zinc-200">IPv6</span>
+                        {ipv6.available ? (
+                          <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px]">
+                            Detected
+                          </Badge>
+                        ) : (
+                          <Badge className="bg-zinc-700/40 text-zinc-400 border-zinc-700 text-[10px]">
+                            Unavailable
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="mt-1 text-[11px] text-zinc-500">
+                        {ipv6.available
+                          ? `Prefix ${ipv6.subnet} on ${ipv6.interface}. Panel address ${ipv6.primary_ip}.`
+                          : ipv6.detection_note}
+                      </p>
+                    </div>
+                  </div>
+
+                  {ipv6.available && (
+                    <>
+                      <label className="flex items-center gap-2 text-[11px] text-zinc-300">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(settings.ipv6_enabled)}
+                          disabled={settings.ip_stack_mode === 'ipv4_only'}
+                          onChange={(e) => setSettings({
+                            ...settings,
+                            ipv6_enabled: e.target.checked,
+                            ipv6_per_user: e.target.checked ? settings.ipv6_per_user : false
+                          })}
+                          className="accent-indigo-500"
+                        />
+                        Serve websites and DNS over IPv6
+                      </label>
+
+                      <label className="flex items-center gap-2 text-[11px] text-zinc-300">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(settings.ipv6_per_user)}
+                          disabled={!settings.ipv6_enabled || !ipv6.can_allocate}
+                          onChange={(e) => setSettings({ ...settings, ipv6_per_user: e.target.checked })}
+                          className="accent-indigo-500"
+                        />
+                        Give every hosting account a dedicated IPv6 address
+                        {ipv6.allocated_num > 0 && (
+                          <span className="text-zinc-500">({ipv6.allocated_num} assigned)</span>
+                        )}
+                      </label>
+
+                      {!ipv6.can_allocate && ipv6.detection_note && (
+                        <p className="text-[11px] text-amber-400">{ipv6.detection_note}</p>
+                      )}
+
+                      <p className="text-[11px] text-zinc-500">
+                        Outbound email always uses IPv4. Mail providers apply stricter reverse-DNS
+                        rules to IPv6 senders, and a shared IP can only carry one PTR record.
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-3">
                 <div>

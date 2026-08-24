@@ -36,6 +36,7 @@ type CreateUserRequest struct {
 	ShellAccess    bool   `json:"shell_access"`
 	AutoSSL        bool   `json:"autossl"`
 	CreateMySQL    bool   `json:"create_mysql"`
+	WantIPv6       bool   `json:"want_ipv6"`
 }
 
 func (c *UsersController) buildPlan(req CreateUserRequest) *provisioning.UserProvisionPlan {
@@ -46,6 +47,7 @@ func (c *UsersController) buildPlan(req CreateUserRequest) *provisioning.UserPro
 		MainDomain:     req.MainDomain,
 		PackageID:      req.PackageID,
 		ServerIP:       services.NormalizeIPAddress(req.ServerIP),
+		WantIPv6:       req.WantIPv6,
 		Language:       req.Language,
 		ShellAccess:    req.ShellAccess,
 		IsReseller:     req.IsReseller,

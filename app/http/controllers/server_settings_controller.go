@@ -32,6 +32,8 @@ func (r *ServerSettingsController) GetSettings(ctx http.Context) http.Response {
 		"status":       "success",
 		"data":         settings,
 		"hostname_ssl": sslInfo,
+		// The UI hides every IPv6 control unless the host really has a routed prefix.
+		"ipv6": services.NewIPService().DetectIPv6Capability(),
 	})
 }
 

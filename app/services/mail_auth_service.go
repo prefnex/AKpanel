@@ -360,11 +360,36 @@ func ensurePostfixVirtualAliasMapFile() {
 	}
 }
 
+// resolveMailHostname finds a fully qualified name to announce over SMTP. `hostname` alone
+// is not enough: providers ship images with names like "ubuntu-4gb-fsn1-2", and when the
+// installer runs before the panel hostname is applied there is no dot to be found. Falling
+// back to the panel's own configuration keeps Postfix from announcing a bare label, which
+// Gmail and Outlook treat as a strong spam signal.
+func resolveMailHostname() string {
+	candidates := []string{NewDNSService().GetSystemHostname()}
+	if settings, err := NewServerSettingsService().GetSettings(); err == nil {
+		candidates = append(candidates, settings.Hostname)
+	}
+	candidates = append(candidates, GetConfigService().Install().Hostname)
+
+	for _, candidate := range candidates {
+		host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(candidate)), ".")
+		if host == "" || !strings.Contains(host, ".") {
+			continue
+		}
+		if strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localdomain") {
+			continue
+		}
+		return host
+	}
+	return ""
+}
+
 // EnsureMailIdentity pins the SMTP identity. A missing or bogus myhostname is one of the
 // most common reasons remote MTAs reject or spam-folder outbound mail.
 func (m *MailAuthService) EnsureMailIdentity() {
-	host := strings.TrimSpace(NewDNSService().GetSystemHostname())
-	if host == "" || !strings.Contains(host, ".") {
+	host := resolveMailHostname()
+	if host == "" {
 		return
 	}
 	domain := host
@@ -376,6 +401,13 @@ func (m *MailAuthService) EnsureMailIdentity() {
 	_ = exec.Command("postconf", "-e", "myorigin = $myhostname").Run()
 	_ = exec.Command("postconf", "-e", "smtp_helo_name = $myhostname").Run()
 	_ = exec.Command("postconf", "-e", "smtpd_banner = $myhostname ESMTP").Run()
+
+	// Outbound mail stays on IPv4 regardless of the panel's IPv6 settings. Gmail and
+	// Outlook apply much stricter PTR and authentication rules to IPv6 senders, and a
+	// shared hosting IP can only ever carry one PTR record, so delivering over IPv6
+	// trades a working mail server for a hard 550 rejection.
+	_ = exec.Command("postconf", "-e", "inet_protocols = ipv4").Run()
+
 	runTimeout(10*time.Second, "systemctl", "reload", "postfix")
 }
 

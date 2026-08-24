@@ -789,21 +789,15 @@ func (s *EmailService) VerifySecurityHealth(domain string) SecurityHealthReport 
 		report.MXRecord = "not published"
 	}
 
-	// PTR must resolve to the SMTP banner hostname, not just to anything.
+	// PTR is a property of the server, not of the hosted domain: an IP carries exactly one
+	// reverse record, so it must point at the SMTP banner hostname rather than at this
+	// domain. Both address families are checked because a missing IPv6 PTR is enough for
+	// Gmail to reject mail outright even when IPv4 is configured correctly.
 	checks++
-	serverIP := s.dnsService.GetSystemIP()
 	expectedHelo := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(postfixParam("myhostname"))), ".")
-	if names, err := resolver.LookupAddr(ctx, serverIP); err == nil && len(names) > 0 {
-		ptr := strings.TrimSuffix(strings.ToLower(names[0]), ".")
-		report.PTRRecord = fmt.Sprintf("%s -> %s", serverIP, ptr)
-		if expectedHelo != "" && ptr == expectedHelo {
-			report.PTRValid = true
-			passed++
-		} else if expectedHelo != "" {
-			report.PTRRecord += fmt.Sprintf(" (does not match SMTP HELO %s)", expectedHelo)
-		}
-	} else {
-		report.PTRRecord = fmt.Sprintf("%s -> no reverse DNS (set it at your provider)", serverIP)
+	report.PTRRecord, report.PTRValid = s.checkReverseDNS(ctx, resolver, expectedHelo)
+	if report.PTRValid {
+		passed++
 	}
 
 	// CAA
@@ -823,6 +817,56 @@ func (s *EmailService) VerifySecurityHealth(domain string) SecurityHealthReport 
 		report.DeliverabilityRate = passed * 100 / checks
 	}
 	return report
+}
+
+// checkReverseDNS verifies forward-confirmed reverse DNS for every public address the
+// server sends from. Outbound mail is pinned to IPv4, so a missing IPv6 PTR is reported as
+// advice rather than a failure, while a wrong IPv4 PTR fails the check.
+func (s *EmailService) checkReverseDNS(ctx context.Context, resolver *net.Resolver, expectedHelo string) (string, bool) {
+	type family struct {
+		label    string
+		ip       string
+		required bool
+	}
+	families := []family{
+		{"IPv4", s.dnsService.GetSystemIPv4(), true},
+		{"IPv6", s.dnsService.GetSystemIPv6(), false},
+	}
+
+	target := expectedHelo
+	if target == "" {
+		target = "your panel hostname"
+	}
+
+	var lines []string
+	ok := true
+	for _, f := range families {
+		if f.ip == "" || f.ip == "127.0.0.1" {
+			continue
+		}
+		names, err := resolver.LookupAddr(ctx, f.ip)
+		if err != nil || len(names) == 0 {
+			lines = append(lines, fmt.Sprintf("%s %s -> no reverse DNS (set PTR to %s at your provider)", f.label, f.ip, target))
+			if f.required {
+				ok = false
+			}
+			continue
+		}
+		ptr := strings.TrimSuffix(strings.ToLower(names[0]), ".")
+		if expectedHelo != "" && ptr != expectedHelo {
+			lines = append(lines, fmt.Sprintf("%s %s -> %s (does not match SMTP HELO %s; set PTR to %s)", f.label, f.ip, ptr, expectedHelo, expectedHelo))
+			if f.required {
+				ok = false
+			}
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s %s -> %s", f.label, f.ip, ptr))
+	}
+
+	if len(lines) == 0 {
+		return "no public address to check", false
+	}
+	return strings.Join(lines, "; "), ok
 }
 
 // lookupCAA reads CAA records via the system resolver. Go has no typed CAA lookup, so the

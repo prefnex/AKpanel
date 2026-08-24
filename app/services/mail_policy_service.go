@@ -202,6 +202,41 @@ SOCKETMODE="0660"
 
 // ---------------------------------------------------------------- DKIM
 
+var (
+	dkimRefreshMu      sync.Mutex
+	dkimRefreshPending bool
+)
+
+// ScheduleDKIMRefresh re-wires OpenDKIM after a zone gains or loses a signing key.
+// Generating the key during zone creation is not enough on its own: the KeyTable and
+// SigningTable have to be rebuilt and the daemon restarted, otherwise a domain added after
+// boot is never signed. Calls are coalesced because provisioning creates several zones in a
+// row and each rebuild restarts OpenDKIM.
+func (m *MailPolicyService) ScheduleDKIMRefresh() {
+	dkimRefreshMu.Lock()
+	if dkimRefreshPending {
+		dkimRefreshMu.Unlock()
+		return
+	}
+	dkimRefreshPending = true
+	dkimRefreshMu.Unlock()
+
+	go func() {
+		defer func() { _ = recover() }()
+		time.Sleep(3 * time.Second)
+
+		dkimRefreshMu.Lock()
+		dkimRefreshPending = false
+		dkimRefreshMu.Unlock()
+
+		m.mu.Lock()
+		m.applyDKIMLocked()
+		m.applyMiltersLocked()
+		m.mu.Unlock()
+		runTimeout(10*time.Second, "systemctl", "reload", "postfix")
+	}()
+}
+
 func (m *MailPolicyService) applyDKIMLocked() {
 	keysRoot := "/etc/opendkim/keys"
 	entries, err := os.ReadDir(keysRoot)
@@ -232,8 +267,11 @@ func (m *MailPolicyService) applyDKIMLocked() {
 
 	_ = os.MkdirAll("/etc/opendkim", 0755)
 	trusted := "127.0.0.1\nlocalhost\n::1\n"
-	if ip := strings.TrimSpace(NewDNSService().GetSystemIP()); ip != "" {
-		trusted += ip + "\n"
+	dns := NewDNSService()
+	for _, ip := range []string{dns.GetSystemIPv4(), dns.GetSystemIPv6()} {
+		if ip = strings.TrimSpace(ip); ip != "" && ip != "127.0.0.1" {
+			trusted += ip + "\n"
+		}
 	}
 	_ = os.WriteFile("/etc/opendkim/TrustedHosts", []byte(trusted), 0644)
 	_ = os.WriteFile("/etc/opendkim/KeyTable", []byte(strings.Join(keyTable, "\n")+"\n"), 0644)

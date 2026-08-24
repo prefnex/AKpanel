@@ -90,13 +90,9 @@ func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionP
 		plan.ServerIP = services.NormalizeIPAddress(plan.ServerIP)
 	}
 	if plan.ServerIP == "" {
-		plan.ServerIP = "127.0.0.1"
-		if out, err := exec.Command("bash", "-c", "hostname -I 2>/dev/null | awk '{print $1}'").Output(); err == nil {
-			if ip := strings.TrimSpace(string(out)); ip != "" {
-				plan.ServerIP = ip
-			}
-		}
+		plan.ServerIP = services.NewDNSService().GetSystemIPv4()
 	}
+	resolveUserIPv6(plan)
 
 	plan.HomeDir = paths.UserHome(plan.Username)
 	if plan.MainDomain != "" {
@@ -110,7 +106,34 @@ func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionP
 }
 
 func (s *ValidateUserPlanStep) Rollback(ctx context.Context, plan *UserProvisionPlan) error {
+	if plan.ServerIPv6 != "" {
+		services.NewIPService().ReleaseUserIPv6(plan.Username)
+		plan.ServerIPv6 = ""
+	}
 	return nil
+}
+
+// resolveUserIPv6 hands the account a dedicated IPv6 address when the administrator has
+// turned per-user IPv6 on. Allocation always comes from the server's own prefix, because an
+// address outside it is not routed here and the site bound to it would never answer.
+// Failure is never fatal: the account stays reachable over IPv4.
+func resolveUserIPv6(plan *UserProvisionPlan) {
+	plan.ServerIPv6 = ""
+
+	settings, err := services.NewServerSettingsService().GetSettings()
+	if err != nil || !settings.IPv6Enabled || !settings.IPv6PerUser {
+		return
+	}
+	if !plan.WantIPv6 {
+		return
+	}
+
+	addr, err := services.NewIPService().AllocateUserIPv6(plan.Username)
+	if err != nil {
+		progressLog(plan, "ValidateUserPlan", 5, fmt.Sprintf("IPv6 allocation skipped: %v", err))
+		return
+	}
+	plan.ServerIPv6 = addr
 }
 
 // ── 2. DetectEngines ──────────────────────────────────────────────────────────
@@ -413,6 +436,11 @@ func (s *CreateUserDNSZoneStep) Execute(ctx context.Context, plan *UserProvision
 	if err != nil {
 		return err
 	}
+	if plan.ServerIPv6 != "" {
+		if err := dns.PublishAAAARecords(plan.MainDomain, plan.ServerIPv6); err != nil {
+			progressLog(plan, s.Name(), 58, fmt.Sprintf("AAAA records skipped: %v", err))
+		}
+	}
 	progressLog(plan, s.Name(), 58, fmt.Sprintf("DNS zone created for %s", plan.MainDomain))
 	return nil
 }
@@ -587,7 +615,7 @@ func (s *PersistUserRecordStep) Execute(ctx context.Context, plan *UserProvision
 
 	plan.ResultUser = &services.UserAccount{
 		Username: plan.Username, PasswordHash: passHash, Email: plan.Email,
-		MainDomain: plan.MainDomain, IPAddress: plan.ServerIP,
+		MainDomain: plan.MainDomain, IPAddress: plan.ServerIP, IPv6Address: plan.ServerIPv6,
 		SetupTime: time.Now().Format("2006-01-02 15:04:05"),
 		PackageID: plan.PackageID, PackageName: plan.PackageName,
 		IsReseller: plan.IsReseller, Language: plan.Language, HomeDir: plan.HomeDir,

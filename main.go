@@ -247,6 +247,7 @@ func main() {
 
 	_ = facades.Artisan().Call("migrate")
 	go services.StartPanelDBReplica()
+	go services.RepairOnBoot()
 
 	log.Println("👑 [AKpanel] Starting Goravel Core Backend Engine on 127.0.0.1:2088...")
 	app.Start()

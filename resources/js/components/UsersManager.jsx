@@ -66,7 +66,11 @@ export default function UsersManager({ showToast }) {
     shell_access: false,
     autossl: true,
     create_mysql: true,
+    want_ipv6: false,
   });
+
+  // Null until the server reports whether per-user IPv6 allocation is switched on.
+  const [ipv6Offer, setIpv6Offer] = useState(null);
 
   const [provisionTaskId, setProvisionTaskId] = useState(localStorage.getItem('akpanel_user_provision_task') || '');
   const [provisionLogs, setProvisionLogs] = useState([]);
@@ -89,6 +93,24 @@ export default function UsersManager({ showToast }) {
       console.error(e);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchIpv6Offer = async () => {
+    try {
+      const res = await fetch('/api/settings/server');
+      if (!res.ok) return;
+      const json = await res.json();
+      const capability = json.ipv6 || {};
+      const settings = json.data || {};
+      if (capability.available && capability.can_allocate && settings.ipv6_enabled && settings.ipv6_per_user) {
+        setIpv6Offer({ subnet: capability.subnet });
+        setFormData(prev => ({ ...prev, want_ipv6: true }));
+      } else {
+        setIpv6Offer(null);
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -143,6 +165,7 @@ export default function UsersManager({ showToast }) {
     fetchUsers();
     fetchPackages();
     fetchIps();
+    fetchIpv6Offer();
   }, []);
 
   useEffect(() => {
@@ -808,6 +831,17 @@ export default function UsersManager({ showToast }) {
                     <option key={idx} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
+                {ipv6Offer && (
+                  <label className="flex items-center gap-2 pt-1 text-[11px] text-zinc-400">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(formData.want_ipv6)}
+                      onChange={(e) => setFormData(prev => ({ ...prev, want_ipv6: e.target.checked }))}
+                      className="accent-indigo-500"
+                    />
+                    Dedicated IPv6 from {ipv6Offer.subnet}
+                  </label>
+                )}
               </div>
 
               <div className="space-y-1">

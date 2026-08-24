@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -160,15 +161,75 @@ func NewDNSService() *DNSService {
 	return dnsServiceInstance
 }
 
+// GetSystemIP returns the primary public IPv4 address. It deliberately never returns an
+// IPv6 address: callers feed it into IPv4-only places (SPF ip4:, DNS A records, pure-ftpd
+// ForcePassiveIP), and `hostname -I` orders addresses by interface, so on a dual-stack box
+// the first field is frequently IPv6.
 func (s *DNSService) GetSystemIP() string {
-	cmd := exec.Command("hostname", "-I")
-	if out, err := cmd.Output(); err == nil {
-		fields := strings.Fields(string(out))
-		if len(fields) > 0 && fields[0] != "" {
-			return fields[0]
-		}
+	return s.GetSystemIPv4()
+}
+
+// GetSystemIPv4 resolves the primary routable IPv4 address, or 127.0.0.1 when none exists.
+func (s *DNSService) GetSystemIPv4() string {
+	if ip := firstPublicSystemIP(false); ip != "" {
+		return ip
 	}
 	return "127.0.0.1"
+}
+
+// GetSystemIPv6 resolves the primary routable IPv6 address, or "" when the host has none.
+// An empty return is the signal that IPv6 features must stay hidden.
+func (s *DNSService) GetSystemIPv6() string {
+	return firstPublicSystemIP(true)
+}
+
+// firstPublicSystemIP walks the host addresses and returns the first globally routable one
+// of the requested family, skipping loopback, link-local and unique-local ranges.
+func firstPublicSystemIP(wantV6 bool) string {
+	var candidates []string
+	if out, err := exec.Command("hostname", "-I").Output(); err == nil {
+		candidates = strings.Fields(string(out))
+	}
+	if len(candidates) == 0 {
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			return ""
+		}
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok {
+				candidates = append(candidates, ipNet.IP.String())
+			}
+		}
+	}
+
+	for _, raw := range candidates {
+		ip := net.ParseIP(strings.TrimSpace(strings.Split(raw, "%")[0]))
+		if ip == nil {
+			continue
+		}
+		isV4 := ip.To4() != nil
+		if isV4 == wantV6 {
+			continue
+		}
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			continue
+		}
+		if ip.IsPrivate() {
+			continue // RFC1918 for v4, fc00::/7 unique-local for v6
+		}
+		return ip.String()
+	}
+
+	// A private IPv4 address is still better than nothing for NAT'd installs.
+	if !wantV6 {
+		for _, raw := range candidates {
+			ip := net.ParseIP(strings.TrimSpace(raw))
+			if ip != nil && ip.To4() != nil && !ip.IsLoopback() {
+				return ip.String()
+			}
+		}
+	}
+	return ""
 }
 
 func (s *DNSService) GetSystemHostname() string {
@@ -1303,19 +1364,17 @@ func (s *DNSService) writeZones(list []DNSZone) error {
 	return os.WriteFile(s.filePath, bytes, 0644)
 }
 
-// Generate RSA 2048-bit DKIM Key
+// GenerateDKIM returns the base64 DKIM public key for a domain, creating a 2048-bit RSA
+// key pair on first use. The private key is written as PEM because that is the only format
+// OpenDKIM can load; an earlier version wrote raw DER, which made signing fail silently.
 func (s *DNSService) GenerateDKIM(domain string) (string, error) {
 	keyDir := fmt.Sprintf("/etc/opendkim/keys/%s", domain)
 	_ = os.MkdirAll(keyDir, 0700)
 
 	privKeyFile := fmt.Sprintf("%s/default.private", keyDir)
 
-	if _, err := os.Stat(privKeyFile); err == nil {
-		cmd := exec.Command("openssl", "rsa", "-in", privKeyFile, "-pubout", "-outform", "DER")
-		derBytes, err := cmd.Output()
-		if err == nil {
-			return base64.StdEncoding.EncodeToString(derBytes), nil
-		}
+	if pub, err := readDKIMPublicKey(privKeyFile); err == nil {
+		return pub, nil
 	}
 
 	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -1323,16 +1382,188 @@ func (s *DNSService) GenerateDKIM(domain string) (string, error) {
 		return "", err
 	}
 
-	privBytes := x509.MarshalPKCS1PrivateKey(privKey)
-	_ = os.WriteFile(privKeyFile, privBytes, 0600)
+	keyPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privKey),
+	})
+	if err := os.WriteFile(privKeyFile, keyPEM, 0600); err != nil {
+		return "", err
+	}
 
 	pubBytes, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
 	if err != nil {
 		return "", err
 	}
+	return base64.StdEncoding.EncodeToString(pubBytes), nil
+}
 
-	pubB64 := base64.StdEncoding.EncodeToString(pubBytes)
-	return pubB64, nil
+// readDKIMPublicKey derives the public key from an existing private key file. It is done in
+// Go rather than by shelling out to openssl so that an unreadable key returns an error
+// instead of being silently replaced with a fresh one, which used to leave the published
+// DNS record pointing at a key that no longer existed on disk.
+func readDKIMPublicKey(privKeyFile string) (string, error) {
+	data, err := os.ReadFile(privKeyFile)
+	if err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return "", fmt.Errorf("dkim key %s is not PEM encoded", privKeyFile)
+	}
+
+	var privKey *rsa.PrivateKey
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		privKey = key
+	} else if parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		rsaKey, ok := parsed.(*rsa.PrivateKey)
+		if !ok {
+			return "", fmt.Errorf("dkim key %s is not an RSA key", privKeyFile)
+		}
+		privKey = rsaKey
+	} else {
+		return "", fmt.Errorf("dkim key %s is unreadable", privKeyFile)
+	}
+
+	pubBytes, err := x509.MarshalPKIXPublicKey(&privKey.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(pubBytes), nil
+}
+
+// RepairDKIMKeys rewrites any DKIM key that OpenDKIM cannot load (notably the raw-DER keys
+// written by earlier versions) and republishes the matching default._domainkey record.
+// Returns the domains whose published key changed.
+func (s *DNSService) RepairDKIMKeys() []string {
+	entries, err := os.ReadDir("/etc/opendkim/keys")
+	if err != nil {
+		return nil
+	}
+
+	var repaired []string
+	for _, e := range entries {
+		if !e.IsDir() || !strings.Contains(e.Name(), ".") {
+			continue
+		}
+		domain := e.Name()
+		privKeyFile := fmt.Sprintf("/etc/opendkim/keys/%s/default.private", domain)
+		if _, err := readDKIMPublicKey(privKeyFile); err == nil {
+			continue
+		}
+		if _, err := os.Stat(privKeyFile); err == nil {
+			_ = os.Remove(privKeyFile)
+		}
+		pub, err := s.GenerateDKIM(domain)
+		if err != nil || pub == "" {
+			continue
+		}
+		if s.publishDKIMRecord(domain, pub) {
+			repaired = append(repaired, domain)
+		}
+	}
+	return repaired
+}
+
+// PublishAAAARecords points the apex, www and wildcard labels at a dedicated IPv6 address.
+// Only the web-facing names get AAAA records: mail deliberately stays IPv4-only, so adding
+// AAAA to mail. would make remote servers try a path this panel does not send over.
+func (s *DNSService) PublishAAAARecords(domain, ipv6 string) error {
+	parsed := net.ParseIP(ipv6)
+	if parsed == nil || parsed.To4() != nil {
+		return fmt.Errorf("%q is not an IPv6 address", ipv6)
+	}
+	addr := parsed.String()
+
+	s.mu.Lock()
+	zones, err := s.readZones()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	idx := -1
+	for i := range zones {
+		if strings.EqualFold(zones[i].Domain, domain) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("zone not found for domain: %s", domain)
+	}
+
+	for _, name := range []string{"@", "www", "*"} {
+		found := false
+		for i := range zones[idx].Records {
+			if zones[idx].Records[i].Type == "AAAA" && zones[idx].Records[i].Name == name {
+				zones[idx].Records[i].Value = addr
+				found = true
+				break
+			}
+		}
+		if !found {
+			zones[idx].Records = append(zones[idx].Records, DNSRecord{
+				Name: name, Type: "AAAA", Value: addr, TTL: 14400,
+				Comment: "Dedicated IPv6",
+			})
+		}
+	}
+	zones[idx].Serial = time.Now().Format("2006010215")
+	zones[idx].UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+	if err := s.writeZones(zones); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	zone := zones[idx]
+	s.mu.Unlock()
+
+	return s.syncBindZone(&zone)
+}
+
+// publishDKIMRecord points default._domainkey at the given public key and re-syncs BIND.
+func (s *DNSService) publishDKIMRecord(domain, pub string) bool {
+	value := "v=DKIM1; k=rsa; p=" + pub
+
+	s.mu.Lock()
+	zones, err := s.readZones()
+	if err != nil {
+		s.mu.Unlock()
+		return false
+	}
+	idx := -1
+	for i := range zones {
+		if strings.EqualFold(zones[i].Domain, domain) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.mu.Unlock()
+		return false
+	}
+
+	found := false
+	for i := range zones[idx].Records {
+		if zones[idx].Records[i].Type == "TXT" && zones[idx].Records[i].Name == "default._domainkey" {
+			zones[idx].Records[i].Value = value
+			found = true
+			break
+		}
+	}
+	if !found {
+		zones[idx].Records = append(zones[idx].Records, DNSRecord{
+			Name: "default._domainkey", Type: "TXT", Value: value, TTL: 3600,
+			Comment: "DKIM 2048-bit RSA Key",
+		})
+	}
+	zones[idx].DKIMPublicKey = pub
+	zones[idx].UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+	_ = s.writeZones(zones)
+	zone := zones[idx]
+	s.mu.Unlock()
+
+	_ = s.syncBindZone(&zone)
+	return true
 }
 
 func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string, includeLetsEncryptCAA bool) DNSZone {
@@ -1350,7 +1581,13 @@ func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string, inc
 		dkimPub = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0G9s..."
 	}
 
-	spf := fmt.Sprintf("v=spf1 +a +mx +ip4:%s ~all", serverIP)
+	// SPF must carry an IPv4 literal: outbound mail is pinned to IPv4, and an IPv6 address
+	// behind an ip4: mechanism makes the whole record invalid.
+	spfIP := serverIP
+	if parsed := net.ParseIP(spfIP); parsed == nil || parsed.To4() == nil {
+		spfIP = s.GetSystemIPv4()
+	}
+	spf := fmt.Sprintf("v=spf1 +a +mx +ip4:%s ~all", spfIP)
 	dmarc := fmt.Sprintf("v=DMARC1; p=none; sp=none; rua=mailto:dmarc@%s", domain)
 	dkim := fmt.Sprintf("v=DKIM1; k=rsa; p=%s", dkimPub)
 	serial := time.Now().Format("2006010215")
@@ -1506,6 +1743,9 @@ func (s *DNSService) CreateZone(domain, serverIP, ownerUser, templateID string, 
 	if err := s.writeZones(list); err != nil {
 		return nil, err
 	}
+	// generateDefaultZone created the DKIM key on disk; OpenDKIM still has to be told
+	// about it before mail from this domain can be signed.
+	NewMailPolicyService().ScheduleDKIMRefresh()
 	return &zone, nil
 }
 

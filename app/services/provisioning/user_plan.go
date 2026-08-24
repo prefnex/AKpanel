@@ -12,6 +12,8 @@ type UserProvisionPlan struct {
 	MainDomain     string `json:"main_domain"`
 	PackageID      string `json:"package_id"`
 	ServerIP       string `json:"server_ip"`
+	ServerIPv6     string `json:"server_ipv6"`
+	WantIPv6       bool   `json:"want_ipv6"`
 	Language       string `json:"language"`
 	ShellAccess    bool   `json:"shell_access"`
 	IsReseller     bool   `json:"is_reseller"`
