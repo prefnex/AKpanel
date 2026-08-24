@@ -23,6 +23,7 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
   const [memoryLimit, setMemoryLimit] = useState('256M');
   const [uploadMax, setUploadMax] = useState('64M');
   const [maxExecution, setMaxExecution] = useState(300);
+  const [ramCapMB, setRamCapMB] = useState(0);
   const [pmaSSOData, setPmaSSOData] = useState(null);
   const [loading, setLoading] = useState(false);
 
@@ -36,6 +37,10 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
       const data = await res.json();
       if (data.status && data.data) {
         setSelectedVersion(data.data.active_version || '8.2');
+        if (data.data.memory_limit) setMemoryLimit(data.data.memory_limit);
+        if (data.data.upload_max_filesize) setUploadMax(data.data.upload_max_filesize);
+        if (data.data.max_execution_time) setMaxExecution(data.data.max_execution_time);
+        setRamCapMB(data.data.ram_limit_mb || 0);
       }
     } catch (err) {
       console.error(err);
@@ -77,13 +82,37 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
     }
   };
 
-  const handleSaveConfig = (e) => {
+  const handleSaveConfig = async (e) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
+    try {
+      const res = await fetch('/api/client/php/config', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          version: selectedVersion,
+          memory_limit: memoryLimit,
+          upload_max_filesize: uploadMax,
+          max_execution_time: maxExecution,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.status === false) {
+        throw new Error(data.message || 'Failed to save PHP configuration');
+      }
+      if (data.data) {
+        if (data.data.memory_limit) setMemoryLimit(data.data.memory_limit);
+        if (data.data.ram_limit_mb) setRamCapMB(data.data.ram_limit_mb);
+      }
+      showToast(data.message || 'PHP Runtime environment saved successfully!', 'success');
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
       setLoading(false);
-      showToast('PHP Runtime environment saved successfully!', 'success');
-    }, 600);
+    }
   };
 
   return (
@@ -174,6 +203,9 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
             <h3>php.ini Directives & Limits</h3>
           </div>
           <p className="text-xs text-zinc-400">Customize memory and execution bounds applied to your scripts.</p>
+          {ramCapMB > 0 && (
+            <p className="text-[11px] text-amber-400">Package RAM cap is {ramCapMB}M. Saving a higher memory_limit is clamped to that value.</p>
+          )}
 
           <form onSubmit={handleSaveConfig} className="space-y-4 pt-2">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

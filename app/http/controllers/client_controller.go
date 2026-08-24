@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -538,6 +539,48 @@ func (c *ClientController) PHPConfig(ctx http.Context) http.Response {
 		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
 	}
 	return ctx.Response().Success().Json(http.Json{"status": true, "data": cfg})
+}
+
+// POST /api/client/php/config
+func (c *ClientController) SavePHPConfig(ctx http.Context) http.Response {
+	username := c.getUsername(ctx)
+	if username == "" {
+		return ctx.Response().Status(401).Json(http.Json{"status": false, "message": "Unauthorized."})
+	}
+
+	var req struct {
+		MemoryLimit string `json:"memory_limit"`
+		UploadMax   string `json:"upload_max_filesize"`
+		Version     string `json:"version"`
+		MaxExec     int    `json:"max_execution_time"`
+	}
+	_ = ctx.Request().Bind(&req)
+	if req.MemoryLimit == "" {
+		req.MemoryLimit = strings.TrimSpace(ctx.Request().Input("memory_limit"))
+	}
+	if req.UploadMax == "" {
+		req.UploadMax = strings.TrimSpace(ctx.Request().Input("upload_max_filesize"))
+	}
+	if req.Version == "" {
+		req.Version = strings.TrimSpace(ctx.Request().Input("version"))
+	}
+	if req.MaxExec == 0 {
+		req.MaxExec, _ = strconv.Atoi(strings.TrimSpace(ctx.Request().Input("max_execution_time")))
+	}
+
+	memMB := services.ParsePHPMemoryMB(req.MemoryLimit)
+	uploadMB := services.ParsePHPMemoryMB(req.UploadMax)
+
+	if err := c.clientService.SavePHPConfig(username, req.Version, memMB, uploadMB, req.MaxExec); err != nil {
+		return ctx.Response().Status(500).Json(http.Json{"status": false, "message": err.Error()})
+	}
+
+	cfg, _ := c.clientService.GetPHPConfig(username)
+	return ctx.Response().Success().Json(http.Json{
+		"status":  true,
+		"message": "PHP configuration saved. memory_limit cannot exceed the package RAM cap.",
+		"data":    cfg,
+	})
 }
 
 // GET /api/client/phpmyadmin/sso

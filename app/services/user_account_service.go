@@ -250,16 +250,17 @@ func (s *UserAccountService) FixPermissions(username string) error {
 
 // ChangePackage updates user package assignment & limits
 func (s *UserAccountService) ChangePackage(username, packageID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	pkg, err := s.packagesService.GetPackage(packageID)
 	if err != nil {
 		return err
 	}
 
+	s.mu.Lock()
 	list, _ := s.readUsers()
 	found := false
+	ver := ""
+	home := ""
+	uname := username
 	for i, u := range list {
 		if u.Username == username {
 			list[i].PackageID = pkg.ID
@@ -267,22 +268,34 @@ func (s *UserAccountService) ChangePackage(username, packageID string) error {
 			list[i].DiskQuotaMB = pkg.DiskQuotaMB
 			list[i].BandwidthLimitMB = pkg.BandwidthMB
 			list[i].InodesLimit = pkg.MaxInodes
-			list[i].RAMLimitMB = pkg.RAMLimitMB
+			list[i].RAMLimitMB = pkg.EffectiveRAMLimitMB()
 			list[i].MaxProcesses = pkg.Nproc
 			list[i].OpenFilesLimit = pkg.Nofile
 			list[i].MaxDatabases = pkg.MySQLDatabases
 			list[i].MaxFTP = pkg.FTPAccounts
 			list[i].WebEngine = pkg.DefaultWebEngine
 			list[i].PHPVersion = pkg.DefaultPHPVersion
+			ver = list[i].PHPVersion
+			home = list[i].HomeDir
+			uname = list[i].Username
 			found = true
 			break
 		}
 	}
 	if !found {
+		s.mu.Unlock()
 		return fmt.Errorf("user not found")
 	}
-
-	return s.writeUsers(list)
+	err = s.writeUsers(list)
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if home == "" {
+		home = "/home/" + uname
+	}
+	_ = NewPHPManagerService().WriteUserFPMPool(uname, ver, home, pkg.EffectiveMaxPHPChildren(), pkg.EffectiveRAMLimitMB())
+	return nil
 }
 
 // SuspendUser locks user shell & updates status

@@ -91,6 +91,8 @@ export default function ClientLoginView({ onLoginSuccess }) {
                 <User className="w-4 h-4 absolute left-3 top-3 text-zinc-500" />
                 <Input
                   type="text"
+                  name="username"
+                  autoComplete="username"
                   placeholder="e.g. client1 or admin"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -106,6 +108,8 @@ export default function ClientLoginView({ onLoginSuccess }) {
                 <Lock className="w-4 h-4 absolute left-3 top-3 text-zinc-500" />
                 <Input
                   type="password"
+                  name="password"
+                  autoComplete="current-password"
                   placeholder="••••••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

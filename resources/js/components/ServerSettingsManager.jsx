@@ -25,6 +25,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent } from './ui/
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
+import { Switch } from './ui/switch';
 
 export default function ServerSettingsManager({ showToast }) {
   const [settings, setSettings] = useState({
@@ -654,34 +655,23 @@ export default function ServerSettingsManager({ showToast }) {
 
                   {ipv6.available && (
                     <>
-                      <label className="flex items-center gap-2 text-[11px] text-zinc-300">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(settings.ipv6_enabled)}
-                          disabled={settings.ip_stack_mode === 'ipv4_only'}
-                          onChange={(e) => setSettings({
-                            ...settings,
-                            ipv6_enabled: e.target.checked,
-                            ipv6_per_user: e.target.checked ? settings.ipv6_per_user : false
-                          })}
-                          className="accent-indigo-500"
-                        />
-                        Serve websites and DNS over IPv6
-                      </label>
-
-                      <label className="flex items-center gap-2 text-[11px] text-zinc-300">
-                        <input
-                          type="checkbox"
+                      <p className="text-[11px] text-zinc-400">
+                        Dual-Stack publishes AAAA for every zone on the panel IPv6 address.
+                        Saving these settings rebuilds all DNS zones.
+                      </p>
+                      <div className="flex items-center justify-between gap-3 text-[11px] text-zinc-300">
+                        <span>
+                          Dedicated IPv6 per hosting account
+                          {ipv6.allocated_num > 0 && (
+                            <span className="text-zinc-500"> ({ipv6.allocated_num} assigned)</span>
+                          )}
+                        </span>
+                        <Switch
                           checked={Boolean(settings.ipv6_per_user)}
-                          disabled={!settings.ipv6_enabled || !ipv6.can_allocate}
-                          onChange={(e) => setSettings({ ...settings, ipv6_per_user: e.target.checked })}
-                          className="accent-indigo-500"
+                          disabled={settings.ip_stack_mode === 'ipv4_only' || !ipv6.can_allocate}
+                          onCheckedChange={(on) => setSettings({ ...settings, ipv6_per_user: on, ipv6_enabled: settings.ip_stack_mode !== 'ipv4_only' })}
                         />
-                        Give every hosting account a dedicated IPv6 address
-                        {ipv6.allocated_num > 0 && (
-                          <span className="text-zinc-500">({ipv6.allocated_num} assigned)</span>
-                        )}
-                      </label>
+                      </div>
 
                       {!ipv6.can_allocate && ipv6.detection_note && (
                         <p className="text-[11px] text-amber-400">{ipv6.detection_note}</p>

@@ -63,6 +63,7 @@ func registerClientRoutes(clientController *controllers.ClientController) {
 
 	// PHP Runtime & phpMyAdmin SSO APIs
 	facades.Route().Get("/api/client/php/config", clientController.PHPConfig)
+	facades.Route().Post("/api/client/php/config", clientController.SavePHPConfig)
 	facades.Route().Get("/api/client/phpmyadmin/sso", clientController.PhpMyAdminSSO)
 
 	// Email & Backups APIs

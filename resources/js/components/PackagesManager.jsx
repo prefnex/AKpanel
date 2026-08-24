@@ -40,6 +40,7 @@ export default function PackagesManager({ showToast }) {
     name: '',
     disk_quota_mb: 20480,
     bandwidth_mb: 1048576,
+    ram_limit_mb: 1024,
     ftp_accounts: 5,
     email_accounts: 20,
     email_lists: 5,
@@ -51,6 +52,7 @@ export default function PackagesManager({ showToast }) {
     cgroups_policy: 'None policy',
     nproc: 40,
     apache_nproc: 40,
+    max_php_children: 5,
     max_inodes: 0,
     nofile: 200,
     nodejs_apps: 1,
@@ -86,6 +88,7 @@ export default function PackagesManager({ showToast }) {
       name: '',
       disk_quota_mb: 20480,
       bandwidth_mb: 1048576,
+      ram_limit_mb: 1024,
       ftp_accounts: 5,
       email_accounts: 20,
       email_lists: 5,
@@ -97,6 +100,7 @@ export default function PackagesManager({ showToast }) {
       cgroups_policy: 'None policy',
       nproc: 40,
       apache_nproc: 40,
+      max_php_children: 5,
       max_inodes: 0,
       nofile: 200,
       nodejs_apps: 1,
@@ -482,6 +486,31 @@ export default function PackagesManager({ showToast }) {
                   onChange={(e) => setFormData(prev => ({ ...prev, max_inodes: parseInt(e.target.value) || 0 }))}
                   className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white"
                 />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="font-bold text-zinc-300">Max concurrent PHP workers:</label>
+                <Input
+                  type="number"
+                  min="1"
+                  value={formData.max_php_children}
+                  onChange={(e) => setFormData(prev => ({ ...prev, max_php_children: parseInt(e.target.value) || 5 }))}
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white"
+                />
+                <p className="text-[10px] text-zinc-500">Maps to PHP-FPM pm.max_children. nproc stays the system process ulimit.</p>
+              </div>
+              <div className="space-y-1">
+                <label className="font-bold text-zinc-300">RAM limit (MB):</label>
+                <Input
+                  type="number"
+                  min="32"
+                  value={formData.ram_limit_mb}
+                  onChange={(e) => setFormData(prev => ({ ...prev, ram_limit_mb: parseInt(e.target.value) || 256 }))}
+                  className="bg-zinc-950 border-zinc-800 rounded-xl text-xs font-mono text-white"
+                />
+                <p className="text-[10px] text-zinc-500">Hard cap via php_admin_value[memory_limit] in the user pool.</p>
               </div>
             </div>
 

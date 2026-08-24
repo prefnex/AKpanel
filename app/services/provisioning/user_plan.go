@@ -23,6 +23,8 @@ type UserProvisionPlan struct {
 	ProcessLimit   int    `json:"process_limit"`
 	OpenFilesLimit int    `json:"open_files_limit"`
 	InodeLimit     int    `json:"inode_limit"`
+	MaxPHPChildren int    `json:"max_php_children"`
+	RAMLimitMB     int    `json:"ram_limit_mb"`
 
 	// Resolved at runtime
 	HomeDir    string `json:"home_dir"`

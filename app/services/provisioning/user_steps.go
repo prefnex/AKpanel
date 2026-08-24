@@ -69,6 +69,12 @@ func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionP
 		if plan.InodeLimit <= 0 {
 			plan.InodeLimit = pkg.MaxInodes
 		}
+		if plan.MaxPHPChildren <= 0 {
+			plan.MaxPHPChildren = pkg.EffectiveMaxPHPChildren()
+		}
+		if plan.RAMLimitMB <= 0 {
+			plan.RAMLimitMB = pkg.EffectiveRAMLimitMB()
+		}
 	}
 	if b, err := os.ReadFile(paths.ServerProfileConf()); err == nil {
 		profile := strings.TrimSpace(string(b))
@@ -82,6 +88,12 @@ func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionP
 	}
 	if plan.OpenFilesLimit <= 0 {
 		plan.OpenFilesLimit = 200
+	}
+	if plan.MaxPHPChildren <= 0 {
+		plan.MaxPHPChildren = 5
+	}
+	if plan.RAMLimitMB <= 0 {
+		plan.RAMLimitMB = 256
 	}
 	if plan.Language == "" {
 		plan.Language = "en"
@@ -260,32 +272,11 @@ func (s *CreatePHPFMPPoolStep) Name() string { return "CreatePHPFMPPool" }
 
 func (s *CreatePHPFMPPoolStep) Execute(ctx context.Context, plan *UserProvisionPlan) error {
 	ver := plan.PHPVersion
-	s.poolFile = fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", ver, plan.Username)
-	sock := paths.PHPSocketForUser(ver, plan.Username)
-
-	pool := fmt.Sprintf(`[%s]
-user = %s
-group = %s
-listen = %s
-listen.owner = www-data
-listen.group = www-data
-listen.mode = 0660
-pm = ondemand
-pm.max_children = 5
-pm.process_idle_timeout = 10s
-chdir = /
-php_admin_value[open_basedir] = %s/:/tmp/
-php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
-`, plan.Username, plan.Username, plan.Username, sock, plan.HomeDir)
-
-	_ = os.MkdirAll("/run/php", 0755)
-	_ = os.MkdirAll(filepath.Dir(s.poolFile), 0755)
-	if err := os.WriteFile(s.poolFile, []byte(pool), 0644); err != nil {
+	if err := services.NewPHPManagerService().WriteUserFPMPool(plan.Username, ver, plan.HomeDir, plan.MaxPHPChildren, plan.RAMLimitMB); err != nil {
 		return err
 	}
-	svc := fmt.Sprintf("php%s-fpm", ver)
-	_ = exec.Command("systemctl", "restart", svc).Run()
-	_ = exec.Command("service", svc, "restart").Run()
+	s.poolFile = fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", ver, plan.Username)
+	sock := paths.PHPSocketForUser(ver, plan.Username)
 	for i := 0; i < 20; i++ {
 		if _, err := os.Stat(sock); err == nil {
 			break
@@ -623,6 +614,7 @@ func (s *PersistUserRecordStep) Execute(ctx context.Context, plan *UserProvision
 		DomainsCount: 1, DatabasesCount: dbCount, FTPCount: 1, ShellAccess: plan.ShellAccess,
 		WebEngine: plan.WebEngine, PHPVersion: plan.PHPVersion,
 		MaxProcesses: plan.ProcessLimit, OpenFilesLimit: plan.OpenFilesLimit, InodesLimit: plan.InodeLimit,
+		RAMLimitMB: plan.RAMLimitMB,
 		CreatedAt: time.Now().Format("2006-01-02"),
 	}
 

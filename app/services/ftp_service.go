@@ -108,8 +108,31 @@ func (f *FTPService) ensureConfiguredLocked() error {
 		}
 	}
 
+	// The wrapper refuses to start if PureDB points at a missing pdb. mkdb is cheap and
+	// idempotent, so it has to land before any restart.
+	if err := f.ensurePureDBLocked(); err != nil {
+		return err
+	}
+
 	if changed || f.daemonOlderThanConfig() {
 		f.restart()
+	}
+	return nil
+}
+
+func (f *FTPService) ensurePureDBLocked() error {
+	passwd := "/etc/pure-ftpd/pureftpd.passwd"
+	if _, err := os.Stat(passwd); err != nil {
+		_ = os.WriteFile(passwd, []byte(""), 0600)
+	}
+	if out, err := exec.Command("pure-pw", "mkdb", pureFTPdPDB, "-f", passwd).CombinedOutput(); err != nil {
+		if out2, err2 := exec.Command("pure-pw", "mkdb").CombinedOutput(); err2 != nil {
+			return fmt.Errorf("pure-pw mkdb failed: %v — %s; fallback: %v — %s",
+				err, strings.TrimSpace(string(out)), err2, strings.TrimSpace(string(out2)))
+		}
+	}
+	if _, err := os.Stat(pureFTPdPDB); err != nil {
+		return fmt.Errorf("pure-ftpd pdb missing after mkdb: %w", err)
 	}
 	return nil
 }
@@ -283,7 +306,32 @@ func (f *FTPService) EnsurePrimaryAccount(username string) error {
 	if username == "" || username == "root" {
 		return nil
 	}
-	return f.EnsureConfigured()
+	if err := f.EnsureConfigured(); err != nil {
+		return err
+	}
+	home := paths.UserHome(username)
+	_ = os.MkdirAll(home, 0755)
+	_ = ChrootHome(username)
+
+	show := exec.Command("pure-pw", "show", username)
+	if show.Run() == nil {
+		return nil
+	}
+
+	// A placeholder password is replaced immediately by SetPrimaryPassword in the
+	// same provisioning step. The account has to exist so mkdb produces a pdb the
+	// wrapper will accept on restart.
+	placeholder := "akpanel-" + username
+	passIn := placeholder + "\n" + placeholder + "\n"
+	add := exec.Command("pure-pw", "useradd", username, "-u", username, "-d", home, "-m")
+	add.Stdin = strings.NewReader(passIn)
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("pure-pw useradd %s: %v — %s", username, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("pure-pw", "mkdb").CombinedOutput(); err != nil {
+		return fmt.Errorf("pure-pw mkdb failed: %v — %s", err, string(out))
+	}
+	return nil
 }
 
 func (f *FTPService) CreateSubAccount(fullUser, password, linuxUser, homeDir string) error {

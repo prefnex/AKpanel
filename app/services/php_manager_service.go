@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -660,4 +661,71 @@ func (p *PHPManagerService) getDefaultCLIVersion() string {
 		}
 	}
 	return "8.3"
+}
+
+// WriteUserFPMPool writes the per-account PHP-FPM pool with package worker and RAM caps.
+func (p *PHPManagerService) WriteUserFPMPool(username, version, homeDir string, maxChildren, ramMB int) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return fmt.Errorf("username is required")
+	}
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = paths.DetectInstalledPHPVersion("8.2")
+	}
+	if homeDir == "" {
+		homeDir = filepath.Join("/home", username)
+	}
+	if maxChildren <= 0 {
+		maxChildren = 5
+	}
+	if ramMB <= 0 {
+		ramMB = 256
+	}
+
+	poolFile := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", version, username)
+	sock := paths.PHPSocketForUser(version, username)
+	pool := fmt.Sprintf(`[%s]
+user = %s
+group = %s
+listen = %s
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+pm = ondemand
+pm.max_children = %d
+pm.process_idle_timeout = 10s
+chdir = /
+php_admin_value[open_basedir] = %s/:/tmp/
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
+php_admin_value[memory_limit] = %dM
+`, username, username, username, sock, maxChildren, homeDir, ramMB)
+
+	_ = os.MkdirAll("/run/php", 0755)
+	_ = os.MkdirAll(filepath.Dir(poolFile), 0755)
+	if err := os.WriteFile(poolFile, []byte(pool), 0644); err != nil {
+		return err
+	}
+	_ = p.RestartFPM(version)
+	return nil
+}
+
+// SyncPoolsForPackage rewrites FPM pools for every account on this hosting package.
+func (p *PHPManagerService) SyncPoolsForPackage(pkg HostingPackage) {
+	NormalizePackagePHPLimits(&pkg)
+	users := NewUserAccountService().ListUsers()
+	for _, u := range users {
+		if u.PackageID != pkg.ID {
+			continue
+		}
+		ver := strings.TrimSpace(u.PHPVersion)
+		if ver == "" {
+			ver = pkg.DefaultPHPVersion
+		}
+		home := strings.TrimSpace(u.HomeDir)
+		if home == "" {
+			home = filepath.Join("/home", u.Username)
+		}
+		_ = p.WriteUserFPMPool(u.Username, ver, home, pkg.EffectiveMaxPHPChildren(), pkg.EffectiveRAMLimitMB())
+	}
 }

@@ -1220,20 +1220,162 @@ func (c *ClientService) ToggleCronJob(username, cronID string) error {
 // =========================================================================
 
 func (c *ClientService) GetPHPConfig(username string) (map[string]any, error) {
+	user := c.findUser(username)
+	ramCap := 256
+	children := 5
+	version := "8.2"
+	if user != nil {
+		if user.PHPVersion != "" {
+			version = user.PHPVersion
+		}
+		if user.RAMLimitMB > 0 {
+			ramCap = user.RAMLimitMB
+		}
+		if user.PackageID != "" {
+			if pkg, err := NewPackagesService().GetPackage(user.PackageID); err == nil && pkg != nil {
+				ramCap = pkg.EffectiveRAMLimitMB()
+				children = pkg.EffectiveMaxPHPChildren()
+			}
+		}
+	}
+
+	memoryLimit := fmt.Sprintf("%dM", ramCap)
+	uploadMax := "64M"
+	maxExec := 300
+	sites, _ := c.GetWebsites(username)
+	for _, site := range sites {
+		iniPath := filepath.Join(site.DocumentRoot, ".user.ini")
+		if b, err := os.ReadFile(iniPath); err == nil {
+			content := string(b)
+			if v := extractIniValue(content, "memory_limit"); v != "" {
+				memoryLimit = v
+			}
+			if v := extractIniValue(content, "upload_max_filesize"); v != "" {
+				uploadMax = v
+			}
+			if v := extractIniValue(content, "max_execution_time"); v != "" {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+					maxExec = n
+				}
+			}
+			break
+		}
+	}
+
+	memMB := ParsePHPMemoryMB(memoryLimit)
+	if memMB > ramCap {
+		memMB = ramCap
+		memoryLimit = fmt.Sprintf("%dM", ramCap)
+	}
+
 	return map[string]any{
-		"active_version":      "8.2",
+		"active_version":      version,
 		"available_versions":  []string{"8.1", "8.2", "8.3"},
-		"memory_limit":        "256M",
-		"upload_max_filesize": "64M",
-		"post_max_size":       "64M",
-		"max_execution_time":  300,
-		"max_input_time":      300,
+		"memory_limit":        memoryLimit,
+		"memory_limit_mb":     memMB,
+		"ram_limit_mb":        ramCap,
+		"max_php_children":    children,
+		"upload_max_filesize": uploadMax,
+		"post_max_size":       uploadMax,
+		"max_execution_time":  maxExec,
+		"max_input_time":      maxExec,
 		"display_errors":      false,
 	}, nil
 }
 
 func (c *ClientService) SavePHPConfig(username, version string, memoryLimit, uploadMax, maxExec int) error {
+	user := c.findUser(username)
+	ramCap := 256
+	if user != nil && user.RAMLimitMB > 0 {
+		ramCap = user.RAMLimitMB
+	}
+	if user != nil && user.PackageID != "" {
+		if pkg, err := NewPackagesService().GetPackage(user.PackageID); err == nil && pkg != nil {
+			ramCap = pkg.EffectiveRAMLimitMB()
+		}
+	}
+	if memoryLimit <= 0 {
+		memoryLimit = ramCap
+	}
+	if memoryLimit > ramCap {
+		memoryLimit = ramCap
+	}
+	if uploadMax <= 0 {
+		uploadMax = 64
+	}
+	if maxExec <= 0 {
+		maxExec = 300
+	}
+
+	content := fmt.Sprintf("memory_limit = %dM\nupload_max_filesize = %dM\npost_max_size = %dM\nmax_execution_time = %d\n",
+		memoryLimit, uploadMax, uploadMax, maxExec)
+
+	sites, err := c.GetWebsites(username)
+	if err != nil {
+		return err
+	}
+	if len(sites) == 0 && user != nil && user.MainDomain != "" {
+		sites = []ClientWebsite{{DocumentRoot: paths.UserDomainRoot(username, user.MainDomain)}}
+	}
+	for _, site := range sites {
+		if site.DocumentRoot == "" {
+			continue
+		}
+		_ = os.MkdirAll(site.DocumentRoot, 0755)
+		iniPath := filepath.Join(site.DocumentRoot, ".user.ini")
+		if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
+			return err
+		}
+		_ = exec.Command("chown", fmt.Sprintf("%s:%s", username, username), iniPath).Run()
+	}
 	return nil
+}
+
+func ParsePHPMemoryMB(raw string) int {
+	raw = strings.TrimSpace(strings.ToUpper(raw))
+	if raw == "" {
+		return 0
+	}
+	mult := 1
+	switch {
+	case strings.HasSuffix(raw, "G"):
+		mult = 1024
+		raw = strings.TrimSuffix(raw, "G")
+	case strings.HasSuffix(raw, "M"):
+		mult = 1
+		raw = strings.TrimSuffix(raw, "M")
+	case strings.HasSuffix(raw, "K"):
+		n, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(raw, "K")))
+		if err != nil {
+			return 0
+		}
+		if n < 1024 {
+			return 1
+		}
+		return n / 1024
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0
+	}
+	return n * mult
+}
+
+func extractIniValue(content, key string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(parts[0]), key) {
+			return strings.TrimSpace(parts[1])
+		}
+	}
+	return ""
 }
 
 // GetPhpMyAdminSSO returns dedicated scoped login link for tenant with active SSO session

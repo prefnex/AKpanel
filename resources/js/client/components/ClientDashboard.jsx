@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { 
   Globe, 
   Database, 
@@ -35,7 +35,6 @@ import { Badge } from '../../components/ui/badge';
 import { Input } from '../../components/ui/input';
 
 export default function ClientDashboard({ stats, showToast }) {
-  const navigate = useNavigate();
   const [dashboardView, setDashboardView] = useState('modern'); // 'modern' | 'classic' | 'dev'
   const [classicSearch, setClassicSearch] = useState('');
 
@@ -176,9 +175,9 @@ export default function ClientDashboard({ stats, showToast }) {
               {quickActions.map((action, i) => {
                 const Icon = action.icon;
                 return (
-                  <div
+                  <Link
                     key={i}
-                    onClick={() => navigate(action.path)}
+                    to={action.path}
                     className="group relative bg-zinc-950/60 hover:bg-zinc-900/80 border border-zinc-800/80 hover:border-emerald-500/40 p-5 rounded-2xl transition-all duration-200 cursor-pointer shadow-lg hover:shadow-emerald-950/30 flex items-start justify-between"
                   >
                     <div className="flex items-start gap-3.5">
@@ -195,7 +194,7 @@ export default function ClientDashboard({ stats, showToast }) {
                       </div>
                     </div>
                     <ArrowUpRight className="w-4 h-4 text-zinc-600 group-hover:text-emerald-400 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
-                  </div>
+                  </Link>
                 );
               })}
             </div>
@@ -267,10 +266,28 @@ export default function ClientDashboard({ stats, showToast }) {
                   <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     {filteredItems.map((item, itemIdx) => {
                       const Icon = item.icon;
+                      if (item.isPma) {
+                        return (
+                          <button
+                            key={itemIdx}
+                            type="button"
+                            onClick={() => handleLaunchPhpMyAdmin()}
+                            className="p-3.5 bg-zinc-900/40 hover:bg-zinc-900 border border-zinc-800/50 hover:border-emerald-500/40 rounded-xl transition cursor-pointer flex items-center gap-3 group text-left w-full"
+                          >
+                            <div className="p-2.5 bg-zinc-800 group-hover:bg-emerald-500/20 text-zinc-300 group-hover:text-emerald-400 rounded-lg transition">
+                              <Icon className="w-5 h-5" />
+                            </div>
+                            <div className="truncate">
+                              <h4 className="text-xs font-bold text-zinc-200 group-hover:text-emerald-400 transition truncate">{item.name}</h4>
+                              <p className="text-[10px] text-zinc-500 truncate">{item.desc}</p>
+                            </div>
+                          </button>
+                        );
+                      }
                       return (
-                        <div
+                        <Link
                           key={itemIdx}
-                          onClick={() => item.isPma ? handleLaunchPhpMyAdmin() : navigate(item.path)}
+                          to={item.path}
                           className="p-3.5 bg-zinc-900/40 hover:bg-zinc-900 border border-zinc-800/50 hover:border-emerald-500/40 rounded-xl transition cursor-pointer flex items-center gap-3 group"
                         >
                           <div className="p-2.5 bg-zinc-800 group-hover:bg-emerald-500/20 text-zinc-300 group-hover:text-emerald-400 rounded-lg transition">
@@ -280,7 +297,7 @@ export default function ClientDashboard({ stats, showToast }) {
                             <h4 className="text-xs font-bold text-zinc-200 group-hover:text-emerald-400 transition truncate">{item.name}</h4>
                             <p className="text-[10px] text-zinc-500 truncate">{item.desc}</p>
                           </div>
-                        </div>
+                        </Link>
                       );
                     })}
                   </div>

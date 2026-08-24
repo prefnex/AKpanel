@@ -46,6 +46,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
+import { Switch } from './ui/switch';
 
 export default function DatabasesManager({ defaultEngine = 'all', showToast }) {
   const location = useLocation();
@@ -1189,15 +1190,13 @@ export default function DatabasesManager({ defaultEngine = 'all', showToast }) {
                   <p className="text-[11px] text-zinc-400">
                     Bypasses username/password prompts and logs in directly with panel administrator privileges.
                   </p>
-                  <label className="flex items-center gap-2 cursor-pointer pt-1">
-                    <input
-                      type="checkbox"
-                      checked={pmaConfig.auto_login}
-                      onChange={(e) => setPmaConfig(prev => ({ ...prev, auto_login: e.target.checked }))}
-                      className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-blue-600 focus:ring-0"
-                    />
+                  <div className="flex items-center justify-between gap-3 pt-1">
                     <span className="text-xs text-zinc-300 font-medium">Enable Instant Auto-Login</span>
-                  </label>
+                    <Switch
+                      checked={Boolean(pmaConfig.auto_login)}
+                      onCheckedChange={(on) => setPmaConfig(prev => ({ ...prev, auto_login: on }))}
+                    />
+                  </div>
                 </div>
 
                 {/* Max Upload Limit */}

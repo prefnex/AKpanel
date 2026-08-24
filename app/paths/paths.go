@@ -164,10 +164,13 @@ func SSLDir(domain string) string {
 }
 
 // RoundcubeWebRoot is the document root nginx should use for Roundcube.
-// Debian/Ubuntu packages live in /var/lib/roundcube and load /etc/roundcube.
+// Ubuntu's package puts the PHP entrypoint in /usr/share/roundcube; /var/lib/roundcube
+// is state only and often has no index.php, which makes nginx 403 on directory index.
 func RoundcubeWebRoot() string {
-	if _, err := os.Stat("/var/lib/roundcube/index.php"); err == nil {
-		return "/var/lib/roundcube"
+	for _, root := range []string{"/usr/share/roundcube", "/var/lib/roundcube", RoundcubeRoot} {
+		if _, err := os.Stat(filepath.Join(root, "index.php")); err == nil {
+			return root
+		}
 	}
 	return RoundcubeRoot
 }

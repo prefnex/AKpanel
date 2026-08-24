@@ -779,7 +779,7 @@ func (n *NginxService) phpFastcgiPass() string {
 func (n *NginxService) roundcubePHPLocations() string {
 	sock := n.phpFastcgiPass()
 	return fmt.Sprintf(`    location / {
-        try_files $uri $uri/ /index.php?$query_string;
+        try_files $uri /index.php?$query_string;
     }
 
 %s

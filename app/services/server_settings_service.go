@@ -163,13 +163,10 @@ func (s *ServerSettingsService) SaveSettings(settings ServerSettings) error {
 		settings.IPStackMode = "dual"
 	}
 
-	// IPv6 settings can only ever be as capable as the host. Enabling them on a server
-	// without a routed prefix would produce AAAA records and vhost bindings pointing at
-	// addresses that do not exist, so the flags are clamped to what was detected.
 	capability := NewIPService().DetectIPv6Capability()
-	if !capability.Available || settings.IPStackMode == "ipv4_only" {
-		settings.IPv6Enabled = false
-	}
+	// Dual-stack means websites and DNS are published over IPv6. The dedicated-per-user
+	// switch is the only extra opt-in; there is no separate "serve IPv6" checkbox.
+	settings.IPv6Enabled = capability.Available && settings.IPStackMode != "ipv4_only"
 	if !settings.IPv6Enabled || !capability.CanAllocate {
 		settings.IPv6PerUser = false
 	}
@@ -184,7 +181,16 @@ func (s *ServerSettingsService) SaveSettings(settings ServerSettings) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.filePath, bytes, 0644)
+	if err := os.WriteFile(s.filePath, bytes, 0644); err != nil {
+		return err
+	}
+
+	snap := settings
+	go func() {
+		defer func() { _ = recover() }()
+		s.dnsService.RebuildIPv6AcrossZones(snap)
+	}()
+	return nil
 }
 
 // SyncDNSSettings mirrors values edited from the dedicated DNS screen without

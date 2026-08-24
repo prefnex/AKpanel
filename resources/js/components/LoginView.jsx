@@ -132,6 +132,8 @@ export default function LoginView({ onLoginSuccess }) {
                 </div>
                 <Input
                   type="text"
+                  name="username"
+                  autoComplete="username"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="root"
@@ -153,6 +155,8 @@ export default function LoginView({ onLoginSuccess }) {
                 </div>
                 <Input
                   type={showPassword ? 'text' : 'password'}
+                  name="password"
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••••••"

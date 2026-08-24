@@ -210,10 +210,10 @@ export default function ClientFTPPage({ showToast, username, serverIP }) {
               <RefreshCw className="w-5 h-5 animate-spin text-emerald-500" />
               <span>Loading accounts...</span>
             </div>
-          ) : ftpUsers.filter((u) => !u.is_primary).length === 0 ? (
+          ) : ftpUsers.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-zinc-500 gap-2">
               <Server className="w-10 h-10 text-zinc-700" />
-              <p className="text-sm">No extra FTP sub-accounts yet. Your primary login is listed above.</p>
+              <p className="text-sm">No FTP accounts yet.</p>
               <Button size="sm" onClick={() => setIsCreateOpen(true)} className="bg-emerald-600 text-xs text-white mt-1">
                 Create First FTP User
               </Button>

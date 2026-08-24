@@ -24,8 +24,9 @@ type HostingPackage struct {
 	AddonDomains      int    `json:"addon_domains"`      // Max Addon Domains
 	HourlyEmails      int    `json:"hourly_emails"`      // Hourly email sending cap
 	CgroupsPolicy     string `json:"cgroups_policy"`     // None policy, Standard, High-Perf
-	Nproc             int    `json:"nproc"`              // Process limit
-	ApacheNproc       int    `json:"apache_nproc"`       // Web server process limit
+	Nproc             int    `json:"nproc"`              // Process limit (ulimit nproc)
+	ApacheNproc       int    `json:"apache_nproc"`       // Legacy web-server process field
+	MaxPHPChildren    int    `json:"max_php_children"`   // Concurrent PHP-FPM workers (pm.max_children)
 	MaxInodes         int    `json:"max_inodes"`         // Inode limit (0 = Unlimited)
 	Nofile            int    `json:"nofile"`             // Open files limit (e.g. 200, 1024)
 	NodejsApps        int    `json:"nodejs_apps"`        // Max Node.js instances
@@ -82,6 +83,7 @@ func (s *PackagesService) initDefaultPackages() {
 				CgroupsPolicy:     "None policy",
 				Nproc:             25,
 				ApacheNproc:       25,
+				MaxPHPChildren:    5,
 				MaxInodes:         100000,
 				Nofile:            200,
 				NodejsApps:        1,
@@ -108,6 +110,7 @@ func (s *PackagesService) initDefaultPackages() {
 				CgroupsPolicy:     "Standard",
 				Nproc:             40,
 				ApacheNproc:       40,
+				MaxPHPChildren:    10,
 				MaxInodes:         350000,
 				Nofile:            200,
 				NodejsApps:        2,
@@ -134,6 +137,7 @@ func (s *PackagesService) initDefaultPackages() {
 				CgroupsPolicy:     "High-Perf",
 				Nproc:             100,
 				ApacheNproc:       100,
+				MaxPHPChildren:    20,
 				MaxInodes:         1000000,
 				Nofile:            1024,
 				NodejsApps:        10,
@@ -160,6 +164,7 @@ func (s *PackagesService) initDefaultPackages() {
 				CgroupsPolicy:     "None policy",
 				Nproc:             40,
 				ApacheNproc:       40,
+				MaxPHPChildren:    10,
 				MaxInodes:         0,
 				Nofile:            200,
 				NodejsApps:        1,
@@ -185,7 +190,36 @@ func (s *PackagesService) readPackages() ([]HostingPackage, error) {
 	if err := json.Unmarshal(content, &list); err != nil {
 		return nil, err
 	}
+	for i := range list {
+		NormalizePackagePHPLimits(&list[i])
+	}
 	return list, nil
+}
+
+func NormalizePackagePHPLimits(pkg *HostingPackage) {
+	if pkg == nil {
+		return
+	}
+	if pkg.MaxPHPChildren <= 0 {
+		if pkg.ApacheNproc > 0 {
+			pkg.MaxPHPChildren = pkg.ApacheNproc
+		} else {
+			pkg.MaxPHPChildren = 5
+		}
+	}
+	if pkg.RAMLimitMB <= 0 {
+		pkg.RAMLimitMB = 256
+	}
+}
+
+func (p HostingPackage) EffectiveMaxPHPChildren() int {
+	NormalizePackagePHPLimits(&p)
+	return p.MaxPHPChildren
+}
+
+func (p HostingPackage) EffectiveRAMLimitMB() int {
+	NormalizePackagePHPLimits(&p)
+	return p.RAMLimitMB
 }
 
 func (s *PackagesService) writePackages(list []HostingPackage) error {
@@ -236,6 +270,7 @@ func (s *PackagesService) SavePackage(pkg HostingPackage) error {
 	if pkg.CreatedAt == "" {
 		pkg.CreatedAt = time.Now().Format("2006-01-02")
 	}
+	NormalizePackagePHPLimits(&pkg)
 
 	found := false
 	for i, p := range list {

@@ -32,6 +32,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Switch } from './ui/switch';
 
 export default function UsersManager({ showToast }) {
   const [users, setUsers] = useState([]);
@@ -832,15 +833,13 @@ export default function UsersManager({ showToast }) {
                   ))}
                 </select>
                 {ipv6Offer && (
-                  <label className="flex items-center gap-2 pt-1 text-[11px] text-zinc-400">
-                    <input
-                      type="checkbox"
+                  <div className="flex items-center justify-between gap-3 pt-1 text-[11px] text-zinc-400">
+                    <span>Dedicated IPv6 from {ipv6Offer.subnet}</span>
+                    <Switch
                       checked={Boolean(formData.want_ipv6)}
-                      onChange={(e) => setFormData(prev => ({ ...prev, want_ipv6: e.target.checked }))}
-                      className="accent-indigo-500"
+                      onCheckedChange={(on) => setFormData(prev => ({ ...prev, want_ipv6: on }))}
                     />
-                    Dedicated IPv6 from {ipv6Offer.subnet}
-                  </label>
+                  </div>
                 )}
               </div>
 
@@ -862,17 +861,12 @@ export default function UsersManager({ showToast }) {
 
             {/* Reseller & Language */}
             <div className="grid grid-cols-2 gap-3 pt-1">
-              <div className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800">
-                <input
-                  type="checkbox"
-                  id="reseller_check"
+              <div className="flex items-center justify-between gap-3 p-2 rounded-xl bg-zinc-950 border border-zinc-800">
+                <label className="text-xs text-zinc-300">Reseller Privileges</label>
+                <Switch
                   checked={formData.is_reseller}
-                  onChange={(e) => setFormData(prev => ({ ...prev, is_reseller: e.target.checked }))}
-                  className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-blue-600"
+                  onCheckedChange={(on) => setFormData(prev => ({ ...prev, is_reseller: on }))}
                 />
-                <label htmlFor="reseller_check" className="text-xs text-zinc-300 cursor-pointer">
-                  Reseller Privileges
-                </label>
               </div>
 
               <div className="space-y-1">
@@ -929,45 +923,37 @@ export default function UsersManager({ showToast }) {
               <label className="font-bold text-zinc-300 block">Additional Options:</label>
               
               <div className="grid grid-cols-2 gap-2">
-                <label className="flex items-center gap-2 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
-                  <input
-                    type="checkbox"
-                    checked={formData.backup_enabled}
-                    onChange={(e) => setFormData(prev => ({ ...prev, backup_enabled: e.target.checked }))}
-                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-blue-600"
-                  />
+                <div className="flex items-center justify-between gap-3 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                   <span className="text-zinc-300">Backup user account</span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
-                  <input
-                    type="checkbox"
-                    checked={formData.shell_access}
-                    onChange={(e) => setFormData(prev => ({ ...prev, shell_access: e.target.checked }))}
-                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-blue-600"
+                  <Switch
+                    checked={formData.backup_enabled}
+                    onCheckedChange={(on) => setFormData(prev => ({ ...prev, backup_enabled: on }))}
                   />
+                </div>
+
+                <div className="flex items-center justify-between gap-3 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                   <span className="text-zinc-300">Shell Access (SSH)</span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
-                  <input
-                    type="checkbox"
-                    checked={formData.autossl}
-                    onChange={(e) => setFormData(prev => ({ ...prev, autossl: e.target.checked }))}
-                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-blue-600"
+                  <Switch
+                    checked={formData.shell_access}
+                    onCheckedChange={(on) => setFormData(prev => ({ ...prev, shell_access: on }))}
                   />
+                </div>
+
+                <div className="flex items-center justify-between gap-3 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                   <span className="text-zinc-300">AutoSSL Certificate</span>
-                </label>
-
-                <label className="flex items-center gap-2 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
-                  <input
-                    type="checkbox"
-                    checked={formData.create_mysql}
-                    onChange={(e) => setFormData(prev => ({ ...prev, create_mysql: e.target.checked }))}
-                    className="w-4 h-4 rounded border-zinc-700 bg-zinc-800 text-blue-600"
+                  <Switch
+                    checked={formData.autossl}
+                    onCheckedChange={(on) => setFormData(prev => ({ ...prev, autossl: on }))}
                   />
+                </div>
+
+                <div className="flex items-center justify-between gap-3 cursor-pointer p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                   <span className="text-zinc-300">Create MySQL Database</span>
-                </label>
+                  <Switch
+                    checked={formData.create_mysql}
+                    onCheckedChange={(on) => setFormData(prev => ({ ...prev, create_mysql: on }))}
+                  />
+                </div>
               </div>
             </div>
 
@@ -1165,45 +1151,37 @@ export default function UsersManager({ showToast }) {
 
             {/* Toggles */}
             <div className="grid grid-cols-2 gap-2 pt-2 border-t border-zinc-800">
-              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedUser?.shell_access || false}
-                  onChange={(e) => setSelectedUser(prev => ({ ...prev, shell_access: e.target.checked }))}
-                  className="w-4 h-4 rounded text-purple-600"
-                />
+              <div className="flex items-center justify-between gap-3 p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                 <span className="text-zinc-300 font-semibold">Shell Access (SSH)</span>
-              </label>
-
-              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedUser?.autossl || false}
-                  onChange={(e) => setSelectedUser(prev => ({ ...prev, autossl: e.target.checked }))}
-                  className="w-4 h-4 rounded text-purple-600"
+                <Switch
+                  checked={selectedUser?.shell_access || false}
+                  onCheckedChange={(on) => setSelectedUser(prev => ({ ...prev, shell_access: on }))}
                 />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                 <span className="text-zinc-300 font-semibold">AutoSSL Enabled</span>
-              </label>
-
-              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedUser?.is_reseller || false}
-                  onChange={(e) => setSelectedUser(prev => ({ ...prev, is_reseller: e.target.checked }))}
-                  className="w-4 h-4 rounded text-purple-600"
+                <Switch
+                  checked={selectedUser?.autossl || false}
+                  onCheckedChange={(on) => setSelectedUser(prev => ({ ...prev, autossl: on }))}
                 />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                 <span className="text-zinc-300 font-semibold">Reseller Privileges</span>
-              </label>
-
-              <label className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950 border border-zinc-800 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedUser?.backup_enabled || false}
-                  onChange={(e) => setSelectedUser(prev => ({ ...prev, backup_enabled: e.target.checked }))}
-                  className="w-4 h-4 rounded text-purple-600"
+                <Switch
+                  checked={selectedUser?.is_reseller || false}
+                  onCheckedChange={(on) => setSelectedUser(prev => ({ ...prev, is_reseller: on }))}
                 />
+              </div>
+
+              <div className="flex items-center justify-between gap-3 p-2 rounded-xl bg-zinc-950 border border-zinc-800">
                 <span className="text-zinc-300 font-semibold">Backup User</span>
-              </label>
+                <Switch
+                  checked={selectedUser?.backup_enabled || false}
+                  onCheckedChange={(on) => setSelectedUser(prev => ({ ...prev, backup_enabled: on }))}
+                />
+              </div>
             </div>
 
             <DialogFooter className="pt-2">

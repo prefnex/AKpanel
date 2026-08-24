@@ -1520,6 +1520,86 @@ func (s *DNSService) PublishAAAARecords(domain, ipv6 string) error {
 	return s.syncBindZone(&zone)
 }
 
+// RebuildIPv6AcrossZones applies the current IP stack to every hosted zone.
+// Dual-stack publishes AAAA for @ and *; ipv4_only strips those records; per-user
+// mode allocates a dedicated address from the same prefix instead of the panel IP.
+func (s *DNSService) RebuildIPv6AcrossZones(settings ServerSettings) {
+	shared := strings.TrimSpace(s.GetSystemIPv6())
+	if settings.IPStackMode == "ipv4_only" || !settings.IPv6Enabled || shared == "" {
+		for _, z := range s.ListZones() {
+			_ = s.StripWebAAAARecords(z.Domain)
+		}
+		return
+	}
+
+	usersByName := map[string]UserAccount{}
+	for _, u := range NewUserAccountService().ListUsers() {
+		usersByName[u.Username] = u
+	}
+
+	for _, z := range s.ListZones() {
+		addr := shared
+		if settings.IPv6PerUser && z.OwnerUser != "" && z.OwnerUser != "root" && z.OwnerUser != "admin" {
+			if u, ok := usersByName[z.OwnerUser]; ok {
+				if existing := strings.TrimSpace(u.IPv6Address); existing != "" {
+					addr = existing
+				} else if allocated, err := NewIPService().AllocateUserIPv6(z.OwnerUser); err == nil && allocated != "" {
+					addr = allocated
+					u.IPv6Address = allocated
+					_ = NewUserAccountService().SaveUser(u)
+					usersByName[z.OwnerUser] = u
+				}
+			}
+		}
+		_ = s.PublishAAAARecords(z.Domain, addr)
+	}
+}
+
+// StripWebAAAARecords removes apex and wildcard AAAA records so Dual-Stack can be
+// turned off without leaving clients resolving a dead IPv6 path.
+func (s *DNSService) StripWebAAAARecords(domain string) error {
+	s.mu.Lock()
+	zones, err := s.readZones()
+	if err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	idx := -1
+	for i := range zones {
+		if strings.EqualFold(zones[i].Domain, domain) {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		s.mu.Unlock()
+		return nil
+	}
+	kept := zones[idx].Records[:0]
+	changed := false
+	for _, rec := range zones[idx].Records {
+		if rec.Type == "AAAA" && (rec.Name == "@" || rec.Name == "*") {
+			changed = true
+			continue
+		}
+		kept = append(kept, rec)
+	}
+	if !changed {
+		s.mu.Unlock()
+		return nil
+	}
+	zones[idx].Records = kept
+	zones[idx].Serial = time.Now().Format("2006010215")
+	zones[idx].UpdatedAt = time.Now().Format("2006-01-02 15:04:05")
+	if err := s.writeZones(zones); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	zone := zones[idx]
+	s.mu.Unlock()
+	return s.syncBindZone(&zone)
+}
+
 // publishDKIMRecord points default._domainkey at the given public key and re-syncs BIND.
 func (s *DNSService) publishDKIMRecord(domain, pub string) bool {
 	value := "v=DKIM1; k=rsa; p=" + pub
@@ -1630,7 +1710,7 @@ func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string, inc
 	// addresses until an administrator has chosen to serve sites over IPv6. mail. stays
 	// A-only because outbound SMTP is pinned to IPv4. www is a CNAME, so it must not get
 	// a sibling AAAA record.
-	if ss, err := NewServerSettingsService().GetSettings(); err == nil && ss.IPv6Enabled {
+	if ss, err := NewServerSettingsService().GetSettings(); err == nil && (ss.IPv6Enabled || ss.IPStackMode == "dual") {
 		if v6 := strings.TrimSpace(s.GetSystemIPv6()); v6 != "" {
 			records = append(records,
 				DNSRecord{Name: "@", Type: "AAAA", Value: v6, TTL: 14400, Comment: "IPv6 web"},

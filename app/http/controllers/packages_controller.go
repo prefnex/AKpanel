@@ -49,6 +49,8 @@ func (c *PackagesController) Store(ctx goravelhttp.Context) goravelhttp.Response
 		})
 	}
 
+	go services.NewPHPManagerService().SyncPoolsForPackage(pkg)
+
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status":  "success",
 		"message": "Hosting package saved successfully!",

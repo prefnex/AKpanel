@@ -1,5 +1,5 @@
 import React from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { 
   LayoutDashboard, 
   Globe, 
@@ -22,7 +22,6 @@ import {
 import { Badge } from '../../components/ui/badge';
 
 export default function ClientSidebar({ stats }) {
-  const navigate = useNavigate();
   const location = useLocation();
   const currentPath = location.pathname;
 
@@ -77,9 +76,9 @@ export default function ClientSidebar({ stats }) {
                 );
               }
               return (
-                <button
+                <Link
                   key={item.id}
-                  onClick={() => navigate(item.path)}
+                  to={item.path}
                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold transition group ${
                     isActive
                       ? 'bg-emerald-600/10 text-emerald-400 border border-emerald-500/30 shadow-sm'
@@ -100,7 +99,7 @@ export default function ClientSidebar({ stats }) {
                       {item.count}
                     </span>
                   )}
-                </button>
+                </Link>
               );
             })}
           </div>

@@ -46,6 +46,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Switch } from './ui/switch';
 
 export default function EmailManager({ showToast }) {
   const navigate = useNavigate();
@@ -1555,15 +1556,13 @@ export default function EmailManager({ showToast }) {
                 message is scored before delivery.
               </p>
 
-              <label className="flex items-center gap-2 text-xs text-zinc-300 pt-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={antiSpam.enabled}
-                  onChange={(e) => setAntiSpam({ ...antiSpam, enabled: e.target.checked })}
-                  className="accent-blue-500"
-                />
+              <div className="flex items-center justify-between gap-3 text-xs text-zinc-300 pt-1">
                 <span>Enable spam scanning for all inbound mail</span>
-              </label>
+                <Switch
+                  checked={Boolean(antiSpam.enabled)}
+                  onCheckedChange={(on) => setAntiSpam({ ...antiSpam, enabled: on })}
+                />
+              </div>
 
               <div className="pt-1">
                 <label className="text-xs font-medium text-zinc-300 block mb-1.5">
@@ -1580,15 +1579,13 @@ export default function EmailManager({ showToast }) {
                 />
               </div>
 
-              <label className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={antiSpam.rewrite_subject}
-                  onChange={(e) => setAntiSpam({ ...antiSpam, rewrite_subject: e.target.checked })}
-                  className="accent-blue-500"
-                />
+              <div className="flex items-center justify-between gap-3 text-xs text-zinc-300">
                 <span>Tag the subject of flagged messages</span>
-              </label>
+                <Switch
+                  checked={Boolean(antiSpam.rewrite_subject)}
+                  onCheckedChange={(on) => setAntiSpam({ ...antiSpam, rewrite_subject: on })}
+                />
+              </div>
 
               {antiSpam.rewrite_subject && (
                 <Input
