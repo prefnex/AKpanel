@@ -1492,7 +1492,7 @@ func (s *DNSService) PublishAAAARecords(domain, ipv6 string) error {
 		return fmt.Errorf("zone not found for domain: %s", domain)
 	}
 
-	for _, name := range []string{"@", "www", "*"} {
+	for _, name := range []string{"@", "*"} {
 		found := false
 		for i := range zones[idx].Records {
 			if zones[idx].Records[i].Type == "AAAA" && zones[idx].Records[i].Name == name {
@@ -1624,6 +1624,19 @@ func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string, inc
 		records = append(records, DNSRecord{
 			Name: "@", Type: "CAA", Value: `0 issue "letsencrypt.org"`, TTL: 86400, Comment: "SSL Certificate Authority Authorization",
 		})
+	}
+
+	// AAAA is opt-in: the IPv6 toggles default off so a dual-stack VPS does not publish
+	// addresses until an administrator has chosen to serve sites over IPv6. mail. stays
+	// A-only because outbound SMTP is pinned to IPv4. www is a CNAME, so it must not get
+	// a sibling AAAA record.
+	if ss, err := NewServerSettingsService().GetSettings(); err == nil && ss.IPv6Enabled {
+		if v6 := strings.TrimSpace(s.GetSystemIPv6()); v6 != "" {
+			records = append(records,
+				DNSRecord{Name: "@", Type: "AAAA", Value: v6, TTL: 14400, Comment: "IPv6 web"},
+				DNSRecord{Name: "*", Type: "AAAA", Value: v6, TTL: 14400, Comment: "IPv6 wildcard"},
+			)
+		}
 	}
 
 	return DNSZone{

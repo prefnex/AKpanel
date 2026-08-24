@@ -3,6 +3,7 @@ package services
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,7 +18,9 @@ const (
 	mailRoutingPath    = "/etc/akpanel/mail_routing.json"
 
 	opendkimMilter  = "inet:127.0.0.1:8891"
+	opendkimListen  = "inet:8891@127.0.0.1"
 	spamassMilter   = "unix:/spamass/spamass.sock"
+	spamassSockPath = "/var/spool/postfix/spamass/spamass.sock"
 	postfixTransMap = "/etc/postfix/transport"
 )
 
@@ -177,13 +180,16 @@ func (m *MailPolicyService) applyAntiSpamLocked(s AntiSpamSettings) {
 		return
 	}
 
-	// Debian's spamass-milter listens on a socket inside the Postfix chroot so the
-	// smtpd milter path stays valid.
-	_ = os.MkdirAll("/var/spool/postfix/spamass", 0755)
+	// smtpd is chrooted in /var/spool/postfix, so the milter socket has to live under
+	// that tree and stay group-readable by postfix. A 0700 directory owned by
+	// spamass-milter produces the "Permission denied" Postfix logs on every inbound
+	// connection even when the daemon itself is running.
+	_ = os.MkdirAll("/var/spool/postfix/spamass", 0770)
 	_ = exec.Command("chown", "spamass-milter:postfix", "/var/spool/postfix/spamass").Run()
+	_ = os.Chmod("/var/spool/postfix/spamass", 0770)
 	defaults := `# Managed by AKpanel
 OPTIONS="-u spamass-milter -i 127.0.0.1 -m -r 15"
-SOCKET="/var/spool/postfix/spamass/spamass.sock"
+SOCKET="` + spamassSockPath + `"
 SOCKETOWNER="spamass-milter:postfix"
 SOCKETMODE="0660"
 `
@@ -197,6 +203,10 @@ SOCKETMODE="0660"
 		runTimeout(30*time.Second, "systemctl", "restart", "spamass-milter")
 	} else {
 		runTimeout(30*time.Second, "systemctl", "start", "spamass-milter")
+	}
+	if _, err := os.Stat(spamassSockPath); err == nil {
+		_ = exec.Command("chown", "spamass-milter:postfix", spamassSockPath).Run()
+		_ = os.Chmod(spamassSockPath, 0660)
 	}
 }
 
@@ -298,17 +308,51 @@ ExternalIgnoreList      refile:/etc/opendkim/TrustedHosts
 InternalHosts           refile:/etc/opendkim/TrustedHosts
 `
 	changed := writeIfChanged("/etc/opendkim.conf", conf, 0644)
-	_ = os.WriteFile("/etc/default/opendkim", []byte("# Managed by AKpanel\nSOCKET=\"inet:8891@127.0.0.1\"\n"), 0644)
+	_ = os.WriteFile("/etc/default/opendkim", []byte("# Managed by AKpanel\nSOCKET=\""+opendkimListen+"\"\n"), 0644)
+	dropInChanged := writeOpenDKIMSystemdDropIn()
 
 	if len(keyTable) == 0 {
 		return
 	}
 	runTimeout(20*time.Second, "systemctl", "enable", "opendkim")
-	if changed {
+	if dropInChanged {
+		runTimeout(20*time.Second, "systemctl", "daemon-reload")
+	}
+	// Always restart: KeyTable/SigningTable are not in opendkim.conf, so a "start if
+	// unchanged" path leaves the running daemon with a stale table and no TCP listener.
+	if changed || dropInChanged || !opendkimListening() {
 		runTimeout(30*time.Second, "systemctl", "restart", "opendkim")
 	} else {
 		runTimeout(30*time.Second, "systemctl", "start", "opendkim")
 	}
+}
+
+// writeOpenDKIMSystemdDropIn pins the milter to TCP 8891. Ubuntu's packaged unit is
+// Type=forking with ExecStart=/usr/sbin/opendkim and no EnvironmentFile, so
+// /etc/default/opendkim is ignored and the daemon stays on the unix socket. Postfix then
+// logs "connect to Milter service inet:127.0.0.1:8891: Connection refused" and, because
+// milter_default_action=accept, the message goes out unsigned.
+func writeOpenDKIMSystemdDropIn() bool {
+	dir := "/etc/systemd/system/opendkim.service.d"
+	_ = os.MkdirAll(dir, 0755)
+	body := `[Service]
+Type=simple
+PIDFile=
+ExecStart=
+ExecStart=/usr/sbin/opendkim -f -x /etc/opendkim.conf -p inet:8891@127.0.0.1
+RuntimeDirectory=opendkim
+RuntimeDirectoryMode=0755
+`
+	return writeIfChanged(filepath.Join(dir, "akpanel.conf"), body, 0644)
+}
+
+func opendkimListening() bool {
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:8891", 800*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // DKIMSigningActive reports whether OpenDKIM has at least one key wired into Postfix.
@@ -337,7 +381,9 @@ func (m *MailPolicyService) applyMiltersLocked() {
 		}
 	}
 	if m.readAntiSpamLocked().Enabled {
-		milters = append(milters, spamassMilter)
+		if info, err := os.Stat(spamassSockPath); err == nil && info.Mode()&os.ModeSocket != 0 {
+			milters = append(milters, spamassMilter)
+		}
 	}
 
 	joined := strings.Join(milters, ", ")
