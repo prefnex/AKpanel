@@ -9,12 +9,12 @@ import (
 )
 
 // spaCSP locks the SPA to its own origin. Monaco is loaded from jsDelivr by @monaco-editor/react
-// and spins up its workers from blob: URLs; fonts come from Google Fonts.
+// and spins up its workers from blob: URLs; fonts are self-hosted.
 const spaCSP = "default-src 'self'; " +
 	"script-src 'self' https://cdn.jsdelivr.net; " +
 	"worker-src 'self' blob:; " +
-	"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; " +
-	"font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; " +
+	"style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; " +
+	"font-src 'self' data: https://cdn.jsdelivr.net; " +
 	"img-src 'self' data: blob:; " +
 	"connect-src 'self'; " +
 	"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"

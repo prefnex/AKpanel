@@ -6,7 +6,6 @@ import AppShell from './components/app/AppShell';
 import AuthScreen from './components/app/AuthScreen';
 import AuthAside from './components/app/AuthAside';
 import ChangePasswordDialog from './components/app/ChangePasswordDialog';
-import ConfirmDialog from './components/app/ConfirmDialog';
 import { Button } from './components/ui/button';
 import { Skeleton } from './components/ui/skeleton';
 import { adminNav } from './config/adminNav';
@@ -26,13 +25,13 @@ const PHPAddonsPage = lazy(() => import('./components/php/PHPAddonsPage'));
 const PHPIniPage = lazy(() => import('./components/php/PHPIniPage'));
 const PHPIniRawPage = lazy(() => import('./components/php/PHPIniRawPage'));
 const PHPInstallPage = lazy(() => import('./components/php/PHPInstallPage'));
-const WebsitesTable = lazy(() => import('./components/WebsitesTable'));
+const WebsitesPage = lazy(() => import('./pages/admin/websites/WebsitesPage'));
+const CreateWebsiteSheet = lazy(() => import('./pages/admin/websites/CreateWebsiteSheet'));
 const TemplatesShowcase = lazy(() => import('./components/TemplatesShowcase'));
 const DatabasesManager = lazy(() => import('./components/DatabasesManager'));
 const FileManager = lazy(() => import('./components/FileManager'));
 const FileManagerV2 = lazy(() => import('./components/FileManagerV2'));
 const WebTerminal = lazy(() => import('./components/WebTerminal'));
-const CreateSiteModal = lazy(() => import('./components/CreateSiteModal'));
 const PackagesManager = lazy(() => import('./components/PackagesManager'));
 const UsersManager = lazy(() => import('./components/UsersManager'));
 const DNSZonesPage = lazy(() => import('./components/dns/DNSZonesPage'));
@@ -47,15 +46,6 @@ const ServerSettingsManager = lazy(() => import('./components/ServerSettingsMana
 const SSLManager = lazy(() => import('./components/SSLManager'));
 const FirewallManager = lazy(() => import('./components/FirewallManager'));
 const NotFoundPage = lazy(() => import('./components/NotFoundPage'));
-
-const EMPTY_SITE = {
-  domain: '',
-  server_engine: 'nginx',
-  template_id: 'laravel',
-  php_version: '8.2',
-  site_type: 'php',
-  proxy_port: 3000,
-};
 
 function PageFallback() {
   return (
@@ -102,11 +92,9 @@ export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(!!localStorage.getItem('ak_token'));
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [currentUser, setCurrentUser] = useState({ username: 'root', role: 'root_admin' });
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [createSite, setCreateSite] = useState({ open: false, template: null });
   const [passwordOpen, setPasswordOpen] = useState(false);
-  const [creating, setCreating] = useState(false);
-  const [formData, setFormData] = useState(EMPTY_SITE);
-  const [pendingDelete, setPendingDelete] = useState(null);
+  const openCreateSite = (template = null) => setCreateSite({ open: true, template });
 
   const signOutLocal = useCallback(() => {
     localStorage.removeItem('ak_token');
@@ -146,53 +134,6 @@ export default function App() {
     enabled: isAuthenticated,
     staleTime: Infinity,
   });
-  const refreshWebsites = () => qc.invalidateQueries({ queryKey: ['websites'] });
-
-  const handleTemplateSelect = (tpl) => {
-    setFormData((prev) => ({
-      ...prev,
-      template_id: tpl.id,
-      php_version: tpl.php_version !== 'none' ? tpl.php_version : '8.2',
-      site_type: tpl.default_type,
-    }));
-  };
-
-  const handleCreateSite = async (e) => {
-    e.preventDefault();
-    setCreating(true);
-    try {
-      const json = await api.post('/api/websites', formData);
-      showToast(json.message || 'Website created');
-      setIsModalOpen(false);
-      setFormData(EMPTY_SITE);
-      refreshWebsites();
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleSwitchEngine = async (domain, engine) => {
-    try {
-      const json = await api.post('/api/websites/switch-engine', { domain, engine });
-      showToast(json.message);
-      refreshWebsites();
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  };
-
-  const handleDeleteSite = async (domain) => {
-    setPendingDelete(null);
-    try {
-      const json = await api.post('/api/websites/delete', { domain });
-      showToast(json.message);
-      refreshWebsites();
-    } catch (err) {
-      showToast(err.message, 'error');
-    }
-  };
 
   const handleLogout = async () => {
     try {
@@ -266,7 +207,7 @@ export default function App() {
       onLogout={handleLogout}
       onChangePassword={() => setPasswordOpen(true)}
       headerActions={
-        <Button size="sm" className="hidden md:inline-flex" onClick={() => setIsModalOpen(true)}>
+        <Button size="sm" className="hidden md:inline-flex" onClick={() => openCreateSite()}>
           <Plus />Website
         </Button>
       }
@@ -324,22 +265,11 @@ export default function App() {
           <Route path="/firewall" element={legacy(<FirewallManager showToast={showToast} />)} />
           <Route path="/security" element={<Navigate to="/firewall" replace />} />
 
-          <Route path="/websites" element={legacy(
-            <WebsitesTable
-              websites={sites}
-              onRefresh={refreshWebsites}
-              onSwitchEngine={handleSwitchEngine}
-              onDeleteSite={(domain) => setPendingDelete(domain)}
-              onOpenModal={() => setIsModalOpen(true)}
-            />
-          )} />
+          <Route path="/websites" element={<WebsitesPage onCreate={openCreateSite} />} />
           <Route path="/templates" element={legacy(
             <TemplatesShowcase
               templates={templates.data || []}
-              onSelectTemplate={(tpl) => {
-                handleTemplateSelect(tpl);
-                setIsModalOpen(true);
-              }}
+              onSelectTemplate={(tpl) => openCreateSite(tpl.id)}
             />
           )} />
 
@@ -348,29 +278,13 @@ export default function App() {
       </Suspense>
 
       <ChangePasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
-      <ConfirmDialog
-        open={!!pendingDelete}
-        onOpenChange={(v) => !v && setPendingDelete(null)}
-        title={`Delete ${pendingDelete}?`}
-        description="Removes the vhost, its web server configuration and the document root. This cannot be undone."
-        confirmText={pendingDelete || undefined}
-        actionLabel="Delete website"
-        onConfirm={() => handleDeleteSite(pendingDelete)}
-      />
-      {isModalOpen && (
-        <Suspense fallback={null}>
-          <CreateSiteModal
-            isOpen={isModalOpen}
-            onClose={() => setIsModalOpen(false)}
-            templates={templates.data || []}
-            formData={formData}
-            setFormData={setFormData}
-            onSubmit={handleCreateSite}
-            loading={creating}
-            onTemplateSelect={handleTemplateSelect}
-          />
-        </Suspense>
-      )}
+      <Suspense fallback={null}>
+        <CreateWebsiteSheet
+          open={createSite.open}
+          presetTemplate={createSite.template}
+          onOpenChange={(open) => setCreateSite((v) => ({ ...v, open }))}
+        />
+      </Suspense>
     </AppShell>
   );
 }
