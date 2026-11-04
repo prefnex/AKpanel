@@ -1,0 +1,1 @@
+import{j as t}from"../app.js";function a({title:e,goal:s}){return t.jsxs("div",{className:"mb-1",children:[t.jsx("h3",{className:"text-base font-bold text-white tracking-tight",children:e}),t.jsx("p",{className:"text-xs text-zinc-400 mt-1 leading-relaxed max-w-3xl",children:s})]})}export{a as P};

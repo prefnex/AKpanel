@@ -336,7 +336,7 @@ func (c *UsersController) Destroy(ctx goravelhttp.Context) goravelhttp.Response 
 		})
 	}
 
-	if err := c.userAccountService.DeleteUser(username); err != nil {
+	if err := provisioning.GetUserOrchestrator().DeprovisionUser(context.Background(), username); err != nil {
 		return ctx.Response().Status(500).Json(goravelhttp.Json{
 			"status":  "error",
 			"message": err.Error(),

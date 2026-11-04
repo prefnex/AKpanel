@@ -102,10 +102,12 @@ func (a *ApacheService) ReloadApache() error {
 		disableNow("apache2")
 		return nil
 	}
+	// Vhosts rely on these modules, so they must be enabled before the syntax test,
+	// otherwise a fresh server can never pass configtest.
+	_ = exec.Command("a2enmod", "-q", "proxy", "proxy_fcgi", "rewrite", "headers", "setenvif").Run()
 	if output, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {
 		return fmt.Errorf("apache syntax test failed: %s", string(output))
 	}
-	_ = exec.Command("a2enmod", "proxy", "proxy_fcgi", "rewrite", "headers").Run()
 	if err := exec.Command("service", "apache2", "reload").Run(); err != nil {
 		_ = os.Remove("/var/run/apache2/apache2.pid")
 		_ = exec.Command("service", "apache2", "start").Run()

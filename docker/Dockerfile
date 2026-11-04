@@ -98,7 +98,8 @@ COPY docker/akpanel-dev-setup.sh /usr/local/bin/akpanel-dev-setup.sh
 COPY docker/akpanel-dev-setup.service /etc/systemd/system/akpanel-dev-setup.service
 # Hybrid profile: Apache sits behind Nginx on 8081, so it must never grab port 80 at boot.
 RUN sed -i 's/^Listen 80$/Listen 8081/' /etc/apache2/ports.conf \
-    && sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8081>/' /etc/apache2/sites-available/000-default.conf
+    && sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8081>/' /etc/apache2/sites-available/000-default.conf \
+    && a2enmod -q rewrite proxy proxy_fcgi proxy_http headers setenvif
 RUN chmod +x /usr/local/bin/akpanel-dev-setup.sh \
     && systemctl enable akpanel-dev-setup.service cron
 

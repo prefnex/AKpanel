@@ -1,0 +1,99 @@
+/*
+ * Transitional light-theme bridge for pages that still use hard-coded dark utility
+ * classes (bg-zinc-900, text-white, ...). Generated from the classes in use; remove a
+ * page's dependency on it by migrating that page to theme tokens.
+ */
+html:not(.dark) .text-white { color: hsl(var(--foreground)) !important; }
+html:not(.dark) .border-zinc-800 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .text-zinc-400 { color: hsl(var(--muted-foreground)) !important; }
+html:not(.dark) .text-zinc-300 { color: hsl(var(--foreground) / 0.82) !important; }
+html:not(.dark) .text-zinc-500 { color: hsl(var(--muted-foreground)) !important; }
+html:not(.dark) .bg-zinc-900 { background-color: hsl(var(--card)) !important; }
+html:not(.dark) .bg-zinc-950 { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .border-zinc-800\/80 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .hover\:text-white:hover { color: hsl(var(--foreground)) !important; }
+html:not(.dark) .bg-zinc-800 { background-color: hsl(var(--muted)) !important; }
+html:not(.dark) .bg-\[\#121215\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-zinc-900\/60 { background-color: hsl(var(--card) / 0.6) !important; }
+html:not(.dark) .hover\:bg-zinc-800:hover { background-color: hsl(var(--muted)) !important; }
+html:not(.dark) .text-zinc-200 { color: hsl(var(--foreground)) !important; }
+html:not(.dark) .border-zinc-700 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .bg-\[\#111217\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .hover\:bg-zinc-900\/40:hover { background-color: hsl(var(--card) / 0.4) !important; }
+html:not(.dark) .border-zinc-800\/90 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .hover\:text-zinc-200:hover { color: hsl(var(--foreground)) !important; }
+html:not(.dark) .bg-white { background-color: hsl(var(--foreground)) !important; }
+html:not(.dark) .hover\:bg-zinc-900:hover { background-color: hsl(var(--card)) !important; }
+html:not(.dark) .bg-zinc-900\/80 { background-color: hsl(var(--card) / 0.8) !important; }
+html:not(.dark) .text-black { color: hsl(var(--background)) !important; }
+html:not(.dark) .hover\:bg-zinc-900\/60:hover { background-color: hsl(var(--card) / 0.6) !important; }
+html:not(.dark) .text-zinc-600 { color: hsl(var(--muted-foreground) / 0.8) !important; }
+html:not(.dark) .bg-zinc-900\/40 { background-color: hsl(var(--card) / 0.4) !important; }
+html:not(.dark) .divide-zinc-800\/50 > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .bg-zinc-950\/60 { background-color: hsl(var(--background) / 0.6) !important; }
+html:not(.dark) .hover\:border-zinc-700:hover { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .border-zinc-800\/60 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .bg-zinc-950\/80 { background-color: hsl(var(--background) / 0.8) !important; }
+html:not(.dark) .bg-\[\#0f1015\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .hover\:bg-zinc-800\/30:hover { background-color: hsl(var(--muted) / 0.3) !important; }
+html:not(.dark) .hover\:bg-zinc-700:hover { background-color: hsl(var(--input)) !important; }
+html:not(.dark) .hover\:bg-zinc-800\/60:hover { background-color: hsl(var(--muted) / 0.6) !important; }
+html:not(.dark) .divide-zinc-800\/60 > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .hover\:text-zinc-300:hover { color: hsl(var(--foreground) / 0.82) !important; }
+html:not(.dark) .text-zinc-100 { color: hsl(var(--foreground)) !important; }
+html:not(.dark) .divide-zinc-800\/40 > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .border-zinc-900 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .bg-zinc-900\/90 { background-color: hsl(var(--card) / 0.9) !important; }
+html:not(.dark) .placeholder-zinc-500::placeholder { color: hsl(var(--muted-foreground)) !important; }
+html:not(.dark) .border-zinc-800\/50 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .hover\:bg-zinc-900\/50:hover { background-color: hsl(var(--card) / 0.5) !important; }
+html:not(.dark) .bg-zinc-600 { background-color: hsl(var(--input)) !important; }
+html:not(.dark) .bg-\[\#09090b\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-zinc-900\/50 { background-color: hsl(var(--card) / 0.5) !important; }
+html:not(.dark) .bg-zinc-700 { background-color: hsl(var(--input)) !important; }
+html:not(.dark) .text-zinc-700 { color: hsl(var(--muted-foreground) / 0.8) !important; }
+html:not(.dark) .bg-zinc-950\/40 { background-color: hsl(var(--background) / 0.4) !important; }
+html:not(.dark) .bg-zinc-800\/80 { background-color: hsl(var(--muted) / 0.8) !important; }
+html:not(.dark) .bg-\[\#111217\]\/90 { background-color: hsl(var(--background) / 0.9) !important; }
+html:not(.dark) .text-zinc-950 { color: hsl(var(--background)) !important; }
+html:not(.dark) .hover\:border-zinc-600:hover { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .hover\:bg-zinc-900\/30:hover { background-color: hsl(var(--card) / 0.3) !important; }
+html:not(.dark) .hover\:bg-zinc-800\/50:hover { background-color: hsl(var(--muted) / 0.5) !important; }
+html:not(.dark) .hover\:bg-zinc-700\/60:hover { background-color: hsl(var(--input) / 0.6) !important; }
+html:not(.dark) .divide-zinc-800 > :not([hidden]) ~ :not([hidden]) { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .border-zinc-700\/80 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .border-zinc-700\/60 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .border-zinc-500\/30 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .bg-zinc-900\/70 { background-color: hsl(var(--card) / 0.7) !important; }
+html:not(.dark) .bg-\[\#141418\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#0e0e11\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#0c0c0e\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#0a0f1d\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#07080b\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .text-zinc-800 { color: hsl(var(--background)) !important; }
+html:not(.dark) .placeholder-zinc-600::placeholder { color: hsl(var(--muted-foreground) / 0.8) !important; }
+html:not(.dark) .hover\:text-black:hover { color: hsl(var(--background)) !important; }
+html:not(.dark) .hover\:border-zinc-800:hover { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .hover\:bg-zinc-900\/80:hover { background-color: hsl(var(--card) / 0.8) !important; }
+html:not(.dark) .hover\:bg-zinc-800\/40:hover { background-color: hsl(var(--muted) / 0.4) !important; }
+html:not(.dark) .hover\:bg-zinc-800\/20:hover { background-color: hsl(var(--muted) / 0.2) !important; }
+html:not(.dark) .hover\:bg-white:hover { background-color: hsl(var(--foreground)) !important; }
+html:not(.dark) .border-zinc-600 { border-color: hsl(var(--border)) !important; }
+html:not(.dark) .bg-zinc-950\/90 { background-color: hsl(var(--background) / 0.9) !important; }
+html:not(.dark) .bg-zinc-950\/70 { background-color: hsl(var(--background) / 0.7) !important; }
+html:not(.dark) .bg-zinc-900\/30 { background-color: hsl(var(--card) / 0.3) !important; }
+html:not(.dark) .bg-zinc-700\/40 { background-color: hsl(var(--input) / 0.4) !important; }
+html:not(.dark) .bg-\[\#1e1e1e\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#121215\]\/90 { background-color: hsl(var(--background) / 0.9) !important; }
+html:not(.dark) .bg-\[\#0f0f12\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#0e1726\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#0d0d10\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) .bg-\[\#0c0c0e\]\/90 { background-color: hsl(var(--background) / 0.9) !important; }
+html:not(.dark) .bg-\[\#0a0a0c\] { background-color: hsl(var(--background)) !important; }
+html:not(.dark) [class*="from-zinc-9"],
+html:not(.dark) [class*="via-zinc-9"],
+html:not(.dark) [class*="from-[#"] {
+  background-image: none !important;
+  background-color: hsl(var(--card)) !important;
+}
+html:not(.dark) [class*="shadow-black"] { --tw-shadow-color: rgb(0 0 0 / 0.06) !important; }

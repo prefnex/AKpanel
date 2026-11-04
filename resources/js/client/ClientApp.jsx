@@ -1,327 +1,242 @@
-import React, { useState, useEffect } from 'react';
-import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
-import ClientHeader from './components/ClientHeader';
-import ClientSidebar from './components/ClientSidebar';
-import ClientDashboard from './components/ClientDashboard';
-import ClientWebsitesPage from './components/ClientWebsitesPage';
-import ClientDNSPage from './components/ClientDNSPage';
-import ClientDatabasesPage from './components/ClientDatabasesPage';
-import FileManagerV2 from '../components/FileManagerV2';
-import ClientFTPPage from './components/ClientFTPPage';
-import ClientCronPage from './components/ClientCronPage';
-import ClientPHPPage from './components/ClientPHPPage';
-import ClientEmailsPage from './components/ClientEmailsPage';
-import ClientBackupsPage from './components/ClientBackupsPage';
-import ClientLoginView from './components/ClientLoginView';
-import useIsMobile from '../hooks/useIsMobile';
+import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Globe, Loader2, Lock, Rocket, HardDrive } from 'lucide-react';
+import { motion } from 'motion/react';
+import AppShell from '../components/app/AppShell';
+import AuthScreen from '../components/app/AuthScreen';
+import AuthAside from '../components/app/AuthAside';
+import { Skeleton } from '../components/ui/skeleton';
+import { clientNav } from '../config/clientNav';
+import { api, request } from '../lib/api';
+import { showToast } from '../lib/toast';
 
-export default function ClientApp() {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const isMobile = useIsMobile();
-  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+const ClientDashboard = lazy(() => import('./components/ClientDashboard'));
+const ClientWebsitesPage = lazy(() => import('./components/ClientWebsitesPage'));
+const ClientDNSPage = lazy(() => import('./components/ClientDNSPage'));
+const ClientDatabasesPage = lazy(() => import('./components/ClientDatabasesPage'));
+const FileManagerV2 = lazy(() => import('../components/FileManagerV2'));
+const ClientFTPPage = lazy(() => import('./components/ClientFTPPage'));
+const ClientCronPage = lazy(() => import('./components/ClientCronPage'));
+const ClientPHPPage = lazy(() => import('./components/ClientPHPPage'));
+const ClientEmailsPage = lazy(() => import('./components/ClientEmailsPage'));
+const ClientBackupsPage = lazy(() => import('./components/ClientBackupsPage'));
 
-  useEffect(() => {
-    setMobileNavOpen(false);
-  }, [location.pathname, isMobile]);
+const TOKEN_KEYS = ['akpanel_client_token', 'ak_client_token'];
+const USER_KEYS = ['akpanel_client_user', 'ak_client_user'];
 
-  const [token, setToken] = useState(
-    localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token') || ''
+function readToken() {
+  try {
+    return TOKEN_KEYS.map((k) => localStorage.getItem(k)).find(Boolean) || '';
+  } catch {
+    return '';
+  }
+}
+
+function readUser() {
+  try {
+    return JSON.parse(USER_KEYS.map((k) => localStorage.getItem(k)).find(Boolean) || 'null');
+  } catch {
+    return null;
+  }
+}
+
+function PageFallback() {
+  return (
+    <div className="space-y-4">
+      <Skeleton className="h-8 w-56" />
+      <Skeleton className="h-4 w-80 max-w-full" />
+      <Skeleton className="h-64" />
+    </div>
   );
-  const [user, setUser] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('akpanel_client_user') || localStorage.getItem('ak_client_user') || 'null');
-    } catch {
-      return null;
-    }
-  });
+}
 
-  const [stats, setStats] = useState(null);
-  const [toastMessage, setToastMessage] = useState(null);
+function UsageMeter({ label, used, total, unit = 'MB' }) {
+  const pct = total ? Math.min(100, Math.round((used / total) * 100)) : 0;
+  return (
+    <div className="space-y-1">
+      <div className="flex justify-between text-[11px]">
+        <span className="text-muted-foreground">{label}</span>
+        <span className="tabular">{used ?? 0} / {total ?? '∞'} {unit}</span>
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-sidebar-accent">
+        <motion.div
+          className={pct >= 90 ? 'h-full bg-destructive' : pct >= 75 ? 'h-full bg-warning' : 'h-full bg-primary'}
+          initial={{ width: 0 }}
+          animate={{ width: `${pct}%` }}
+          transition={{ duration: 0.6 }}
+        />
+      </div>
+    </div>
+  );
+}
 
-  const showToast = (message, type = 'success') => {
-    setToastMessage({ message, type });
-    setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  const fetchStats = async () => {
-    const currentToken = localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token');
-    if (!currentToken) return;
-    try {
-      const res = await fetch('/api/client/stats', {
-        headers: { 'Authorization': `Bearer ${currentToken}` }
-      });
-      if (res.status === 401 || res.status === 403) {
-        handleLogout();
-        return;
-      }
-      if (res.ok) {
-        const json = await res.json();
-        setStats(json.data);
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  useEffect(() => {
-    if (token) {
-      fetchStats();
-    }
-  }, [token]);
-
+// Legacy client pages call fetch() directly with their own headers; make sure every
+// /api/client/ request carries the session and reacts to suspension.
+function useLegacyClientFetch(onSignedOut) {
   useEffect(() => {
     const originalFetch = window.fetch.bind(window);
-    window.fetch = (input, init = {}) => {
+    window.fetch = async (input, init = {}) => {
       const url = typeof input === 'string' ? input : input?.url || '';
       if (url.startsWith('/api/client/') && !url.includes('/api/client/auth/login')) {
-        const currentToken =
-          localStorage.getItem('akpanel_client_token') ||
-          localStorage.getItem('ak_client_token') ||
-          token;
-        if (currentToken) {
-          const headers = new Headers(init.headers || {});
-          if (!headers.has('Authorization')) {
-            headers.set('Authorization', `Bearer ${currentToken}`);
-          }
-          init = { ...init, headers };
+        const token = readToken();
+        const headers = new Headers(init.headers || {});
+        if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+        init = { ...init, headers };
+      }
+      const res = await originalFetch(input, init);
+      if (url.startsWith('/api/client/') && res.status === 401 && !url.includes('/auth/login')) onSignedOut();
+      if (res.status === 403) {
+        try {
+          const body = await res.clone().json();
+          if (String(body?.message || '').toLowerCase().includes('suspend')) onSignedOut(body.message);
+        } catch {
+          /* not JSON */
         }
       }
-      return originalFetch(input, init).then(async (res) => {
-        if (res.status === 403) {
-          try {
-            const clone = res.clone();
-            const body = await clone.json();
-            const msg = String(body?.message || '');
-            if (msg.toLowerCase().includes('suspend')) {
-              localStorage.removeItem('ak_client_token');
-              localStorage.removeItem('akpanel_client_token');
-              localStorage.removeItem('ak_client_user');
-              localStorage.removeItem('akpanel_client_user');
-              window.location.reload();
-            }
-          } catch (e) { /* ignore */ }
-        }
-        return res;
-      });
+      return res;
     };
     return () => {
       window.fetch = originalFetch;
     };
-  }, [token]);
+  }, [onSignedOut]);
+}
 
-  const handleLoginSuccess = (userData, userToken) => {
-    setUser(userData);
-    setToken(userToken);
-  };
+export default function ClientApp() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const qc = useQueryClient();
+  const [token, setToken] = useState(readToken);
+  const [user, setUser] = useState(readUser);
 
-  const handleLogout = () => {
-    // Revoke the session server-side (also clears the HttpOnly cookie); local state is cleared regardless.
-    fetch('/api/client/auth/logout', { method: 'POST' }).catch(() => {});
-    localStorage.removeItem('ak_client_token');
-    localStorage.removeItem('akpanel_client_token');
-    localStorage.removeItem('ak_client_user');
-    localStorage.removeItem('akpanel_client_user');
+  const signOutLocal = useCallback((message) => {
+    [...TOKEN_KEYS, ...USER_KEYS].forEach((k) => localStorage.removeItem(k));
+    qc.clear();
     setToken('');
     setUser(null);
-    setStats(null);
+    if (message) showToast(message, 'error');
+  }, [qc]);
+
+  useLegacyClientFetch(signOutLocal);
+
+  useEffect(() => {
+    const onUnauthorized = (e) => {
+      const url = String(e.detail?.url || '');
+      if (url.startsWith('/api/client/') && !url.includes('/auth/login')) signOutLocal();
+    };
+    window.addEventListener('akpanel:unauthorized', onUnauthorized);
+    return () => window.removeEventListener('akpanel:unauthorized', onUnauthorized);
+  }, [signOutLocal]);
+
+  const statsQuery = useQuery({
+    queryKey: ['client', 'stats'],
+    queryFn: () => api.get('/api/client/stats').then((r) => r.data),
+    enabled: !!token,
+    refetchInterval: 30_000,
+  });
+  const stats = statsQuery.data;
+
+  const handleLogout = async () => {
+    try {
+      await request('/api/client/auth/logout', { method: 'POST' });
+    } catch {
+      /* local sign-out still happens */
+    }
+    signOutLocal();
   };
 
-  const handleNavigateFiles = (domain) => {
-    navigate('/files');
-  };
-
-  const isStandaloneFileManager = location.pathname === '/filemanager/standalone';
-
-  const isFileManager =
-    location.pathname === '/files' ||
-    location.pathname === '/filemanager' ||
-    location.pathname === '/filemanager/standalone';
-
-  // If unauthenticated, show Client Login View
   if (!token) {
-    return <ClientLoginView onLoginSuccess={handleLoginSuccess} />;
-  }
-
-  if (isStandaloneFileManager) {
     return (
-      <div className="h-screen w-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans overflow-hidden">
-        {toastMessage && (
-          <div className="fixed bottom-6 right-6 z-50">
-            <div className={`px-4 py-3 rounded-2xl shadow-2xl border text-xs font-bold ${
-              toastMessage.type === 'error'
-                ? 'bg-rose-950/90 border-rose-800/80 text-rose-200'
-                : 'bg-emerald-950/90 border-emerald-800/80 text-emerald-200'
-            }`}>
-              {toastMessage.message}
-            </div>
-          </div>
-        )}
-        <FileManagerV2
-          showToast={showToast}
-          standalone={true}
-          apiBase="/api/client/files"
-          jailRoot={`/home/${user?.username || 'user'}`}
-          dashboardHref="/"
-        />
-      </div>
+      <AuthScreen
+        title="Sign in to your hosting"
+        subtitle="Manage websites, mail, databases and files."
+        icon={Globe}
+        usernameLabel="Account username"
+        usernamePlaceholder="e.g. client1"
+        onSubmit={async ({ username, password }) => {
+          const data = await api.post('/api/client/auth/login', { username, password });
+          TOKEN_KEYS.forEach((k) => localStorage.setItem(k, data.token));
+          USER_KEYS.forEach((k) => localStorage.setItem(k, JSON.stringify(data.user)));
+          setUser(data.user);
+          setToken(data.token);
+        }}
+        footer={
+          <p className="text-center text-xs text-muted-foreground">
+            Server administrators sign in on port <span className="font-mono">2087</span>.
+          </p>
+        }
+        aside={
+          <AuthAside
+            heading="Your sites, your space"
+            points={[
+              { icon: Lock, title: 'Private by design', text: 'Your files, PHP and cron jobs run under your own isolated account.' },
+              { icon: Rocket, title: 'Deploy in minutes', text: 'Domains, SSL, databases and mailboxes from one place.' },
+              { icon: HardDrive, title: 'Know your limits', text: 'Disk, bandwidth and quotas are always visible.' },
+            ]}
+          />
+        }
+      />
     );
   }
 
+  const username = user?.username || stats?.username || 'user';
+  const isFileManager = ['/files', '/filemanager', '/filemanager/standalone'].includes(location.pathname);
   const fileManager = (
     <FileManagerV2
       showToast={showToast}
-      standalone={true}
+      standalone
       apiBase="/api/client/files"
-      jailRoot={`/home/${user?.username || 'user'}`}
+      jailRoot={`/home/${username}`}
       dashboardHref="/"
     />
   );
 
-  return (
-    <div className={`${isFileManager ? 'h-screen overflow-hidden' : 'min-h-screen'} bg-[#07080b] text-zinc-100 flex flex-col font-sans selection:bg-emerald-500 selection:text-white`}>
-      {/* Toast Popup */}
-      {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 animate-in fade-in slide-in-from-bottom-5">
-          <div className={`px-4 py-3 rounded-2xl shadow-2xl border text-xs font-bold flex items-center gap-2 ${
-            toastMessage.type === 'error'
-              ? 'bg-rose-950/90 border-rose-800/80 text-rose-200'
-              : 'bg-emerald-950/90 border-emerald-800/80 text-emerald-200'
-          }`}>
-            <span>{toastMessage.message}</span>
-          </div>
-        </div>
-      )}
-
-      {/* Top Header */}
-      <ClientHeader 
-        user={user} 
-        stats={stats} 
-        onLogout={handleLogout} 
-        onToggleNav={() => setMobileNavOpen((open) => !open)}
-      />
-
-      {/* Main Layout Body */}
-      <div className="flex-1 flex min-h-0">
-        {/* Navigation Sidebar: inline on desktop, drawer under the header on phones */}
-        {isMobile && mobileNavOpen && (
-          <div
-            className="fixed inset-0 top-16 z-30 bg-black/60 backdrop-blur-sm"
-            onClick={() => setMobileNavOpen(false)}
-            aria-hidden="true"
-          />
-        )}
-        {(!isMobile || mobileNavOpen) && (
-          <div className={isMobile ? 'fixed top-16 bottom-0 left-0 z-40 shadow-2xl' : ''}>
-            <ClientSidebar 
-              stats={stats} 
-            />
-          </div>
-        )}
-
-        {/* Content Area with Full React Router Multi-Page Switching */}
-        <main className={isFileManager
-          ? 'flex-1 min-w-0 min-h-0 overflow-hidden'
-          : 'flex-1 p-4 sm:p-6 md:p-8 max-w-7xl mx-auto w-full min-w-0 overflow-y-auto'
-        }>
-          <Routes>
-            <Route 
-              path="/" 
-              element={
-                <ClientDashboard 
-                  stats={stats} 
-                  showToast={showToast} 
-                />
-              } 
-            />
-            <Route 
-              path="/dashboard" 
-              element={
-                <ClientDashboard 
-                  stats={stats} 
-                  showToast={showToast} 
-                />
-              } 
-            />
-            <Route 
-              path="/websites" 
-              element={
-                <ClientWebsitesPage 
-                  showToast={showToast} 
-                  onNavigateFiles={handleNavigateFiles} 
-                />
-              } 
-            />
-            <Route 
-              path="/dns" 
-              element={
-                <ClientDNSPage 
-                  showToast={showToast} 
-                />
-              } 
-            />
-            <Route 
-              path="/databases" 
-              element={
-                <ClientDatabasesPage 
-                  showToast={showToast} 
-                  username={user?.username || 'user'} 
-                />
-              } 
-            />
-            <Route path="/files" element={fileManager} />
-            <Route path="/filemanager" element={fileManager} />
-            <Route path="/filemanager/standalone" element={fileManager} />
-            <Route 
-              path="/ftp" 
-              element={
-                <ClientFTPPage 
-                  showToast={showToast} 
-                  username={user?.username || 'user'} 
-                  serverIP={stats?.server_ip}
-                />
-              } 
-            />
-            <Route 
-              path="/emails" 
-              element={
-                <ClientEmailsPage 
-                  showToast={showToast} 
-                />
-              } 
-            />
-            <Route 
-              path="/cron" 
-              element={
-                <ClientCronPage 
-                  showToast={showToast} 
-                  username={user?.username || 'user'} 
-                />
-              } 
-            />
-            <Route 
-              path="/php" 
-              element={
-                <ClientPHPPage 
-                  showToast={showToast} 
-                  username={user?.username || 'user'} 
-                  serverIP={stats?.server_ip}
-                />
-              } 
-            />
-            <Route 
-              path="/backups" 
-              element={
-                <ClientBackupsPage 
-                  showToast={showToast} 
-                  stats={stats} 
-                />
-              } 
-            />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </main>
+  if (location.pathname === '/filemanager/standalone') {
+    return (
+      <div className="flex h-screen w-screen flex-col overflow-hidden">
+        <Suspense fallback={<PageFallback />}>{fileManager}</Suspense>
       </div>
-    </div>
+    );
+  }
+
+  return (
+    <AppShell
+      nav={clientNav}
+      brand={{ name: stats?.main_domain || 'My hosting', subtitle: stats?.package_name || 'Client portal', icon: Globe }}
+      user={{ name: username, detail: user?.email || stats?.email || 'Hosting account' }}
+      badges={{
+        '/websites': stats?.domains_used || undefined,
+        '/databases': stats?.databases_used || undefined,
+        '/emails': stats?.emails_used || undefined,
+      }}
+      onLogout={handleLogout}
+      fullBleed={isFileManager}
+      sidebarFooter={
+        stats && (
+          <div className="space-y-2 rounded-md border border-sidebar-border p-2.5 group-data-[collapsible=icon]:hidden">
+            <UsageMeter label="Disk" used={stats.disk_used_mb} total={stats.disk_quota_mb} />
+            <UsageMeter label="Bandwidth" used={stats.bandwidth_used_mb} total={stats.bandwidth_limit_mb} />
+          </div>
+        )
+      }
+    >
+      <Suspense fallback={<PageFallback />}>
+        <Routes location={location}>
+          <Route path="/" element={<ClientDashboard stats={stats} showToast={showToast} />} />
+          <Route path="/dashboard" element={<Navigate to="/" replace />} />
+          <Route path="/websites" element={<ClientWebsitesPage showToast={showToast} onNavigateFiles={() => navigate('/files')} />} />
+          <Route path="/dns" element={<ClientDNSPage showToast={showToast} />} />
+          <Route path="/databases" element={<ClientDatabasesPage showToast={showToast} username={username} />} />
+          <Route path="/files" element={fileManager} />
+          <Route path="/filemanager" element={fileManager} />
+          <Route path="/ftp" element={<ClientFTPPage showToast={showToast} username={username} serverIP={stats?.server_ip} />} />
+          <Route path="/emails" element={<ClientEmailsPage showToast={showToast} />} />
+          <Route path="/cron" element={<ClientCronPage showToast={showToast} username={username} />} />
+          <Route path="/php" element={<ClientPHPPage showToast={showToast} username={username} serverIP={stats?.server_ip} />} />
+          <Route path="/backups" element={<ClientBackupsPage showToast={showToast} stats={stats} />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    </AppShell>
   );
 }

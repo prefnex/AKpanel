@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"goravel/app/facades"
+	"goravel/app/models"
+	"goravel/app/services"
 	"goravel/app/services/tasks"
 )
 
@@ -83,6 +85,9 @@ func (o *UserProvisioningOrchestrator) ProvisionUser(ctx context.Context, plan *
 		_ = tasks.GetRegistry().UpdateProgress(plan.TaskID, step.Name(), pct, fmt.Sprintf("Running step: %s", step.Name()))
 
 		if err := step.Execute(ctx, plan); err != nil {
+			// The failing step may have left partial artifacts (e.g. a vhost that failed the
+			// syntax test), so it is rolled back too; rollbacks are idempotent.
+			_ = step.Rollback(ctx, plan)
 			for j := len(executed) - 1; j >= 0; j-- {
 				_ = executed[j].Rollback(ctx, plan)
 			}
@@ -92,4 +97,52 @@ func (o *UserProvisioningOrchestrator) ProvisionUser(ctx context.Context, plan *
 	}
 
 	return nil
+}
+
+var serviceSubdomainPrefixes = []string{"webmail.", "cpanel.", "ftp.", "imap.", "pop."}
+
+// DeprovisionUser tears down everything a hosting account owns: websites and their
+// service subdomains, DNS zones, mailboxes, PHP-FPM pools, then the Linux account, home,
+// databases, FTP and cron (services.DeleteUser + PurgeAccount).
+func (o *UserProvisioningOrchestrator) DeprovisionUser(ctx context.Context, username string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	if !services.IsValidAccountUsername(username) {
+		return fmt.Errorf("invalid account name")
+	}
+	uas := services.NewUserAccountService()
+	user, err := uas.GetUser(username)
+	if err != nil {
+		return err
+	}
+
+	domains := map[string]bool{}
+	if user.MainDomain != "" {
+		domains[user.MainDomain] = true
+	}
+	if facades.Orm() != nil {
+		var sites []models.Website
+		if err := facades.Orm().Query().Where("owner_username = ?", username).Find(&sites); err == nil {
+			for _, s := range sites {
+				domains[s.Domain] = true
+			}
+		}
+	}
+
+	nginx := services.NewNginxService()
+	mail := services.NewEmailService()
+	web := GetOrchestrator()
+	for d := range domains {
+		for _, prefix := range serviceSubdomainPrefixes {
+			_ = nginx.DeleteWebsite(prefix + d)
+		}
+		for _, acct := range mail.ListAccounts(d) {
+			_ = mail.DeleteAccount(acct.Email)
+		}
+		_ = web.DeprovisionWebsite(ctx, d)
+	}
+
+	services.NewPHPManagerService().RemoveUserFPMPools(username)
+	return uas.DeleteUser(username)
 }

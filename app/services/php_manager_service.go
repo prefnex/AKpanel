@@ -710,6 +710,23 @@ php_admin_value[memory_limit] = %dM
 	return nil
 }
 
+// RemoveUserFPMPools deletes an account's pool from every installed PHP version and restarts
+// the affected FPM services. A pool whose Linux user no longer exists makes php-fpm refuse to
+// start, which would take every site on that version down.
+func (p *PHPManagerService) RemoveUserFPMPools(username string) {
+	if !IsValidAccountUsername(username) {
+		return
+	}
+	matches, _ := filepath.Glob(fmt.Sprintf("/etc/php/*/fpm/pool.d/%s.conf", username))
+	for _, poolFile := range matches {
+		if err := os.Remove(poolFile); err != nil {
+			continue
+		}
+		version := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(poolFile))))
+		_ = p.RestartFPM(version)
+	}
+}
+
 // SyncPoolsForPackage rewrites FPM pools for every account on this hosting package.
 func (p *PHPManagerService) SyncPoolsForPackage(pkg HostingPackage) {
 	NormalizePackagePHPLimits(&pkg)

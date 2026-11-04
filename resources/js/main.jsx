@@ -1,10 +1,20 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import ClientApp from './client/ClientApp';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { MotionConfig } from 'motion/react';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
 import ErrorBoundary from './components/ErrorBoundary';
+import { ThemeProvider } from './lib/theme';
+import { queryClient } from './lib/query';
+import { Toaster } from './components/ui/sonner';
+import { TooltipProvider } from './components/ui/tooltip';
 import '../css/app.css';
+import '../css/legacy-light.css';
+
+const App = lazy(() => import('./App'));
+const ClientApp = lazy(() => import('./client/ClientApp'));
 
 // Detect whether running in Client/Tenant Portal (Port 2083 or /client path) vs Root Admin Panel (Port 2087)
 const injectedScope = String(
@@ -25,9 +35,18 @@ if (rootElement) {
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
       <ErrorBoundary>
-        <BrowserRouter>
-          {isClientPortal ? <ClientApp /> : <App />}
-        </BrowserRouter>
+        <ThemeProvider defaultTheme="dark">
+          <QueryClientProvider client={queryClient}>
+            <MotionConfig reducedMotion="user">
+              <TooltipProvider delayDuration={200}>
+                <BrowserRouter>
+                  <Suspense fallback={null}>{isClientPortal ? <ClientApp /> : <App />}</Suspense>
+                </BrowserRouter>
+                <Toaster position="bottom-right" richColors closeButton />
+              </TooltipProvider>
+            </MotionConfig>
+          </QueryClientProvider>
+        </ThemeProvider>
       </ErrorBoundary>
     </React.StrictMode>
   );

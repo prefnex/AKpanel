@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 
 export default defineConfig({
+  // Assets are served by the panel under /public/build/, so lazy chunks must resolve there too.
+  base: '/public/build/',
   plugins: [react()],
   resolve: {
     alias: {
