@@ -1,0 +1,48 @@
+# docker-compose.yml — AKpanel Dev Environment
+
+services:
+  test_vps:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: akpanel_vps
+    restart: unless-stopped
+    privileged: true
+    # systemd runs as PID 1 inside the container (see docker/Dockerfile).
+    cgroup: host
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # Mount project source into the container (live code)
+      - .:/root/AKpanel
+      # Persist /etc/akpanel config between restarts
+      - akpanel_etc:/etc/akpanel
+      # Cache Go build artifacts (speeds up rebuilds significantly)
+      - go_build_cache:/root/.cache/go-build
+      - go_pkg_cache:/root/go/pkg
+      # Persist npm node_modules inside container (avoid re-install every start)
+      - npm_cache:/root/.npm
+    ports:
+      # AKpanel Root Dashboard & API
+      - "2087:2087"
+      # AKpanel Client / Tenant Hosting Panel
+      - "2083:2083"
+      # Simulated Nginx HTTP (avoids host port 80 conflicts)
+      - "8080:80"
+      # Simulated Nginx HTTPS
+      - "8443:443"
+    working_dir: /root/AKpanel
+    healthcheck:
+      test: ["CMD", "curl", "-skf", "https://localhost:2087/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 600s
+
+volumes:
+  akpanel_etc:
+  go_build_cache:
+  go_pkg_cache:
+  npm_cache:

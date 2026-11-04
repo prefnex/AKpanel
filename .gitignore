@@ -50,7 +50,5 @@ tests/**/*.sqlite
 
 # Local Development & Simulation (Container environment)
 .cache/
-docker/
-docker-compose.yml
 scripts/rebuild-and-restart-container.sh
 scripts/reset-test-server.sh

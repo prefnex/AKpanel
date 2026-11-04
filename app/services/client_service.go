@@ -157,15 +157,26 @@ func (c *ClientService) resolveJailPath(username, reqPath string) (string, error
 			baseHome = fmt.Sprintf("/var/www/vhosts/%s", username)
 		}
 	}
-	_ = os.MkdirAll(baseHome, 0750)
-
+	// Accept both absolute paths inside the home ("/home/u/site") and home-relative ones ("site").
 	cleanReq := filepath.Clean("/" + strings.TrimPrefix(reqPath, "/"))
+	if cleanReq == baseHome || strings.HasPrefix(cleanReq, baseHome+"/") {
+		cleanReq = strings.TrimPrefix(cleanReq, baseHome)
+	}
 	fullPath := filepath.Join(baseHome, cleanReq)
 
-	// Strict jail escape verification
+	// Strict jail escape verification, including through symlinks that already exist.
 	rel, err := filepath.Rel(baseHome, fullPath)
-	if err != nil || strings.HasPrefix(rel, "..") || strings.Contains(rel, "/../") {
+	if err != nil || strings.HasPrefix(rel, "..") {
 		return "", fmt.Errorf("access denied: path outside user home jail is strictly forbidden")
+	}
+	if resolved, err := filepath.EvalSymlinks(fullPath); err == nil {
+		base := baseHome
+		if b, err := filepath.EvalSymlinks(baseHome); err == nil {
+			base = b
+		}
+		if resolved != base && !strings.HasPrefix(resolved, base+"/") {
+			return "", fmt.Errorf("access denied: path outside user home jail is strictly forbidden")
+		}
 	}
 	return fullPath, nil
 }
@@ -460,7 +471,7 @@ func (c *ClientService) DeleteWebsite(username, domain string) error {
 			break
 		}
 	}
-	if !owned && username != "root" && username != "admin" {
+	if !owned {
 		return fmt.Errorf("domain '%s' does not belong to your account", domain)
 	}
 
@@ -486,12 +497,12 @@ func (c *ClientService) SetWebsiteDocroot(username, domain, docroot string) erro
 			break
 		}
 	}
-	if !owned && username != "root" && username != "admin" {
+	if !owned {
 		return fmt.Errorf("domain '%s' does not belong to your account", domain)
 	}
 
 	home := paths.UserHome(username)
-	if !strings.HasPrefix(docroot, home+"/") && username != "root" && username != "admin" {
+	if !strings.HasPrefix(docroot, home+"/") {
 		return fmt.Errorf("document root must be under %s", home)
 	}
 
@@ -508,7 +519,7 @@ func (c *ClientService) GetDNSZones(username string) ([]DNSZone, error) {
 	allZones := c.dnsService.ListZones()
 	var myZones []DNSZone
 	for _, z := range allZones {
-		if z.OwnerUser == username || username == "root" || username == "admin" {
+		if z.OwnerUser == username {
 			myZones = append(myZones, z)
 		}
 	}
@@ -525,7 +536,7 @@ func (c *ClientService) AddDNSRecord(username, domain, name, rType, value string
 			break
 		}
 	}
-	if !found && username != "root" && username != "admin" {
+	if !found {
 		return fmt.Errorf("DNS zone '%s' does not belong to your account", domain)
 	}
 
@@ -548,7 +559,7 @@ func (c *ClientService) DeleteDNSRecord(username, domain string, index int) erro
 			break
 		}
 	}
-	if !found && username != "root" && username != "admin" {
+	if !found {
 		return fmt.Errorf("DNS zone '%s' does not belong to your account", domain)
 	}
 
@@ -564,7 +575,7 @@ func (c *ClientService) UpdateDNSRecord(username, domain string, index int, name
 			break
 		}
 	}
-	if !found && username != "root" && username != "admin" {
+	if !found {
 		return fmt.Errorf("DNS zone '%s' does not belong to your account", domain)
 	}
 	return c.dnsService.UpdateRecord(domain, index, DNSRecord{
@@ -593,7 +604,7 @@ func (c *ClientService) writeClientDatabases(list []ClientDatabaseRecord) error 
 	if err != nil {
 		return err
 	}
-	return os.WriteFile("/etc/akpanel/client_databases.json", bytes, 0644)
+	return os.WriteFile("/etc/akpanel/client_databases.json", bytes, 0600)
 }
 
 // GetDatabases returns databases owned by client
@@ -604,7 +615,7 @@ func (c *ClientService) GetDatabases(username string) ([]ClientDatabaseItem, err
 	stored := c.readClientDatabases()
 	var items []ClientDatabaseItem
 	for _, rec := range stored {
-		if rec.OwnerUser == username || username == "root" || username == "admin" {
+		if rec.OwnerUser == username {
 			items = append(items, ClientDatabaseItem{
 				DatabaseName: rec.DatabaseName,
 				DatabaseUser: rec.DatabaseUser,
@@ -624,11 +635,19 @@ func (c *ClientService) CreateDatabase(username, dbSuffix, dbUserSuffix, dbPassw
 		return fmt.Errorf("database name cannot be empty")
 	}
 
+	dbUserSuffix = strings.TrimSpace(dbUserSuffix)
+	if dbUserSuffix == "" {
+		dbUserSuffix = "user"
+	}
 	dbName := fmt.Sprintf("%s_%s", username, dbSuffix)
 	dbUser := fmt.Sprintf("%s_%s", username, dbUserSuffix)
-	if dbUserSuffix == "" {
-		dbUser = fmt.Sprintf("%s_user", username)
+	if !IsValidMySQLIdent(dbName) || !IsValidMySQLIdent(dbUser) || len(dbUser) > 80 {
+		return fmt.Errorf("database and user names may only contain letters, digits and underscores (max 64 characters)")
 	}
+	if len(dbPassword) < 8 {
+		return fmt.Errorf("database password must be at least 8 characters")
+	}
+	escPass := MySQLEscape(dbPassword)
 
 	sql := fmt.Sprintf(
 		"CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n"+
@@ -637,9 +656,11 @@ func (c *ClientService) CreateDatabase(username, dbSuffix, dbUserSuffix, dbPassw
 			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';\n"+
 			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'127.0.0.1';\n"+
 			"FLUSH PRIVILEGES;",
-		dbName, dbUser, dbPassword, dbUser, dbPassword, dbName, dbUser, dbName, dbUser)
+		dbName, dbUser, escPass, dbUser, escPass, dbName, dbUser, dbName, dbUser)
 
-	_ = ExecMySQL(sql)
+	if err := ExecMySQL(sql); err != nil {
+		return fmt.Errorf("failed to create database: %w", err)
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -671,11 +692,13 @@ func (c *ClientService) CreateDatabase(username, dbSuffix, dbUserSuffix, dbPassw
 
 // DeleteDatabase removes a client database
 func (c *ClientService) DeleteDatabase(username, dbName string) error {
-	if !strings.HasPrefix(dbName, username+"_") && username != "root" && username != "admin" {
+	if !strings.HasPrefix(dbName, username+"_") || !IsValidMySQLIdent(dbName) {
 		return fmt.Errorf("unauthorized: cannot delete database outside your account namespace")
 	}
 
-	_ = ExecMySQL(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`;", dbName))
+	if err := ExecMySQL(fmt.Sprintf("DROP DATABASE IF EXISTS `%s`;", dbName)); err != nil {
+		return fmt.Errorf("failed to drop database: %w", err)
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -992,18 +1015,33 @@ func (c *ClientService) SearchClientFiles(username, keyword string) ([]map[strin
 
 // GitCloneClientRepo clones a repository into a directory in jail
 func (c *ClientService) GitCloneClientRepo(username, destPath, repoURL string) error {
+	u, err := ValidateRemoteURL(repoURL)
+	if err != nil || u.Scheme != "https" {
+		return fmt.Errorf("only public https:// git repository URLs are supported")
+	}
+	tenant, err := LookupTenant(username)
+	if err != nil {
+		return err
+	}
 	target, err := c.resolveJailPath(username, destPath)
 	if err != nil {
 		return err
 	}
-
-	_ = os.MkdirAll(target, 0755)
-	cmd := exec.Command("git", "clone", repoURL, target)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git clone failed: %s (%w)", string(out), err)
+	if target == filepath.Clean(paths.UserHome(username)) {
+		return fmt.Errorf("choose a sub-folder of your home directory as the clone destination")
 	}
 
-	_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", username, username), target).Run()
+	// Runs as the tenant, https only, no submodules, and "--" so the URL can never be read as an option.
+	cmd := tenant.Command("git",
+		"-c", "protocol.allow=never", "-c", "protocol.https.allow=always",
+		"clone", "--depth", "1", "--no-recurse-submodules", "--", u.String(), target)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		msg := strings.TrimSpace(string(out))
+		if len(msg) > 400 {
+			msg = msg[:400]
+		}
+		return fmt.Errorf("git clone failed: %s (%w)", msg, err)
+	}
 	return nil
 }
 
@@ -1028,7 +1066,7 @@ func (c *ClientService) writeFTPUsers(list []ClientFTPUser) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile("/etc/akpanel/ftp_users.json", bytes, 0644)
+	return os.WriteFile("/etc/akpanel/ftp_users.json", bytes, 0600)
 }
 
 func (c *ClientService) ListFTPUsers(username string) (*ClientFTPListResult, error) {
@@ -1044,7 +1082,7 @@ func (c *ClientService) ListFTPUsers(username string) (*ClientFTPListResult, err
 	stored := c.readFTPUsers()
 	var subUsers []ClientFTPUser
 	for _, u := range stored {
-		if u.OwnerUser == username || username == "root" || username == "admin" {
+		if u.OwnerUser == username {
 			subUsers = append(subUsers, u)
 		}
 	}
@@ -1109,6 +1147,42 @@ func (c *ClientService) CreateFTPUser(username, ftpUser, ftpPass, subDir string,
 	return nil
 }
 
+// PurgeAccount removes everything the client portal tracks for a deleted hosting account:
+// its databases (and their MySQL users), FTP sub-accounts and cron jobs.
+func (c *ClientService) PurgeAccount(username string) {
+	DropAccountMySQL(username)
+	RemoveTenantCrontab(username)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var dbs []ClientDatabaseRecord
+	for _, r := range c.readClientDatabases() {
+		if r.OwnerUser != username {
+			dbs = append(dbs, r)
+		}
+	}
+	_ = c.writeClientDatabases(dbs)
+
+	var ftp []ClientFTPUser
+	for _, u := range c.readFTPUsers() {
+		if u.OwnerUser == username {
+			_ = GetFTPService().DeleteSubAccount(u.Username)
+			continue
+		}
+		ftp = append(ftp, u)
+	}
+	_ = c.writeFTPUsers(ftp)
+
+	var crons []ClientCronItem
+	for _, cr := range c.readCronJobs() {
+		if cr.Username != username {
+			crons = append(crons, cr)
+		}
+	}
+	_ = c.writeCronJobs(crons)
+}
+
 func (c *ClientService) DeleteFTPUser(username, ftpUser string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1116,7 +1190,7 @@ func (c *ClientService) DeleteFTPUser(username, ftpUser string) error {
 	stored := c.readFTPUsers()
 	var updated []ClientFTPUser
 	for _, u := range stored {
-		if u.Username != ftpUser || (u.OwnerUser != username && username != "root" && username != "admin") {
+		if u.Username != ftpUser || (u.OwnerUser != username) {
 			updated = append(updated, u)
 		} else {
 			_ = GetFTPService().DeleteSubAccount(u.Username)
@@ -1146,7 +1220,7 @@ func (c *ClientService) writeCronJobs(list []ClientCronItem) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile("/etc/akpanel/client_cron.json", bytes, 0644)
+	return os.WriteFile("/etc/akpanel/client_cron.json", bytes, 0600)
 }
 
 func (c *ClientService) ListCronJobs(username string) ([]ClientCronItem, error) {
@@ -1156,35 +1230,69 @@ func (c *ClientService) ListCronJobs(username string) ([]ClientCronItem, error) 
 	stored := c.readCronJobs()
 	var myCrons []ClientCronItem
 	for _, cr := range stored {
-		if cr.Username == username || username == "root" || username == "admin" {
+		if cr.Username == username {
 			myCrons = append(myCrons, cr)
 		}
 	}
 	return myCrons, nil
 }
 
+// syncCron renders the caller's jobs into /etc/cron.d. Must be called with c.mu held.
+func (c *ClientService) syncCron(username string, stored []ClientCronItem) error {
+	if u := c.findUser(username); u != nil && u.Status == "suspended" {
+		RemoveTenantCrontab(username)
+		return nil
+	}
+	return WriteTenantCrontab(username, stored)
+}
+
+// ResyncCron re-renders a tenant's crontab from the stored jobs (e.g. after unsuspension).
+func (c *ClientService) ResyncCron(username string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_ = c.syncCron(username, c.readCronJobs())
+}
+
 func (c *ClientService) CreateCronJob(username, schedule, command, desc string) error {
-	if schedule == "" || command == "" {
-		return fmt.Errorf("schedule expression and command are required")
+	normalized, err := NormalizeCronSchedule(schedule)
+	if err != nil {
+		return err
+	}
+	if err := ValidateCronCommand(command); err != nil {
+		return err
+	}
+	if len(desc) > 200 {
+		desc = desc[:200]
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	stored := c.readCronJobs()
+	mine := 0
+	for _, cr := range stored {
+		if cr.Username == username {
+			mine++
+		}
+	}
+	if mine >= maxCronJobs {
+		return fmt.Errorf("cron job limit reached (%d)", maxCronJobs)
+	}
 	newJob := ClientCronItem{
 		ID:          fmt.Sprintf("cron_%d", time.Now().UnixNano()),
 		Username:    username,
-		Schedule:    schedule,
-		Command:     command,
+		Schedule:    normalized,
+		Command:     strings.TrimSpace(command),
 		Description: desc,
 		IsEnabled:   true,
 		CreatedAt:   time.Now().Format("2006-01-02 15:04:05"),
 	}
 
 	stored = append(stored, newJob)
-	_ = c.writeCronJobs(stored)
-	return nil
+	if err := c.writeCronJobs(stored); err != nil {
+		return err
+	}
+	return c.syncCron(username, stored)
 }
 
 func (c *ClientService) DeleteCronJob(username, cronID string) error {
@@ -1194,11 +1302,14 @@ func (c *ClientService) DeleteCronJob(username, cronID string) error {
 	stored := c.readCronJobs()
 	var updated []ClientCronItem
 	for _, cr := range stored {
-		if cr.ID != cronID || (cr.Username != username && username != "root" && username != "admin") {
+		if cr.ID != cronID || cr.Username != username {
 			updated = append(updated, cr)
 		}
 	}
-	return c.writeCronJobs(updated)
+	if err := c.writeCronJobs(updated); err != nil {
+		return err
+	}
+	return c.syncCron(username, updated)
 }
 
 func (c *ClientService) ToggleCronJob(username, cronID string) error {
@@ -1207,12 +1318,15 @@ func (c *ClientService) ToggleCronJob(username, cronID string) error {
 
 	stored := c.readCronJobs()
 	for i := range stored {
-		if stored[i].ID == cronID && (stored[i].Username == username || username == "root" || username == "admin") {
+		if stored[i].ID == cronID && stored[i].Username == username {
 			stored[i].IsEnabled = !stored[i].IsEnabled
 			break
 		}
 	}
-	return c.writeCronJobs(stored)
+	if err := c.writeCronJobs(stored); err != nil {
+		return err
+	}
+	return c.syncCron(username, stored)
 }
 
 // =========================================================================
@@ -1417,7 +1531,7 @@ func (c *ClientService) GetEmails(username string) ([]ClientEmailAccount, error)
 		}
 		if json.Unmarshal(bytes, &allEmails) == nil {
 			for _, e := range allEmails {
-				if domainsMap[e.Domain] || username == "root" || username == "admin" {
+				if domainsMap[e.Domain] {
 					results = append(results, ClientEmailAccount{
 						Email:      e.Email,
 						Domain:     e.Domain,
@@ -1450,7 +1564,7 @@ func (c *ClientService) CreateEmail(username, emailAddr, password string, quotaM
 			break
 		}
 	}
-	if !owned && username != "root" && username != "admin" {
+	if !owned {
 		return fmt.Errorf("domain '%s' does not belong to your account", domain)
 	}
 

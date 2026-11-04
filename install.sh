@@ -1119,10 +1119,10 @@ EOF
 ==============================================================================
  👑 AKpanel Root Administrator Information
 ==============================================================================
- 🌐 Root WHM Panel  : http://${SERVER_IP}:2087
+ 🌐 Root Admin Panel: https://${SERVER_IP}:2087
  👤 Username        : root
- 🔒 Password Storage: Salted SHA-256 Encrypted (/etc/akpanel/root.auth)
- 🌐 Client Portal   : http://${SERVER_IP}:2083
+ 🔒 Password Storage: bcrypt hash (/etc/akpanel/root.auth)
+ 🌐 Client Portal   : https://${SERVER_IP}:2083
  📅 Generated Date  : $(date)
 ==============================================================================
  🛡️ MariaDB panel DB : akpanel (user akpanel)
@@ -1146,8 +1146,8 @@ else
     read -s -p "Enter new AKpanel root password: " NEW_PASS
     echo ""
 fi
-if [ ${#NEW_PASS} -lt 6 ]; then
-    echo "❌ Error: Password must be at least 6 characters."
+if [ ${#NEW_PASS} -lt 10 ]; then
+    echo "❌ Error: Password must be at least 10 characters."
     exit 1
 fi
 SALT=$(date +%s%N | sha256sum | head -c 16)
@@ -1157,7 +1157,8 @@ cat << AUTH_EOF > /etc/akpanel/root.auth
   "username": "root",
   "salt": "${SALT}",
   "hash": "${HASH}",
-  "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  "updated_at": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+  "tokens_valid_after": $(date +%s)
 }
 AUTH_EOF
 chmod 600 /etc/akpanel/root.auth
@@ -1207,10 +1208,16 @@ task_step5() {
 
     # Always generate 100% working .env for 0.0.0.0 and Port 2087
     MYSQL_PANEL_PASS=$(tr -d '\n' < /etc/akpanel/secrets/mysql_akpanel 2>/dev/null || true)
+    # Per-server random secrets: never ship a key that is identical on every install.
+    if [ ! -s /etc/akpanel/secrets/app_key ]; then
+        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32 > /etc/akpanel/secrets/app_key
+        chmod 600 /etc/akpanel/secrets/app_key
+    fi
+    APP_KEY_VALUE=$(tr -d '\n' < /etc/akpanel/secrets/app_key)
     cat << EOF > "$PROJECT_ROOT/.env"
 APP_NAME=AKpanel
 APP_ENV=production
-APP_KEY=akpanel_production_secret_key_32
+APP_KEY=${APP_KEY_VALUE}
 APP_DEBUG=false
 
 LOG_CHANNEL=stack
@@ -1223,7 +1230,7 @@ APP_URL=http://0.0.0.0:2087
 APP_HOST=0.0.0.0
 APP_PORT=2087
 
-JWT_SECRET=akpanel_super_secret_jwt_key_64_bytes_long_entropy_string!
+JWT_SECRET=
 
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
@@ -1232,7 +1239,9 @@ DB_DATABASE=akpanel
 DB_USERNAME=akpanel
 DB_PASSWORD=${MYSQL_PANEL_PASS}
 EOF
+    chmod 600 "$PROJECT_ROOT/.env" 2>/dev/null || true
     cat << EOF > /etc/akpanel/akpanel.env
+APP_KEY=${APP_KEY_VALUE}
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -1307,7 +1316,6 @@ RestartSec=3
 Environment=APP_ENV=production
 Environment=APP_PORT=2087
 Environment=APP_HOST=0.0.0.0
-Environment=APP_KEY=akpanel_production_secret_key_32
 EnvironmentFile=-/etc/akpanel/akpanel.env
 
 [Install]
@@ -1429,15 +1437,11 @@ for _ak_try in \
 done
 unset _ak_try
 
+# The panel always serves HTTPS (self-signed fallback until a real certificate is issued).
+PANEL_SCHEME="https"
 if [ -n "$PANEL_HOST" ]; then
-    if [ -f "/etc/akpanel/ssl/${PANEL_HOST}/fullchain.pem" ] || [ -f /etc/akpanel/ssl/server/fullchain.pem ]; then
-        PANEL_SCHEME="https"
-    else
-        PANEL_SCHEME="http"
-    fi
     ACCESS_HOST="$PANEL_HOST"
 else
-    PANEL_SCHEME="http"
     ACCESS_HOST="$SERVER_IP"
 fi
 
@@ -1539,7 +1543,7 @@ else
 fi
 echo -e "${GREEN}==============================================================================${NC}"
 echo -e "  Root WHM (IP)      : ${YELLOW}https://${SERVER_IP}:2087${NC}"
-echo -e "  ${DIM}                     Plain http://${SERVER_IP}:2087 also works (no redirect on IP)${NC}"
+echo -e "  ${DIM}                     http:// redirects to https:// (self-signed until the hostname SSL is issued)${NC}"
 if [ -n "$AKPANEL_HOSTNAME" ]; then
     echo -e "  Hostname (HTTPS)   : ${YELLOW}https://${AKPANEL_HOSTNAME}:2087${NC}"
     echo -e "  ${DIM}                     Needs DNS A record ${AKPANEL_HOSTNAME} -> ${SERVER_IP}${NC}"

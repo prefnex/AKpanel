@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/goravel/framework/contracts/http"
@@ -459,22 +458,16 @@ func (r *FilesController) Download(ctx http.Context) http.Response {
 	if path == "" {
 		return ctx.Response().Status(422).Json(http.Json{"error": "path required"})
 	}
-	cleanPath, err := r.fileService.ValidateAdminPath(path)
+	file, cleanPath, err := r.fileService.OpenForDownload(path)
 	if err != nil {
 		return ctx.Response().Status(403).Json(http.Json{"error": err.Error()})
 	}
-	return ctx.Response().Download(cleanPath, filepath.Base(cleanPath))
+	return streamDownload(ctx, file, filepath.Base(cleanPath))
 }
 
 // Upload handles multipart file upload
 func (r *FilesController) Upload(ctx http.Context) http.Response {
 	destDir := ctx.Request().Input("dest_dir", "/var/www/sites")
-	cleanDest, err := r.fileService.ValidateAdminPath(destDir)
-	if err != nil {
-		return ctx.Response().Status(403).Json(http.Json{"status": "error", "message": err.Error()})
-	}
-	_ = os.MkdirAll(cleanDest, 0755)
-
 	fileHeader, err := ctx.Request().File("file")
 	if err != nil {
 		return ctx.Response().Status(422).Json(http.Json{
@@ -483,9 +476,9 @@ func (r *FilesController) Upload(ctx http.Context) http.Response {
 		})
 	}
 
-	fileName := fileHeader.GetClientOriginalName()
-	if _, err := fileHeader.StoreAs(cleanDest, fileName); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": "error", "message": err.Error()})
+	fileName := filepath.Base(fileHeader.GetClientOriginalName())
+	if err := saveUploadedFile(r.fileService, fileHeader, destDir, fileName); err != nil {
+		return ctx.Response().Status(403).Json(http.Json{"status": "error", "message": err.Error()})
 	}
 
 	return ctx.Response().Success().Json(http.Json{

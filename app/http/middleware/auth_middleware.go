@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net/url"
 	"strings"
 
 	goravelhttp "github.com/goravel/framework/contracts/http"
@@ -22,6 +23,42 @@ func (m *AuthMiddleware) Signature() string {
 	return "auth_root"
 }
 
+// sameOriginOK rejects cookie-authenticated state-changing requests coming from another origin (CSRF).
+// Requests carrying an Authorization header cannot be forged cross-site, so they are always fine.
+func sameOriginOK(ctx goravelhttp.Context, usedCookie bool) bool {
+	if !usedCookie {
+		return true
+	}
+	switch ctx.Request().Method() {
+	case "GET", "HEAD", "OPTIONS":
+		return true
+	}
+	origin := ctx.Request().Header("Origin", "")
+	if origin == "" {
+		origin = ctx.Request().Header("Referer", "")
+	}
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Host, ctx.Request().Host())
+}
+
+// bearerOrCookie extracts the session token. Tokens are never accepted from the query string,
+// since URLs leak into logs, history and Referer headers.
+func bearerOrCookie(ctx goravelhttp.Context, cookieName string) (token string, usedCookie bool) {
+	if h := ctx.Request().Header("Authorization", ""); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimPrefix(h, "Bearer "), false
+	}
+	if c := ctx.Request().Cookie(cookieName); c != "" {
+		return c, true
+	}
+	return "", false
+}
+
 func (m *AuthMiddleware) Handle(ctx goravelhttp.Context) {
 	rawPath := ctx.Request().Path()
 	path := "/" + strings.TrimPrefix(rawPath, "/")
@@ -32,20 +69,16 @@ func (m *AuthMiddleware) Handle(ctx goravelhttp.Context) {
 		return
 	}
 
-	// 2. Extract token from Header, Cookie, or Query
-	var token string
-	authHeader := ctx.Request().Header("Authorization", "")
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		token = strings.TrimPrefix(authHeader, "Bearer ")
-	}
-	if token == "" {
-		token = ctx.Request().Cookie("ak_session")
-	}
-	if token == "" {
-		token = ctx.Request().Query("token", "")
+	// The client portal (port 2083) never serves root APIs.
+	if strings.HasPrefix(path, "/api/") && strings.EqualFold(ctx.Request().Header("X-Panel-Scope", ""), "client") {
+		ctx.Request().AbortWithStatusJson(403, goravelhttp.Json{
+			"status":  false,
+			"message": "Forbidden: root APIs are only available on the admin port.",
+		})
+		return
 	}
 
-	// 3. Validate Token
+	token, usedCookie := bearerOrCookie(ctx, "ak_session")
 	claims, valid := m.authService.ValidateToken(token)
 	if !valid {
 		// If it is an API request, strictly enforce 401 Unauthorized
@@ -58,6 +91,14 @@ func (m *AuthMiddleware) Handle(ctx goravelhttp.Context) {
 		}
 		// For browser SPA pages, allow SPA HTML to load so React renders <LoginView />
 		ctx.Request().Next()
+		return
+	}
+
+	if strings.HasPrefix(path, "/api/") && !sameOriginOK(ctx, usedCookie) {
+		ctx.Request().AbortWithStatusJson(403, goravelhttp.Json{
+			"status":  false,
+			"message": "Forbidden: cross-origin request rejected.",
+		})
 		return
 	}
 

@@ -2,14 +2,13 @@ package controllers
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/goravel/framework/contracts/http"
 
 	"goravel/app/facades"
@@ -63,12 +62,18 @@ func (c *ClientController) Login(ctx http.Context) http.Response {
 		})
 	}
 
+	limiter := services.GetLoginLimiter()
+	ip := requestIP(ctx)
+	if ok, wait := limiter.Allowed("client", ip, req.Username); !ok {
+		return tooManyAttempts(ctx, wait)
+	}
+
 	var authenticatedUser *services.UserAccount
 	role := "client"
 
 	users := c.userService.ListUsers()
 	for _, u := range users {
-		if strings.EqualFold(u.Username, req.Username) {
+		if strings.EqualFold(u.Username, req.Username) && services.IsValidAccountUsername(u.Username) {
 			valid := false
 
 			// 1. Try modern bcrypt check
@@ -80,7 +85,7 @@ func (c *ClientController) Login(ctx http.Context) http.Response {
 			if !valid && u.PasswordHash != "" {
 				legacyHash := sha256.Sum256([]byte(req.Password))
 				legacyHashStr := hex.EncodeToString(legacyHash[:])
-				if legacyHashStr == u.PasswordHash {
+				if subtle.ConstantTimeCompare([]byte(legacyHashStr), []byte(u.PasswordHash)) == 1 {
 					valid = true
 					// Seamless migration: upgrade legacy hash to bcrypt
 					if facades.Hash() != nil {
@@ -107,29 +112,22 @@ func (c *ClientController) Login(ctx http.Context) http.Response {
 	}
 
 	if authenticatedUser == nil {
+		limiter.Fail("client", ip, req.Username)
 		return ctx.Response().Status(401).Json(http.Json{
 			"status":  false,
 			"message": "Invalid client credentials. Please verify username and password.",
 		})
 	}
+	limiter.Success("client", ip, req.Username)
 
-	secret := facades.Config().GetString("app.key", "AKpanel-SuperSecretKey-2026-ChangeInProduction!")
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":      authenticatedUser.Username,
-		"username": authenticatedUser.Username,
-		"role":     role,
-		"iss":      "AKpanel-Client-Portal",
-		"iat":      time.Now().Unix(),
-		"exp":      time.Now().Add(time.Hour * 72).Unix(),
-	})
-
-	tokenString, err := token.SignedString([]byte(secret))
+	tokenString, err := services.NewAuthService().IssueToken(authenticatedUser.Username, role, services.TokenScopeClient, services.ClientTokenTTL)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
 			"status":  false,
 			"message": "Failed to generate security token.",
 		})
 	}
+	setSessionCookie(ctx, "ak_client_token", tokenString, services.ClientTokenTTL)
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  true,
@@ -143,6 +141,19 @@ func (c *ClientController) Login(ctx http.Context) http.Response {
 			"role":        role,
 		},
 	})
+}
+
+// POST /api/client/auth/logout
+func (c *ClientController) Logout(ctx http.Context) http.Response {
+	token := ctx.Request().Cookie("ak_client_token")
+	if h := ctx.Request().Header("Authorization", ""); strings.HasPrefix(h, "Bearer ") {
+		token = strings.TrimPrefix(h, "Bearer ")
+	}
+	if token != "" {
+		services.NewAuthService().Revoke(token)
+	}
+	setSessionCookie(ctx, "ak_client_token", "", 0)
+	return ctx.Response().Success().Json(http.Json{"status": true, "message": "Logged out"})
 }
 
 // GET /api/client/auth/me

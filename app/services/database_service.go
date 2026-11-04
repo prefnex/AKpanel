@@ -207,16 +207,13 @@ func ExecMySQL(sqlStr string) error {
 		rootPass = facades.Config().GetString("akpanel.mysql_root_password")
 	}
 	if rootPass != "" {
-		cmd := exec.Command("mysql", "-u", "root", "-p"+rootPass, "-e", sqlStr)
+		cmd := WithMySQLPassword(exec.Command("mysql", "-u", "root", "-e", sqlStr), rootPass)
 		if err := cmd.Run(); err == nil {
 			return nil
 		}
 	}
-	cmd2 := exec.Command("mysql", "-u", "ak_admin", "-e", sqlStr)
-	if err := cmd2.Run(); err == nil {
-		return nil
-	}
-	return exec.Command("mysql", "-e", sqlStr).Run()
+	// Fallback: root over the unix socket (unix_socket auth on fresh MariaDB installs).
+	return exec.Command("mysql", "--protocol=socket", "-u", "root", "-e", sqlStr).Run()
 }
 
 func (d *DatabaseService) EnsurePhpMyAdminDaemon() {
@@ -779,7 +776,10 @@ func (d *DatabaseService) CreateDatabase(name, engine, collation, username, pass
 	case "mysql":
 		sqlStmt := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;", safeName)
 		if username != "" && password != "" {
-			sqlStmt += fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s';", username, password)
+			if !IsValidMySQLIdent(username) {
+				return fmt.Errorf("invalid database user name")
+			}
+			sqlStmt += fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s';", username, MySQLEscape(password))
 			sqlStmt += fmt.Sprintf("GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';", safeName, username)
 			sqlStmt += "FLUSH PRIVILEGES;"
 		}

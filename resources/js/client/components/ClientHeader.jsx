@@ -11,18 +11,29 @@ import {
   Sparkles,
   Server,
   Layers,
-  ChevronDown
+  ChevronDown,
+  Menu
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 
-export default function ClientHeader({ user, stats, onLogout }) {
+export default function ClientHeader({ user, stats, onLogout, onToggleNav }) {
   const isRootAdmin = user?.role === 'root_admin' || user?.username === 'root' || user?.username === 'admin';
 
   return (
-    <header className="h-16 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-xl px-6 flex items-center justify-between sticky top-0 z-30">
+    <header className="h-16 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-xl px-4 md:px-6 flex items-center justify-between sticky top-0 z-30">
       {/* Left: Brand & Portal Badge */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 min-w-0">
+        {onToggleNav && (
+          <button
+            type="button"
+            onClick={onToggleNav}
+            className="md:hidden p-1.5 rounded-xl text-zinc-400 hover:text-white hover:bg-zinc-900 border border-zinc-800/80 transition"
+            aria-label="Toggle navigation"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+        )}
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center shadow-md shadow-emerald-500/20">
             <Globe className="w-4 h-4 text-white" />
@@ -51,15 +62,15 @@ export default function ClientHeader({ user, stats, onLogout }) {
 
       {/* Right: User Profile & Actions */}
       <div className="flex items-center gap-3">
-        {/* Switch to Root WHM Panel (If Admin) */}
+        {/* Switch to Root Admin Panel (If Admin) */}
         {isRootAdmin && (
           <a
-            href={`http://${window.location.hostname}:2087`}
+            href={`https://${window.location.hostname}:2087`}
             className="hidden sm:flex items-center gap-1.5 text-xs font-bold text-purple-400 bg-purple-950/40 border border-purple-800/50 hover:bg-purple-900/50 px-3 py-1.5 rounded-xl transition"
-            title="Switch to WHM Root Administration Console (Port 2087)"
+            title="Switch to Root Admin Administration Console (Port 2087)"
           >
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Switch to WHM (Root)</span>
+            <span>Switch to Root Admin</span>
             <ExternalLink className="w-3 h-3 opacity-60" />
           </a>
         )}

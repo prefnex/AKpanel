@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"strings"
-	"time"
 
 	goravelhttp "github.com/goravel/framework/contracts/http"
 
@@ -39,25 +38,23 @@ func (c *AuthController) Login(ctx goravelhttp.Context) goravelhttp.Response {
 		})
 	}
 
-	token, err := c.authService.Authenticate(req.Username, req.Password)
-	if err != nil {
-		return ctx.Response().Status(401).Json(goravelhttp.Json{
-			"status":  false,
-			"message": "Invalid root credentials: " + err.Error(),
-		})
+	limiter := services.GetLoginLimiter()
+	ip := requestIP(ctx)
+	if ok, wait := limiter.Allowed("admin", ip, req.Username); !ok {
+		return tooManyAttempts(ctx, wait)
 	}
 
-	// Set secure HTTP-only session cookie
-	ctx.Response().Cookie(goravelhttp.Cookie{
-		Name:     "ak_session",
-		Value:    token,
-		Path:     "/",
-		Expires:  time.Now().Add(24 * time.Hour),
-		MaxAge:   86400,
-		HttpOnly: true,
-		Secure:   false,
-		SameSite: "lax",
-	})
+	token, err := c.authService.Authenticate(req.Username, req.Password)
+	if err != nil {
+		limiter.Fail("admin", ip, req.Username)
+		return ctx.Response().Status(401).Json(goravelhttp.Json{
+			"status":  false,
+			"message": "Invalid root credentials",
+		})
+	}
+	limiter.Success("admin", ip, req.Username)
+
+	setSessionCookie(ctx, "ak_session", token, services.AdminTokenTTL)
 
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status": true,
@@ -70,18 +67,12 @@ func (c *AuthController) Login(ctx goravelhttp.Context) goravelhttp.Response {
 	})
 }
 
-// Logout clears the session cookie
+// Logout revokes the current token and clears the session cookie
 func (c *AuthController) Logout(ctx goravelhttp.Context) goravelhttp.Response {
-	ctx.Response().Cookie(goravelhttp.Cookie{
-		Name:     "ak_session",
-		Value:    "",
-		Path:     "/",
-		Expires:  time.Now().Add(-1 * time.Hour),
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   false,
-		SameSite: "lax",
-	})
+	if token := c.extractToken(ctx); token != "" {
+		c.authService.Revoke(token)
+	}
+	setSessionCookie(ctx, "ak_session", "", 0)
 
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status":  true,
@@ -134,6 +125,16 @@ func (c *AuthController) ChangePassword(ctx goravelhttp.Context) goravelhttp.Res
 		})
 	}
 
+	// All existing sessions were invalidated; hand this browser a fresh one.
+	if token, err := c.authService.IssueToken("root", "root_admin", services.TokenScopeAdmin, services.AdminTokenTTL); err == nil {
+		setSessionCookie(ctx, "ak_session", token, services.AdminTokenTTL)
+		return ctx.Response().Status(200).Json(goravelhttp.Json{
+			"status":  true,
+			"token":   token,
+			"message": "Root password changed successfully",
+		})
+	}
+
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status":  true,
 		"message": "Root password changed successfully",
@@ -145,9 +146,5 @@ func (c *AuthController) extractToken(ctx goravelhttp.Context) string {
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimPrefix(authHeader, "Bearer ")
 	}
-	cookieToken := ctx.Request().Cookie("ak_session")
-	if cookieToken != "" {
-		return cookieToken
-	}
-	return ctx.Request().Query("token", "")
+	return ctx.Request().Cookie("ak_session")
 }

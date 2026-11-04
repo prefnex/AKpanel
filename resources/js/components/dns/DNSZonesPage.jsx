@@ -422,7 +422,7 @@ export default function DNSZonesPage({ showToast }) {
                 <div className="flex items-center gap-2.5 flex-wrap">
                   <h1 className="text-2xl font-black text-white tracking-tight">DNS Zones & User Authority Manager</h1>
                   <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs font-semibold px-2.5 py-0.5">
-                    Root Administration (WHM / CWP Level)
+                    Root Administration Level
                   </Badge>
                 </div>
                 <p className="text-zinc-400 text-sm mt-1">

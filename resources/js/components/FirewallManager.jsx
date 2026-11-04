@@ -249,7 +249,7 @@ export default function FirewallManager({ showToast }) {
   const presetPorts = [
     { name: 'Web HTTP', port: '80', proto: 'TCP', icon: Globe, color: 'text-blue-400', desc: 'Standard HTTP Traffic' },
     { name: 'Web HTTPS', port: '443', proto: 'TCP', icon: ShieldCheck, color: 'text-emerald-400', desc: 'Encrypted SSL/TLS Web' },
-    { name: 'AKpanel WHM', port: '2087', proto: 'TCP', icon: Server, color: 'text-purple-400', desc: 'Root Administration Console' },
+    { name: 'AKpanel Admin', port: '2087', proto: 'TCP', icon: Server, color: 'text-purple-400', desc: 'Root Administration Console' },
     { name: 'Client Portal', port: '2083', proto: 'TCP', icon: Globe, color: 'text-teal-400', desc: 'User Tenant Dashboard' },
     { name: 'SSH Terminal', port: String(firewallData.ssh_port || 22), proto: 'TCP', icon: Terminal, color: 'text-amber-400', desc: 'Secure Shell Remote Login' },
     { name: 'DNS Nameserver', port: '53', proto: 'TCP/UDP', icon: Radio, color: 'text-cyan-400', desc: 'BIND 9 Authoritative Queries' },

@@ -11,6 +11,7 @@ func registerClientRoutes(clientController *controllers.ClientController) {
 	// =========================================================================
 	facades.Route().Post("/api/client/auth/login", clientController.Login)
 	facades.Route().Get("/api/client/auth/me", clientController.Me)
+	facades.Route().Post("/api/client/auth/logout", clientController.Logout)
 	facades.Route().Get("/api/client/stats", clientController.Stats)
 	facades.Route().Get("/api/client/overview", clientController.Stats)
 	facades.Route().Get("/api/client/websites", clientController.Websites)

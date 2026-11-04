@@ -60,7 +60,7 @@ export default function ServerSpecsTelemetryHub({ stats, showToast }) {
         <div className="flex items-center gap-2">
           <Server className="w-4 h-4 text-cyan-400" />
           <h2 className="text-xs font-bold uppercase tracking-wider text-zinc-300">
-            System & Software Telemetry Hub (CWP / WHM Full Specs)
+            System & Software Telemetry Hub (Full Specs)
           </h2>
         </div>
         <div className="flex items-center gap-3 text-[11px] text-zinc-400 font-mono">
@@ -159,7 +159,7 @@ export default function ServerSpecsTelemetryHub({ stats, showToast }) {
             </div>
 
             <div className="flex items-center justify-between pt-2">
-              <span className="text-zinc-400">SSH & WHM Port:</span>
+              <span className="text-zinc-400">SSH & Admin Port:</span>
               <span className="text-zinc-200 font-bold">{sys.ssh_port || '22 / 2087'}</span>
             </div>
 

@@ -13,10 +13,17 @@ import ClientPHPPage from './components/ClientPHPPage';
 import ClientEmailsPage from './components/ClientEmailsPage';
 import ClientBackupsPage from './components/ClientBackupsPage';
 import ClientLoginView from './components/ClientLoginView';
+import useIsMobile from '../hooks/useIsMobile';
 
 export default function ClientApp() {
   const navigate = useNavigate();
   const location = useLocation();
+  const isMobile = useIsMobile();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname, isMobile]);
 
   const [token, setToken] = useState(
     localStorage.getItem('akpanel_client_token') || localStorage.getItem('ak_client_token') || ''
@@ -109,6 +116,8 @@ export default function ClientApp() {
   };
 
   const handleLogout = () => {
+    // Revoke the session server-side (also clears the HttpOnly cookie); local state is cleared regardless.
+    fetch('/api/client/auth/logout', { method: 'POST' }).catch(() => {});
     localStorage.removeItem('ak_client_token');
     localStorage.removeItem('akpanel_client_token');
     localStorage.removeItem('ak_client_user');
@@ -121,15 +130,6 @@ export default function ClientApp() {
   const handleNavigateFiles = (domain) => {
     navigate('/files');
   };
-
-  useEffect(() => {
-    const urlToken = new URLSearchParams(location.search).get('token');
-    if (urlToken && location.pathname === '/filemanager/standalone') {
-      localStorage.setItem('akpanel_client_token', urlToken);
-      localStorage.setItem('ak_client_token', urlToken);
-      setToken(urlToken);
-    }
-  }, [location.search, location.pathname]);
 
   const isStandaloneFileManager = location.pathname === '/filemanager/standalone';
 
@@ -198,19 +198,31 @@ export default function ClientApp() {
         user={user} 
         stats={stats} 
         onLogout={handleLogout} 
+        onToggleNav={() => setMobileNavOpen((open) => !open)}
       />
 
       {/* Main Layout Body */}
       <div className="flex-1 flex min-h-0">
-        {/* Navigation Sidebar */}
-        <ClientSidebar 
-          stats={stats} 
-        />
+        {/* Navigation Sidebar: inline on desktop, drawer under the header on phones */}
+        {isMobile && mobileNavOpen && (
+          <div
+            className="fixed inset-0 top-16 z-30 bg-black/60 backdrop-blur-sm"
+            onClick={() => setMobileNavOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+        {(!isMobile || mobileNavOpen) && (
+          <div className={isMobile ? 'fixed top-16 bottom-0 left-0 z-40 shadow-2xl' : ''}>
+            <ClientSidebar 
+              stats={stats} 
+            />
+          </div>
+        )}
 
         {/* Content Area with Full React Router Multi-Page Switching */}
         <main className={isFileManager
           ? 'flex-1 min-w-0 min-h-0 overflow-hidden'
-          : 'flex-1 p-6 md:p-8 max-w-7xl mx-auto w-full overflow-y-auto'
+          : 'flex-1 p-4 sm:p-6 md:p-8 max-w-7xl mx-auto w-full min-w-0 overflow-y-auto'
         }>
           <Routes>
             <Route 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -35,8 +36,11 @@ func (s *ValidateUserPlanStep) Name() string { return "ValidateUserPlan" }
 
 func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionPlan) error {
 	plan.Username = strings.TrimSpace(strings.ToLower(plan.Username))
-	if len(plan.Username) < 3 {
-		return fmt.Errorf("username must be at least 3 characters")
+	if !services.IsValidNewAccountUsername(plan.Username) {
+		return fmt.Errorf("username must be 3-16 lowercase letters/digits, start with a letter, and not be a reserved system name")
+	}
+	if _, err := user.Lookup(plan.Username); err == nil {
+		return fmt.Errorf("a Linux system user named '%s' already exists", plan.Username)
 	}
 	if plan.Password == "" {
 		return fmt.Errorf("password is required")

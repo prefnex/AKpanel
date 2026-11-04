@@ -27,7 +27,11 @@ func ProvisionMySQLUser(username, password string) error {
 	if password == "" {
 		return fmt.Errorf("password required for mysql user")
 	}
+	if !services.IsValidMySQLIdent(username) {
+		return fmt.Errorf("invalid mysql user name")
+	}
 	rootPass := mysqlRootPassword()
+	pw := services.MySQLEscape(password)
 	scopedSQL := fmt.Sprintf(
 		"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s';"+
 			"CREATE USER IF NOT EXISTS '%s'@'127.0.0.1' IDENTIFIED BY '%s';"+
@@ -38,23 +42,18 @@ func ProvisionMySQLUser(username, password string) error {
 			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'localhost';"+
 			"GRANT ALL PRIVILEGES ON `%s`.* TO '%s'@'127.0.0.1';"+
 			"FLUSH PRIVILEGES;",
-		username, password, username, password,
-		username, password, username, password,
+		username, pw, username, pw,
+		username, pw, username, pw,
 		username, username, username, username,
 		username, username, username, username,
 	)
 
 	if rootPass != "" {
-		cmd := exec.Command("mysql", "-u", "root", "-p"+rootPass, "-e", scopedSQL)
+		cmd := services.WithMySQLPassword(exec.Command("mysql", "-u", "root", "-e", scopedSQL), rootPass)
 		if err := cmd.Run(); err == nil {
 			services.PersistAccountMySQLPassword(username, password)
 			return nil
 		}
-	}
-	cmd2 := exec.Command("mysql", "-u", "ak_admin", "-e", scopedSQL)
-	if err := cmd2.Run(); err == nil {
-		services.PersistAccountMySQLPassword(username, password)
-		return nil
 	}
 	if err := services.ExecMySQL(scopedSQL); err != nil {
 		return err

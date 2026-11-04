@@ -6,8 +6,10 @@ import ClientApp from './client/ClientApp';
 import ErrorBoundary from './components/ErrorBoundary';
 import '../css/app.css';
 
-// Detect whether running in Client/Tenant Portal (Port 2083 or /client path) vs Root WHM Panel (Port 2087)
-const injectedScope = String(window.__AKPANEL_SCOPE__ || '').toLowerCase();
+// Detect whether running in Client/Tenant Portal (Port 2083 or /client path) vs Root Admin Panel (Port 2087)
+const injectedScope = String(
+  document.querySelector('meta[name="akpanel-scope"]')?.getAttribute('content') || ''
+).toLowerCase();
 const hostName = window.location.hostname.toLowerCase();
 const isClientPortal =
   injectedScope === 'client' ||

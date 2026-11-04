@@ -133,6 +133,19 @@ func (l *cmuxListener) Accept() (net.Conn, error) {
 	}
 }
 
+// setSecurityHeaders applies baseline browser hardening to every panel response.
+// The CSP itself is attached to the SPA shell (routes/spa.go) so proxied tools keep working.
+func setSecurityHeaders(w nethttp.ResponseWriter, r *nethttp.Request) {
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "SAMEORIGIN")
+	h.Set("Referrer-Policy", "same-origin")
+	h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	if r.TLS != nil {
+		h.Set("Strict-Transport-Security", "max-age=31536000")
+	}
+}
+
 // createPanelHandler creates an HTTP/HTTPS handler with reverse proxy to internal Goravel backend and automatic HTTP->HTTPS redirect
 func createPanelHandler(targetURL string, port string, scope string) nethttp.Handler {
 	target, _ := url.Parse(targetURL)
@@ -149,6 +162,12 @@ func createPanelHandler(targetURL string, port string, scope string) nethttp.Han
 
 	proxy.Director = func(req *nethttp.Request) {
 		originalDirector(req)
+		// Overwrite (never append) client-identity headers so callers cannot spoof them.
+		if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+			req.Header.Set("X-Real-IP", host)
+		} else {
+			req.Header.Del("X-Real-IP")
+		}
 		req.Header.Set("X-Forwarded-Port", port)
 		req.Header.Set("X-Panel-Scope", scope)
 		if req.TLS != nil {
@@ -158,16 +177,19 @@ func createPanelHandler(targetURL string, port string, scope string) nethttp.Han
 		}
 	}
 
+	allowPlainHTTP := os.Getenv("AKPANEL_ALLOW_PLAIN_HTTP") == "1"
+
 	return nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
-		if r.TLS == nil {
+		setSecurityHeaders(w, r)
+		if r.TLS == nil && !allowPlainHTTP {
+			// Credentials must never cross the wire in clear text, including when the panel is
+			// reached by bare IP: the self-signed fallback certificate covers that case.
 			host := r.Host
-			if strings.Contains(host, ":") {
-				host = strings.Split(host, ":")[0]
+			if h, _, err := net.SplitHostPort(host); err == nil {
+				host = h
 			}
-			// IP literals: serve plain HTTP (no cert for IP; avoids broken redirect loops).
-			if net.ParseIP(host) != nil {
-				proxy.ServeHTTP(w, r)
-				return
+			if strings.Contains(host, ":") {
+				host = "[" + host + "]"
 			}
 			targetHTTPS := fmt.Sprintf("https://%s:%s%s", host, port, r.URL.RequestURI())
 			nethttp.Redirect(w, r, targetHTTPS, nethttp.StatusMovedPermanently)

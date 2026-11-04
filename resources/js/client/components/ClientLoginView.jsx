@@ -130,14 +130,14 @@ export default function ClientLoginView({ onLoginSuccess }) {
           </form>
         </Card>
 
-        {/* Link to Root WHM */}
+        {/* Link to Root Admin */}
         <div className="text-center">
           <a
             href={`http://${window.location.hostname}:2087`}
             className="text-xs text-zinc-400 hover:text-purple-400 transition inline-flex items-center gap-1.5"
           >
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Are you a Server Administrator? Switch to WHM Root (Port 2087)</span>
+            <span>Are you a Server Administrator? Switch to Root Admin (Port 2087)</span>
             <ExternalLink className="w-3 h-3 opacity-60" />
           </a>
         </div>

@@ -41,6 +41,7 @@ import FirewallManager from './components/FirewallManager';
 import NotFoundPage from './components/NotFoundPage';
 import LoginView from './components/LoginView';
 import Toast from './components/Toast';
+import useIsMobile from './hooks/useIsMobile';
 
 export default function App() {
   const location = useLocation();
@@ -58,6 +59,13 @@ export default function App() {
   });
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const isMobile = useIsMobile();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // The mobile drawer closes whenever the user navigates or the viewport grows.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [location.pathname, isMobile]);
   const [stats, setStats] = useState(null);
   const [websites, setWebsites] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -309,14 +317,29 @@ export default function App() {
     <div className="h-screen w-screen bg-[#09090b] text-zinc-100 flex font-sans overflow-hidden">
       {toast && <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
 
-      {/* Sidebar */}
-      <Sidebar 
-        collapsed={sidebarCollapsed} 
-        setCollapsed={setSidebarCollapsed} 
-        websitesCount={websites.length}
-        stats={stats}
-        onLogout={handleLogout}
-      />
+      {/* Sidebar: inline on desktop, off-canvas drawer on phones */}
+      {isMobile && mobileNavOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
+          onClick={() => setMobileNavOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+      <div
+        className={
+          isMobile
+            ? `fixed inset-y-0 left-0 z-50 shadow-2xl transition-transform duration-300 ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`
+            : 'h-full'
+        }
+      >
+        <Sidebar 
+          collapsed={isMobile ? false : sidebarCollapsed} 
+          setCollapsed={isMobile ? () => setMobileNavOpen(false) : setSidebarCollapsed} 
+          websitesCount={websites.length}
+          stats={stats}
+          onLogout={handleLogout}
+        />
+      </div>
 
       {/* Main Workspace Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -324,7 +347,7 @@ export default function App() {
         <Header 
           hostname={stats?.hostname} 
           onOpenModal={() => setIsModalOpen(true)}
-          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onToggleSidebar={() => (isMobile ? setMobileNavOpen((open) => !open) : setSidebarCollapsed(!sidebarCollapsed))}
           onLogout={handleLogout}
           showToast={showToast}
         />

@@ -2,10 +2,13 @@ package controllers
 
 import (
 	"fmt"
+	"io"
+	"mime"
 	"os"
 	"path/filepath"
-	"strings"
+	"strconv"
 
+	"github.com/goravel/framework/contracts/filesystem"
 	"github.com/goravel/framework/contracts/http"
 
 	"goravel/app/paths"
@@ -17,15 +20,21 @@ func (c *ClientController) jailedFileManager(ctx http.Context) (*services.FileMa
 	if fail != nil {
 		return nil, "", fail
 	}
-	if username == "root" || strings.Contains(username, "/") || strings.Contains(username, "..") {
+	tenant, err := services.LookupTenant(username)
+	if err != nil {
 		return nil, "", ctx.Response().Status(403).Json(http.Json{
 			"status":  "error",
-			"message": "access denied",
+			"message": "access denied: " + err.Error(),
 		})
 	}
 	home := paths.UserHome(username)
-	_ = os.MkdirAll(home, 0750)
-	return services.NewFileManagerService().WithJail(home), username, nil
+	if info, err := os.Stat(home); err != nil || !info.IsDir() {
+		return nil, "", ctx.Response().Status(403).Json(http.Json{
+			"status":  "error",
+			"message": "access denied: home directory is missing",
+		})
+	}
+	return services.NewFileManagerService().WithJail(home).WithTenant(tenant), username, nil
 }
 
 func clientFileErr(ctx http.Context, err error) http.Response {
@@ -376,11 +385,11 @@ func (c *ClientController) FilesDownload(ctx http.Context) http.Response {
 		return fail
 	}
 	path := ctx.Request().Input("path")
-	cleanPath, err := svc.ValidateJailPath(path)
+	file, cleanPath, err := svc.OpenForDownload(path)
 	if err != nil {
 		return clientFileErr(ctx, err)
 	}
-	return ctx.Response().Download(cleanPath, filepath.Base(cleanPath))
+	return streamDownload(ctx, file, filepath.Base(cleanPath))
 }
 
 func (c *ClientController) FilesUpload(ctx http.Context) http.Response {
@@ -389,29 +398,19 @@ func (c *ClientController) FilesUpload(ctx http.Context) http.Response {
 		return fail
 	}
 	destDir := ctx.Request().Input("dest_dir", "")
-	cleanDest, err := svc.ValidateJailPath(destDir)
-	if err != nil {
-		return clientFileErr(ctx, err)
-	}
-	_ = os.MkdirAll(cleanDest, 0755)
-
 	fileHeader, err := ctx.Request().File("file")
 	if err != nil {
 		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": "No file uploaded"})
 	}
 	fileName := filepath.Base(fileHeader.GetClientOriginalName())
-	if _, err := svc.ValidateJailPath(filepath.Join(cleanDest, fileName)); err != nil {
+	if err := saveUploadedFile(svc, fileHeader, destDir, fileName); err != nil {
 		return clientFileErr(ctx, err)
 	}
-	if _, err := fileHeader.StoreAs(cleanDest, fileName); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{"status": "error", "message": err.Error()})
-	}
-	_ = svc.ChangePermissions(filepath.Join(cleanDest, fileName), "0644", "", "", false)
 	return ctx.Response().Success().Json(http.Json{"status": "success", "message": fmt.Sprintf("File '%s' uploaded", fileName)})
 }
 
 func (c *ClientController) GitClone(ctx http.Context) http.Response {
-	svc, username, fail := c.jailedFileManager(ctx)
+	_, username, fail := c.jailedFileManager(ctx)
 	if fail != nil {
 		return fail
 	}
@@ -423,6 +422,33 @@ func (c *ClientController) GitClone(ctx http.Context) http.Response {
 	if err := c.clientService.GitCloneClientRepo(username, destPath, repoURL); err != nil {
 		return ctx.Response().Status(500).Json(http.Json{"status": "error", "message": err.Error()})
 	}
-	_ = svc.FixPermissions(destPath)
 	return ctx.Response().Success().Json(http.Json{"status": "success", "message": "Repository cloned successfully!"})
+}
+
+// saveUploadedFile streams a multipart upload through the file manager, which writes it with
+// the caller's identity (the tenant's, for the client portal).
+func saveUploadedFile(svc *services.FileManagerService, fileHeader filesystem.File, destDir, fileName string) error {
+	src, err := os.Open(fileHeader.File())
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	_, err = svc.SaveUpload(destDir, fileName, src)
+	return err
+}
+
+// streamDownload sends an already-opened file as an attachment and closes it.
+func streamDownload(ctx http.Context, file *os.File, name string) http.Response {
+	info, _ := file.Stat()
+	ctx.Response().Header("Content-Type", "application/octet-stream")
+	ctx.Response().Header("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	ctx.Response().Header("X-Content-Type-Options", "nosniff")
+	if info != nil {
+		ctx.Response().Header("Content-Length", strconv.FormatInt(info.Size(), 10))
+	}
+	return ctx.Response().Stream(200, func(w http.StreamWriter) error {
+		defer file.Close()
+		_, err := io.Copy(w, file)
+		return err
+	})
 }

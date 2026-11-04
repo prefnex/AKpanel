@@ -670,7 +670,7 @@ export default function DNSManager({ initialTab = 'zones', showToast }) {
             <div className="flex items-center gap-2.5 flex-wrap">
               <h1 className="text-2xl font-black text-white tracking-tight">Root DNS Server & Zones Authority</h1>
               <Badge className="bg-cyan-500/10 text-cyan-400 border-cyan-500/30 text-xs font-semibold px-2.5 py-0.5">
-                Root Level (WHM)
+                Root Level (Admin)
               </Badge>
               <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30 text-xs font-semibold px-2.5 py-0.5">
                 BIND 9 Daemon Port 53

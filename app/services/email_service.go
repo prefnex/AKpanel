@@ -433,7 +433,7 @@ func (s *EmailService) writeEmails(list []EmailAccount) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.filePath, bytes, 0644)
+	return os.WriteFile(s.filePath, bytes, 0600)
 }
 
 // AccountExists reports whether a mailbox is registered, without touching the disk usage
@@ -1104,7 +1104,7 @@ func importRoundcubeSQL(sqlFile string) {
 	}
 	var cmd *exec.Cmd
 	if rootPass != "" {
-		cmd = exec.Command("mysql", "-u", "root", "-p"+rootPass, "roundcubemail")
+		cmd = WithMySQLPassword(exec.Command("mysql", "-u", "root", "roundcubemail"), rootPass)
 	} else {
 		cmd = exec.Command("mysql", "--protocol=socket", "-u", "root", "roundcubemail")
 	}

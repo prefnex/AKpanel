@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -46,6 +47,7 @@ type GrepResult struct {
 type FileManagerService struct {
 	defaultDir string
 	jailRoot   string
+	tenant     *TenantIdentity
 }
 
 func NewFileManagerService() *FileManagerService {
@@ -59,6 +61,13 @@ func (f *FileManagerService) WithJail(root string) *FileManagerService {
 	clone := *f
 	clone.jailRoot = filepath.Clean(root)
 	clone.defaultDir = clone.jailRoot
+	return &clone
+}
+
+// WithTenant binds the Linux identity every jailed operation runs as.
+func (f *FileManagerService) WithTenant(t *TenantIdentity) *FileManagerService {
+	clone := *f
+	clone.tenant = t
 	return &clone
 }
 
@@ -76,6 +85,61 @@ func (f *FileManagerService) resolveManagedPath(targetPath string) (string, erro
 		return f.ValidateJailPath(targetPath)
 	}
 	return f.ValidateAdminPath(targetPath)
+}
+
+// jailed reports whether this instance acts for a hosting account.
+func (f *FileManagerService) jailed() bool { return f.jailRoot != "" }
+
+// asOwner runs fn with the tenant's filesystem identity when jailed (root otherwise).
+// Jailed instances without a resolved tenant refuse to touch the disk at all.
+func (f *FileManagerService) asOwner(fn func() error) error {
+	if !f.jailed() {
+		return fn()
+	}
+	if f.tenant == nil {
+		return fmt.Errorf("access denied: hosting account identity unavailable")
+	}
+	return f.tenant.Do(fn)
+}
+
+// command builds an external command that runs as the tenant when jailed.
+func (f *FileManagerService) command(name string, args ...string) *exec.Cmd {
+	if f.jailed() && f.tenant != nil {
+		return f.tenant.Command(name, args...)
+	}
+	return exec.Command(name, args...)
+}
+
+// runCmd runs a command and folds its output into the error.
+func runCmd(cmd *exec.Cmd) error {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if len(msg) > 400 {
+			msg = msg[:400]
+		}
+		if msg != "" {
+			return fmt.Errorf("%s: %w", msg, err)
+		}
+	}
+	return err
+}
+
+// fixOwner re-owns a freshly written path. Jailed writes already belong to the tenant,
+// and a root chown on a tenant-controlled path could be redirected by a symlink.
+func (f *FileManagerService) fixOwner(path string) {
+	if f.jailed() {
+		return
+	}
+	chownToParentOrAccount(path)
+}
+
+// operand guards a path argument for external tools against being parsed as an option.
+func operand(p string) string {
+	if strings.HasPrefix(p, "-") {
+		return "./" + p
+	}
+	return p
 }
 
 // ValidateJailPath keeps every operation inside jailRoot (no parent of home, no other users).
@@ -166,24 +230,35 @@ func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, strin
 		return nil, targetPath, err
 	}
 
-	// Ensure path exists, create default if missing
-	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
-		if cleanPath == f.defaultDir {
-			_ = os.MkdirAll(cleanPath, 0755)
-		} else {
-			return nil, cleanPath, fmt.Errorf("directory '%s' does not exist", cleanPath)
+	var entries []os.DirEntry
+	var infos []os.FileInfo
+	err = f.asOwner(func() error {
+		if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+			if cleanPath == f.defaultDir {
+				_ = os.MkdirAll(cleanPath, 0755)
+			} else {
+				return fmt.Errorf("directory '%s' does not exist", cleanPath)
+			}
 		}
-	}
-
-	entries, err := os.ReadDir(cleanPath)
+		var err error
+		entries, err = os.ReadDir(cleanPath)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			info, _ := e.Info()
+			infos = append(infos, info)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, cleanPath, err
 	}
 
 	var items []FileItem
-	for _, entry := range entries {
-		info, err := entry.Info()
-		if err != nil {
+	for i, entry := range entries {
+		info := infos[i]
+		if info == nil {
 			continue
 		}
 
@@ -202,14 +277,6 @@ func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, strin
 			}
 		}
 
-		octal := fmt.Sprintf("%04o", info.Mode().Perm())
-		mime := detectMimeType(entry.Name(), entry.IsDir(), ext)
-		dateFmt := info.ModTime().Format("02/01/06 15:04")
-
-		isImg := isImageExtension(ext)
-		isArch := isArchiveExtension(ext)
-		isCode := isCodeExtension(ext)
-
 		items = append(items, FileItem{
 			Name:          entry.Name(),
 			Path:          itemPath,
@@ -217,21 +284,24 @@ func (f *FileManagerService) ListDirectory(targetPath string) ([]FileItem, strin
 			Size:          info.Size(),
 			HumanSize:     formatHumanSize(info.Size(), entry.IsDir()),
 			Permissions:   info.Mode().String(),
-			OctalPerm:     octal,
+			OctalPerm:     fmt.Sprintf("%04o", info.Mode().Perm()),
 			Owner:         ownerName,
 			Group:         groupName,
 			ModTime:       info.ModTime(),
-			DateFormatted: dateFmt,
-			MimeType:      mime,
+			DateFormatted: info.ModTime().Format("02/01/06 15:04"),
+			MimeType:      detectMimeType(entry.Name(), entry.IsDir(), ext),
 			Extension:     ext,
-			IsImage:       isImg,
-			IsArchive:     isArch,
-			IsCode:        isCode,
+			IsImage:       isImageExtension(ext),
+			IsArchive:     isArchiveExtension(ext),
+			IsCode:        isCodeExtension(ext),
 		})
 	}
 
 	return items, cleanPath, nil
 }
+
+// maxEditableFileBytes bounds what the code editor loads into memory.
+const maxEditableFileBytes = 10 << 20
 
 // ReadFile reads the text content of a file
 func (f *FileManagerService) ReadFile(filePath string) (string, error) {
@@ -239,11 +309,76 @@ func (f *FileManagerService) ReadFile(filePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(cleanPath)
+	var data []byte
+	err = f.asOwner(func() error {
+		info, err := os.Stat(cleanPath)
+		if err != nil {
+			return err
+		}
+		if info.Size() > maxEditableFileBytes {
+			return fmt.Errorf("file is too large to edit (%s)", formatHumanSize(info.Size(), false))
+		}
+		data, err = os.ReadFile(cleanPath)
+		return err
+	})
+	return string(data), err
+}
+
+// OpenForDownload opens a file for streaming with the caller's (tenant's) permissions.
+func (f *FileManagerService) OpenForDownload(filePath string) (*os.File, string, error) {
+	cleanPath, err := f.resolveManagedPath(filePath)
+	if err != nil {
+		return nil, "", err
+	}
+	var file *os.File
+	err = f.asOwner(func() error {
+		var err error
+		file, err = os.Open(cleanPath)
+		if err != nil {
+			return err
+		}
+		if info, err := file.Stat(); err != nil || info.IsDir() {
+			file.Close()
+			return fmt.Errorf("not a regular file")
+		}
+		return nil
+	})
+	return file, cleanPath, err
+}
+
+// SaveUpload writes an uploaded stream into destDir/name.
+func (f *FileManagerService) SaveUpload(destDir, name string, src io.Reader) (string, error) {
+	name = filepath.Base(name)
+	if name == "" || name == "." || name == ".." || name == "/" {
+		return "", fmt.Errorf("invalid file name")
+	}
+	cleanDest, err := f.resolveManagedPath(destDir)
 	if err != nil {
 		return "", err
 	}
-	return string(data), nil
+	target, err := f.resolveManagedPath(filepath.Join(cleanDest, name))
+	if err != nil {
+		return "", err
+	}
+	err = f.asOwner(func() error {
+		if err := os.MkdirAll(cleanDest, 0755); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0644)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, src); err != nil {
+			out.Close()
+			return err
+		}
+		return out.Close()
+	})
+	if err != nil {
+		return "", err
+	}
+	f.fixOwner(target)
+	return target, nil
 }
 
 func linuxAccountFromPath(p string) string {
@@ -272,7 +407,7 @@ func chownLike(src, dst string) {
 	if !ok {
 		return
 	}
-	_ = os.Chown(dst, int(st.Uid), int(st.Gid))
+	_ = os.Lchown(dst, int(st.Uid), int(st.Gid))
 	if !info.IsDir() {
 		_ = os.Chmod(dst, info.Mode().Perm())
 	}
@@ -280,7 +415,7 @@ func chownLike(src, dst string) {
 
 func chownToParentOrAccount(path string) {
 	if acc := linuxAccountFromPath(path); acc != "" {
-		_ = exec.Command("chown", acc+":"+acc, path).Run()
+		_ = exec.Command("chown", "-h", "--", acc+":"+acc, path).Run()
 		return
 	}
 	chownLike(filepath.Dir(path), path)
@@ -293,32 +428,39 @@ func (f *FileManagerService) WriteFile(filePath, content string) error {
 		return err
 	}
 
-	mode := os.FileMode(0644)
 	var uid, gid int = -1, -1
-	if info, err := os.Stat(cleanPath); err == nil {
-		mode = info.Mode().Perm()
-		if st, ok := info.Sys().(*syscall.Stat_t); ok {
-			uid, gid = int(st.Uid), int(st.Gid)
-		}
-		bakPath := fmt.Sprintf("%s.bak", cleanPath)
-		if copyErr := copyFile(cleanPath, bakPath); copyErr == nil {
-			if uid >= 0 {
-				_ = os.Chown(bakPath, uid, gid)
+	err = f.asOwner(func() error {
+		mode := os.FileMode(0644)
+		if info, err := os.Stat(cleanPath); err == nil {
+			mode = info.Mode().Perm()
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				uid, gid = int(st.Uid), int(st.Gid)
+			}
+			bakPath := fmt.Sprintf("%s.bak", cleanPath)
+			if copyErr := copyFile(cleanPath, bakPath); copyErr == nil && !f.jailed() && uid >= 0 {
+				_ = os.Lchown(bakPath, uid, gid)
 				_ = os.Chmod(bakPath, mode)
-			} else {
-				chownToParentOrAccount(bakPath)
 			}
 		}
-	}
-
-	if err := os.WriteFile(cleanPath, []byte(content), mode); err != nil {
+		out, err := os.OpenFile(cleanPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
+		if err != nil {
+			return err
+		}
+		if _, err := out.WriteString(content); err != nil {
+			out.Close()
+			return err
+		}
+		return out.Close()
+	})
+	if err != nil {
 		return err
 	}
-	if uid >= 0 {
-		_ = os.Chown(cleanPath, uid, gid)
-		_ = os.Chmod(cleanPath, mode)
-	} else {
-		chownToParentOrAccount(cleanPath)
+	if !f.jailed() {
+		if uid >= 0 {
+			_ = os.Lchown(cleanPath, uid, gid)
+		} else {
+			chownToParentOrAccount(cleanPath)
+		}
 	}
 	return nil
 }
@@ -329,16 +471,21 @@ func (f *FileManagerService) CreateItem(itemPath string, isDir bool) error {
 	if err != nil {
 		return err
 	}
-	if isDir {
-		return os.MkdirAll(cleanPath, 0755)
-	}
-	_ = os.MkdirAll(filepath.Dir(cleanPath), 0755)
-	file, err := os.Create(cleanPath)
+	err = f.asOwner(func() error {
+		if isDir {
+			return os.MkdirAll(cleanPath, 0755)
+		}
+		_ = os.MkdirAll(filepath.Dir(cleanPath), 0755)
+		file, err := os.OpenFile(cleanPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0644)
+		if err != nil {
+			return err
+		}
+		return file.Close()
+	})
 	if err != nil {
 		return err
 	}
-	file.Close()
-	chownToParentOrAccount(cleanPath)
+	f.fixOwner(cleanPath)
 	return nil
 }
 
@@ -348,7 +495,10 @@ func (f *FileManagerService) DeleteItem(itemPath string) error {
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(cleanPath)
+	if f.jailed() && cleanPath == filepath.Clean(f.jailRoot) {
+		return fmt.Errorf("access denied: the home directory itself cannot be deleted")
+	}
+	return f.asOwner(func() error { return os.RemoveAll(cleanPath) })
 }
 
 // RenameItem renames or moves a file/directory
@@ -361,7 +511,7 @@ func (f *FileManagerService) RenameItem(oldPath, newPath string) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(cleanOld, cleanNew)
+	return f.asOwner(func() error { return os.Rename(cleanOld, cleanNew) })
 }
 
 // CopyItems copies multiple items to destination folder
@@ -370,8 +520,6 @@ func (f *FileManagerService) CopyItems(sources []string, destDir string) error {
 	if err != nil {
 		return err
 	}
-	_ = os.MkdirAll(cleanDest, 0755)
-
 	for _, src := range sources {
 		cleanSrc, err := f.resolveManagedPath(src)
 		if err != nil {
@@ -379,23 +527,29 @@ func (f *FileManagerService) CopyItems(sources []string, destDir string) error {
 		}
 		target := filepath.Join(cleanDest, filepath.Base(cleanSrc))
 
-		info, err := os.Stat(cleanSrc)
+		var isDir bool
+		err = f.asOwner(func() error {
+			_ = os.MkdirAll(cleanDest, 0755)
+			info, err := os.Lstat(cleanSrc)
+			if err != nil {
+				return err
+			}
+			isDir = info.IsDir()
+			if !isDir {
+				return copyFile(cleanSrc, target)
+			}
+			return nil
+		})
 		if err != nil {
-			continue
+			return err
 		}
-
-		if info.IsDir() {
-			cmd := exec.Command("cp", "-r", cleanSrc, target)
-			if err := cmd.Run(); err != nil {
+		if isDir {
+			// -P: copy symlinks as links, never follow them.
+			if err := runCmd(f.command("cp", "-R", "-P", "--", cleanSrc, target)); err != nil {
 				return err
 			}
-			chownToParentOrAccount(target)
-		} else {
-			if err := copyFile(cleanSrc, target); err != nil {
-				return err
-			}
-			chownToParentOrAccount(target)
 		}
+		f.fixOwner(target)
 	}
 	return nil
 }
@@ -406,17 +560,18 @@ func (f *FileManagerService) MoveItems(sources []string, destDir string) error {
 	if err != nil {
 		return err
 	}
-	_ = os.MkdirAll(cleanDest, 0755)
-
 	for _, src := range sources {
 		cleanSrc, err := f.resolveManagedPath(src)
 		if err != nil {
 			return err
 		}
 		target := filepath.Join(cleanDest, filepath.Base(cleanSrc))
-		if err := os.Rename(cleanSrc, target); err != nil {
-			cmd := exec.Command("mv", cleanSrc, target)
-			if err := cmd.Run(); err != nil {
+		err = f.asOwner(func() error {
+			_ = os.MkdirAll(cleanDest, 0755)
+			return os.Rename(cleanSrc, target)
+		})
+		if err != nil {
+			if err := runCmd(f.command("mv", "--", cleanSrc, target)); err != nil {
 				return err
 			}
 		}
@@ -430,18 +585,20 @@ func (f *FileManagerService) ListSubdirectories(targetPath string) ([]string, er
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(cleanPath)
-	if err != nil {
-		return nil, err
-	}
-
 	var dirs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			dirs = append(dirs, filepath.Join(cleanPath, e.Name()))
+	err = f.asOwner(func() error {
+		entries, err := os.ReadDir(cleanPath)
+		if err != nil {
+			return err
 		}
-	}
-	return dirs, nil
+		for _, e := range entries {
+			if e.IsDir() {
+				dirs = append(dirs, filepath.Join(cleanPath, e.Name()))
+			}
+		}
+		return nil
+	})
+	return dirs, err
 }
 
 // DuplicateItem clones a file to filename_copy.ext
@@ -454,22 +611,25 @@ func (f *FileManagerService) DuplicateItem(itemPath string) (string, error) {
 	base := strings.TrimSuffix(cleanPath, ext)
 	newPath := fmt.Sprintf("%s_copy%s", base, ext)
 
-	counter := 1
-	for {
-		if _, err := os.Stat(newPath); os.IsNotExist(err) {
-			break
+	err = f.asOwner(func() error {
+		counter := 1
+		for {
+			if _, err := os.Lstat(newPath); os.IsNotExist(err) {
+				break
+			}
+			newPath = fmt.Sprintf("%s_copy%d%s", base, counter, ext)
+			counter++
 		}
-		newPath = fmt.Sprintf("%s_copy%d%s", base, counter, ext)
-		counter++
-	}
-
-	if err := copyFile(cleanPath, newPath); err != nil {
+		return copyFile(cleanPath, newPath)
+	})
+	if err != nil {
 		return "", err
 	}
-	chownToParentOrAccount(newPath)
+	f.fixOwner(newPath)
 	return newPath, nil
 }
 
+// ArchiveItems packs items into a zip or tar.gz archive
 func (f *FileManagerService) ArchiveItems(destArchive string, format string, items []string) error {
 	cleanDest, err := f.resolveManagedPath(destArchive)
 	if err != nil {
@@ -484,26 +644,24 @@ func (f *FileManagerService) ArchiveItems(destArchive string, format string, ite
 			return err
 		}
 		rel, err := filepath.Rel(workDir, cleanItem)
-		if err == nil {
-			relItems = append(relItems, rel)
-		} else {
-			relItems = append(relItems, filepath.Base(cleanItem))
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return fmt.Errorf("archive items must live inside the archive's folder")
 		}
+		relItems = append(relItems, "./"+rel)
 	}
 
 	var cmd *exec.Cmd
 	if format == "tar.gz" || strings.HasSuffix(cleanDest, ".tar.gz") {
-		args := append([]string{"-czf", cleanDest}, relItems...)
-		cmd = exec.Command("tar", args...)
+		cmd = f.command("tar", append([]string{"-czf", cleanDest, "--"}, relItems...)...)
 	} else {
-		args := append([]string{"-r", cleanDest}, relItems...)
-		cmd = exec.Command("zip", args...)
+		// -y stores symlinks as links instead of archiving whatever they point at.
+		cmd = f.command("zip", append([]string{"-r", "-y", cleanDest}, relItems...)...)
 	}
 	cmd.Dir = workDir
-	if err := cmd.Run(); err != nil {
+	if err := runCmd(cmd); err != nil {
 		return err
 	}
-	chownToParentOrAccount(cleanDest)
+	f.fixOwner(cleanDest)
 	return nil
 }
 
@@ -516,45 +674,45 @@ func (f *FileManagerService) ExtractArchive(archivePath, destDir string) error {
 	if err != nil {
 		return err
 	}
-	_ = os.MkdirAll(cleanDest, 0755)
-
-	var cmd *exec.Cmd
-	if strings.HasSuffix(cleanArch, ".tar.gz") || strings.HasSuffix(cleanArch, ".tgz") {
-		cmd = exec.Command("tar", "-xzf", cleanArch, "-C", cleanDest)
-	} else if strings.HasSuffix(cleanArch, ".tar.bz2") {
-		cmd = exec.Command("tar", "-xjf", cleanArch, "-C", cleanDest)
-	} else if strings.HasSuffix(cleanArch, ".tar") {
-		cmd = exec.Command("tar", "-xf", cleanArch, "-C", cleanDest)
-	} else {
-		cmd = exec.Command("unzip", "-o", cleanArch, "-d", cleanDest)
-	}
-	if err := cmd.Run(); err != nil {
+	if err := f.asOwner(func() error { return os.MkdirAll(cleanDest, 0755) }); err != nil {
 		return err
 	}
-	chownToParentOrAccount(cleanDest)
+
+	var cmd *exec.Cmd
+	switch {
+	case strings.HasSuffix(cleanArch, ".tar.gz") || strings.HasSuffix(cleanArch, ".tgz"):
+		cmd = f.command("tar", "--no-same-owner", "-xzf", cleanArch, "-C", cleanDest)
+	case strings.HasSuffix(cleanArch, ".tar.bz2"):
+		cmd = f.command("tar", "--no-same-owner", "-xjf", cleanArch, "-C", cleanDest)
+	case strings.HasSuffix(cleanArch, ".tar"):
+		cmd = f.command("tar", "--no-same-owner", "-xf", cleanArch, "-C", cleanDest)
+	default:
+		cmd = f.command("unzip", "-o", cleanArch, "-d", cleanDest)
+	}
+	if err := runCmd(cmd); err != nil {
+		return err
+	}
+	f.fixOwner(cleanDest)
 	return nil
 }
 
-// RemoteDownload downloads a file from URL directly to VPS
+// RemoteDownload fetches a public http(s) URL straight into destDir.
 func (f *FileManagerService) RemoteDownload(downloadURL, destDir, customName string) error {
+	u, err := ValidateRemoteURL(downloadURL)
+	if err != nil {
+		return err
+	}
 	cleanDest, err := f.resolveManagedPath(destDir)
 	if err != nil {
 		return err
 	}
-	_ = os.MkdirAll(cleanDest, 0755)
 
 	fileName := customName
 	if fileName == "" {
-		fileName = filepath.Base(downloadURL)
-		if idx := strings.Index(fileName, "?"); idx != -1 {
-			fileName = fileName[:idx]
-		}
-		if fileName == "" || fileName == "/" {
-			fileName = "downloaded_file"
-		}
+		fileName = filepath.Base(u.Path)
 	}
 	fileName = filepath.Base(fileName)
-	if fileName == "" || fileName == "." || fileName == ".." {
+	if fileName == "" || fileName == "." || fileName == ".." || fileName == "/" {
 		fileName = "downloaded_file"
 	}
 
@@ -562,11 +720,25 @@ func (f *FileManagerService) RemoteDownload(downloadURL, destDir, customName str
 	if _, err := f.resolveManagedPath(targetPath); err != nil {
 		return err
 	}
-	cmd := exec.Command("curl", "-L", "-o", targetPath, downloadURL)
-	if err := cmd.Run(); err != nil {
+	err = f.asOwner(func() error {
+		if err := os.MkdirAll(cleanDest, 0755); err != nil {
+			return err
+		}
+		out, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, 0644)
+		if err != nil {
+			return err
+		}
+		if err := FetchRemote(u.String(), out); err != nil {
+			out.Close()
+			_ = os.Remove(targetPath)
+			return err
+		}
+		return out.Close()
+	})
+	if err != nil {
 		return err
 	}
-	chownToParentOrAccount(targetPath)
+	f.fixOwner(targetPath)
 	return nil
 }
 
@@ -576,8 +748,7 @@ func (f *FileManagerService) GrepSearch(dirPath, query string) ([]GrepResult, er
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("grep", "-rnI", "--max-count=50", query, cleanDir)
-	out, _ := cmd.Output()
+	out, _ := f.command("grep", "-rnIF", "--max-count=50", "-e", query, "--", cleanDir).Output()
 
 	var results []GrepResult
 	lines := strings.Split(string(out), "\n")
@@ -591,6 +762,9 @@ func (f *FileManagerService) GrepSearch(dirPath, query string) ([]GrepResult, er
 				Snippet:    strings.TrimSpace(parts[2]),
 			})
 		}
+		if len(results) >= 500 {
+			break
+		}
 	}
 	return results, nil
 }
@@ -601,18 +775,24 @@ func (f *FileManagerService) GetChecksum(filePath string) (map[string]string, er
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(cleanPath)
+	md5h, shah := md5.New(), sha256.New()
+	var size int64
+	err = f.asOwner(func() error {
+		in, err := os.Open(cleanPath)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		size, err = io.Copy(io.MultiWriter(md5h, shah), in)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	md5Hash := md5.Sum(data)
-	sha256Hash := sha256.Sum256(data)
-
 	return map[string]string{
-		"md5":    hex.EncodeToString(md5Hash[:]),
-		"sha256": hex.EncodeToString(sha256Hash[:]),
-		"size":   fmt.Sprintf("%d bytes", len(data)),
+		"md5":    hex.EncodeToString(md5h.Sum(nil)),
+		"sha256": hex.EncodeToString(shah.Sum(nil)),
+		"size":   fmt.Sprintf("%d bytes", size),
 	}, nil
 }
 
@@ -622,8 +802,8 @@ func (f *FileManagerService) CalculateDirSize(dirPath string) (string, error) {
 	if err != nil {
 		return "0 B", err
 	}
-	out, err := exec.Command("du", "-sh", cleanPath).Output()
-	if err != nil {
+	out, err := f.command("du", "-sh", "--", cleanPath).Output()
+	if err != nil && len(out) == 0 {
 		return "0 B", err
 	}
 	parts := strings.Fields(string(out))
@@ -633,21 +813,26 @@ func (f *FileManagerService) CalculateDirSize(dirPath string) (string, error) {
 	return "0 B", nil
 }
 
-// ChangePermissions updates octal mode and ownership
 func (f *FileManagerService) jailOwner() string {
+	if f.tenant != nil {
+		return f.tenant.Username
+	}
 	if f.jailRoot == "" {
 		return ""
 	}
 	return filepath.Base(filepath.Clean(f.jailRoot))
 }
 
+var octalModeRe = regexp.MustCompile(`^[0-7]{3,4}$`)
+
+// ChangePermissions updates octal mode and (admin only) ownership
 func (f *FileManagerService) ChangePermissions(targetPath, mode, owner, group string, recursive bool) error {
 	cleanPath, err := f.resolveManagedPath(targetPath)
 	if err != nil {
 		return err
 	}
-	if acc := f.jailOwner(); acc != "" {
-		owner, group = acc, acc
+	if mode != "" && !octalModeRe.MatchString(mode) {
+		return fmt.Errorf("invalid permission mode %q", mode)
 	}
 
 	if mode != "" {
@@ -655,23 +840,30 @@ func (f *FileManagerService) ChangePermissions(targetPath, mode, owner, group st
 		if recursive {
 			args = append(args, "-R")
 		}
-		args = append(args, mode, cleanPath)
-		_ = exec.Command("chmod", args...).Run()
+		args = append(args, mode, "--", cleanPath)
+		if err := runCmd(f.command("chmod", args...)); err != nil {
+			return err
+		}
 	}
 
+	// Tenants always own their files; only root may hand files to other owners.
+	if f.jailed() {
+		return nil
+	}
 	if owner != "" || group != "" {
 		ownerStr := owner
 		if group != "" {
 			ownerStr = fmt.Sprintf("%s:%s", owner, group)
 		}
-		args := []string{}
+		args := []string{"-h"}
 		if recursive {
-			args = append(args, "-R")
+			args = append(args, "-R", "-P")
 		}
-		args = append(args, ownerStr, cleanPath)
-		_ = exec.Command("chown", args...).Run()
+		args = append(args, "--", ownerStr, cleanPath)
+		if err := runCmd(exec.Command("chown", args...)); err != nil {
+			return err
+		}
 	}
-
 	return nil
 }
 
@@ -685,15 +877,21 @@ func (f *FileManagerService) FixPermissions(targetPath string) error {
 	if err != nil {
 		return err
 	}
+	if f.jailed() {
+		if f.tenant == nil {
+			return fmt.Errorf("access denied: hosting account identity unavailable")
+		}
+		// Root is needed to reclaim root-owned files, so walk with openat/O_NOFOLLOW to make
+		// sure no symlink swapped in by the tenant can redirect the chown outside the jail.
+		return fixTreeOwnership(f.jailRoot, cleanPath, f.tenant.UID, f.tenant.GID)
+	}
 	owner := "www-data:www-data"
-	if acc := f.jailOwner(); acc != "" {
-		owner = acc + ":" + acc
-	} else if acc := linuxAccountFromPath(cleanPath); acc != "" {
+	if acc := linuxAccountFromPath(cleanPath); acc != "" {
 		owner = acc + ":" + acc
 	}
-	_ = exec.Command("chown", "-R", owner, cleanPath).Run()
-	_ = exec.Command("find", cleanPath, "-type", "d", "-exec", "chmod", "755", "{}", "+").Run()
-	_ = exec.Command("find", cleanPath, "-type", "f", "-exec", "chmod", "644", "{}", "+").Run()
+	_ = exec.Command("chown", "-R", "-h", "-P", "--", owner, cleanPath).Run()
+	_ = exec.Command("find", "-P", cleanPath, "-type", "d", "-exec", "chmod", "755", "{}", "+").Run()
+	_ = exec.Command("find", "-P", cleanPath, "-type", "f", "-exec", "chmod", "644", "{}", "+").Run()
 	return nil
 }
 
@@ -709,26 +907,32 @@ func (f *FileManagerService) FixPermissionsTargets(targets []string) error {
 	return nil
 }
 
+// copyFile copies a regular file without following a symlink at either end.
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	out, err := os.Create(dst)
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", filepath.Base(src))
+	}
+
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, info.Mode().Perm())
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, in)
-	if err != nil {
+	if _, err = io.Copy(out, in); err != nil {
 		return err
 	}
-	_ = out.Close()
-	chownLike(src, dst)
-	return nil
+	return out.Close()
 }
 
 func formatHumanSize(bytes int64, isDir bool) string {

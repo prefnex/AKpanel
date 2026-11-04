@@ -610,7 +610,7 @@ export default function DashboardOverview({ stats, onRefresh, showToast }) {
 
       </div>
 
-      {/* CWP / WHM Full System Telemetry & Software Stack Hub */}
+      {/* Full System Telemetry & Software Stack Hub */}
       <ServerSpecsTelemetryHub stats={stats} showToast={showToast} />
 
     </div>

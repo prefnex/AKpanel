@@ -52,7 +52,7 @@ func execMySQLRoot(sqlStr string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	if rootPass != "" {
-		cmd := exec.CommandContext(ctx, "mysql", "--protocol=socket", "-u", "root", "-p"+rootPass, "-e", sqlStr)
+		cmd := WithMySQLPassword(exec.CommandContext(ctx, "mysql", "--protocol=socket", "-u", "root", "-e", sqlStr), rootPass)
 		if err := cmd.Run(); err == nil {
 			return nil
 		}
@@ -140,8 +140,8 @@ func dumpPanelReplica() {
 	tmp := out + ".tmp"
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "mysqldump", "-u", panelDBUser, "-p"+pass,
-		"--single-transaction", "--quick", "--skip-lock-tables", panelDBName)
+	cmd := WithMySQLPassword(exec.CommandContext(ctx, "mysqldump", "-u", panelDBUser,
+		"--single-transaction", "--quick", "--skip-lock-tables", panelDBName), pass)
 	f, err := os.Create(tmp)
 	if err != nil {
 		return

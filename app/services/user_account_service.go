@@ -108,7 +108,7 @@ func (s *UserAccountService) initDefaultUsers() {
 	if _, err := os.Stat(s.filePath); os.IsNotExist(err) {
 		defaultUsers := []UserAccount{}
 		bytes, _ := json.MarshalIndent(defaultUsers, "", "  ")
-		_ = os.WriteFile(s.filePath, bytes, 0644)
+		_ = os.WriteFile(s.filePath, bytes, 0600)
 	}
 }
 
@@ -129,7 +129,7 @@ func (s *UserAccountService) writeUsers(list []UserAccount) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.filePath, bytes, 0644)
+	return os.WriteFile(s.filePath, bytes, 0600)
 }
 
 // ListUsers returns all users from JSON. Live telemetry refreshes in the background
@@ -317,7 +317,8 @@ func (s *UserAccountService) SuspendUser(username, reason string) error {
 		return fmt.Errorf("user not found")
 	}
 
-	// Lock Linux OS User account
+	// Lock Linux OS User account and stop its scheduled jobs
+	RemoveTenantCrontab(username)
 	_ = exec.Command("usermod", "-L", username).Run()
 	_ = exec.Command("usermod", "-s", "/usr/sbin/nologin", username).Run()
 
@@ -367,6 +368,8 @@ func (s *UserAccountService) UnsuspendUser(username string) error {
 			break
 		}
 	}
+	// Re-render cron outside this lock: the client service reads users while holding its own.
+	go GetClientService().ResyncCron(username)
 	return nil
 }
 
@@ -400,8 +403,11 @@ func (s *UserAccountService) ResetPassword(username, newPassword string) error {
 	_ = cmd.Run()
 
 	// 2. MySQL / MariaDB account with the same password (no shell interpolation)
-	escUser := strings.ReplaceAll(username, "'", "")
-	escPass := strings.ReplaceAll(strings.ReplaceAll(newPassword, `\`, `\\`), "'", "''")
+	if !IsValidMySQLIdent(username) {
+		return fmt.Errorf("invalid account name")
+	}
+	escUser := username
+	escPass := MySQLEscape(newPassword)
 	_ = ExecMySQL(fmt.Sprintf(
 		"CREATE USER IF NOT EXISTS '%s'@'localhost' IDENTIFIED BY '%s'; ALTER USER '%s'@'localhost' IDENTIFIED BY '%s'; CREATE USER IF NOT EXISTS '%s'@'127.0.0.1' IDENTIFIED BY '%s'; ALTER USER '%s'@'127.0.0.1' IDENTIFIED BY '%s'; GRANT ALL PRIVILEGES ON `%s\\_%%`.* TO '%s'@'localhost'; GRANT ALL PRIVILEGES ON `%s\\_%%`.* TO '%s'@'127.0.0.1'; FLUSH PRIVILEGES;",
 		escUser, escPass, escUser, escPass, escUser, escPass, escUser, escPass, escUser, escUser, escUser, escUser,
@@ -535,7 +541,11 @@ func (s *UserAccountService) DeleteUser(username string) error {
 	}
 
 	// Delete Linux OS User & clean directories
+	RemoveTenantCrontab(username)
 	_ = exec.Command("userdel", "-r", username).Run()
+	// Databases, MySQL users, FTP sub-accounts and cron records; run outside this lock
+	// because the client service reads users while holding its own.
+	go GetClientService().PurgeAccount(username)
 	_ = GetRedisService().DeleteUser(username)
 	NewIPService().ReleaseUserIPv6(username)
 	if homeDir != "" && (strings.HasPrefix(homeDir, "/home/") || strings.HasPrefix(homeDir, "/var/www/vhosts/")) {

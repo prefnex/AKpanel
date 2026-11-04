@@ -343,7 +343,7 @@ export default function ServerSettingsManager({ showToast }) {
                 )}
               </div>
               <p className="text-xs text-zinc-300 mt-1">
-                Secures Root WHM (<span className="text-indigo-300 font-mono">:2087 HTTPS</span>), Client Portal (<span className="text-indigo-300 font-mono">:2083 HTTPS</span>), Mail (<span className="text-indigo-300 font-mono">IMAP/SMTP SSL</span>), and FTP.
+                Secures Root Admin (<span className="text-indigo-300 font-mono">:2087 HTTPS</span>), Client Portal (<span className="text-indigo-300 font-mono">:2083 HTTPS</span>), Mail (<span className="text-indigo-300 font-mono">IMAP/SMTP SSL</span>), and FTP.
               </p>
               {hostnameSSL?.message && (
                 <p className={`text-[11px] mt-2 ${hostnameSSL.is_self_signed ? 'text-amber-300/90' : 'text-zinc-500'}`}>
@@ -528,7 +528,7 @@ export default function ServerSettingsManager({ showToast }) {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold text-zinc-300 mb-1">Root WHM Port</label>
+                  <label className="block font-semibold text-zinc-300 mb-1">Root Admin Port</label>
                   <Input 
                     type="number"
                     value={settings.panel_port}

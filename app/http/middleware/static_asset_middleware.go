@@ -19,7 +19,9 @@ func (m *StaticAssetMiddleware) Signature() string {
 func (m *StaticAssetMiddleware) Handle(ctx goravelhttp.Context) {
 	path := "/" + strings.TrimPrefix(ctx.Request().Path(), "/")
 	if strings.HasPrefix(path, "/public/build/") {
-		ctx.Response().Header("Cache-Control", "public, max-age=604800, immutable")
+		// Bundle names are not content-hashed (app.js, app.css), so browsers must revalidate on
+		// every load; unchanged files come back as a cheap 304 via Last-Modified.
+		ctx.Response().Header("Cache-Control", "no-cache")
 	}
 	ctx.Request().Next()
 }

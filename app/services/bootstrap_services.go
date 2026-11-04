@@ -116,6 +116,7 @@ func RepairOnBoot() {
 		name string
 		run  func()
 	}{
+		{"panel file permissions", HardenPanelFilePermissions},
 		{"postfix identity", func() { GetMailAuthService().EnsureMailIdentity() }},
 		{"dkim key repair", func() {
 			if repaired := NewDNSService().RepairDKIMKeys(); len(repaired) > 0 {

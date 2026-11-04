@@ -48,8 +48,8 @@ export default function Header({ hostname, onOpenModal, onToggleSidebar, onLogou
       setPassError('New passwords do not match');
       return;
     }
-    if (newPassword.length < 6) {
-      setPassError('Password must be at least 6 characters');
+    if (newPassword.length < 10) {
+      setPassError('Password must be at least 10 characters');
       return;
     }
 
@@ -64,6 +64,8 @@ export default function Header({ hostname, onOpenModal, onToggleSidebar, onLogou
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.message);
+      // Changing the password revokes every older session; keep this one alive.
+      if (json.token) localStorage.setItem('ak_token', json.token);
 
       if (showToast) showToast('Root password updated successfully!');
       setIsPassModalOpen(false);
@@ -90,7 +92,7 @@ export default function Header({ hostname, onOpenModal, onToggleSidebar, onLogou
             <PanelLeft className="w-4 h-4" />
           </button>
 
-          <div className="relative flex items-center w-64 md:w-80">
+          <div className="relative hidden sm:flex items-center w-64 md:w-80">
             <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3" />
             <input 
               type="text" 

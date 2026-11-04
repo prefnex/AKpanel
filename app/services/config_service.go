@@ -154,7 +154,7 @@ func (c *ConfigService) Secrets() SecretsConfig {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	mysqlPass := "akpanel123"
+	mysqlPass := ""
 	// Check secret file first
 	if passBytes, err := os.ReadFile("/etc/akpanel/secrets/mysql_root"); err == nil {
 		if t := strings.TrimSpace(string(passBytes)); t != "" {

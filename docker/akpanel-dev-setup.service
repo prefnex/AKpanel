@@ -1,0 +1,16 @@
+[Unit]
+Description=AKpanel dev container provisioning
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/akpanel-dev-setup.sh
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

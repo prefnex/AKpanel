@@ -192,7 +192,7 @@ _dmarc IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@%domain%"
             <div className="flex items-center gap-2.5 flex-wrap">
               <h1 className="text-2xl font-black text-white tracking-tight">DNS Zone Templates Manager</h1>
               <Badge className="bg-amber-500/10 text-amber-400 border-amber-500/30 text-xs font-semibold px-2.5 py-0.5">
-                Root WHM Template Engine
+                Root Admin Template Engine
               </Badge>
               <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30 text-xs font-semibold px-2.5 py-0.5">
                 {templates.length} Templates Configured

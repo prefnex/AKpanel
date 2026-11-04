@@ -160,7 +160,7 @@ export default function BindServerPage({ showToast }) {
                 Port 53 TCP/UDP
               </Badge>
               <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30 text-xs font-semibold px-2.5 py-0.5">
-                Root WHM Daemon Control
+                Root Admin Daemon Control
               </Badge>
             </div>
             <p className="text-zinc-400 text-sm mt-1">

@@ -8,6 +8,17 @@ import (
 	"goravel/app/facades"
 )
 
+// spaCSP locks the SPA to its own origin. Monaco is loaded from jsDelivr by @monaco-editor/react
+// and spins up its workers from blob: URLs; fonts come from Google Fonts.
+const spaCSP = "default-src 'self'; " +
+	"script-src 'self' https://cdn.jsdelivr.net; " +
+	"worker-src 'self' blob:; " +
+	"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; " +
+	"font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; " +
+	"img-src 'self' data: blob:; " +
+	"connect-src 'self'; " +
+	"object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+
 // serveSPA renders the React SPA shell for browser routes and the fallback handler.
 func serveSPA(ctx http.Context) http.Response {
 	scope := "admin"
@@ -20,6 +31,7 @@ func serveSPA(ctx http.Context) http.Response {
 	if hdr == "client" || fwdPort == "2083" || strings.HasPrefix(host, "cpanel.") {
 		scope = "client"
 	}
+	ctx.Response().Header("Content-Security-Policy", spaCSP)
 	return ctx.Response().View().Make("dashboard.tmpl", map[string]any{
 		"version": "v1.0.0",
 		"scope":   scope,
