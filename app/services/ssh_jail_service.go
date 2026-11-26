@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"goravel/app/paths"
 )
 
 const (
@@ -22,7 +24,7 @@ var jailWrapped = map[string]bool{
 	"sudo": true, "su": true, "passwd": true, "useradd": true, "userdel": true, "visudo": true,
 	"systemctl": true, "service": true, "shutdown": true, "reboot": true,
 	"iptables": true, "nft": true, "ufw": true, "chroot": true, "nsenter": true, "docker": true,
-	"kill": true, "killall": true, "pkill": true, "crontab": true,
+	"kill": true, "killall": true, "pkill": true, "crontab": true, "php": true,
 	"ln": true, "tee": true, "xargs": true, "eval": true, "exec": true,
 }
 
@@ -117,7 +119,7 @@ Match Group %s
 		"grep", "egrep", "fgrep", "find", "pwd", "echo", "printf", "date", "clear", "id", "whoami",
 		"groups", "uname", "true", "false", "which", "tty", "basename", "dirname", "realpath",
 		"nano", "vi", "vim", "touch", "mkdir", "cp", "stat", "file", "du", "df",
-		"tar", "gzip", "gunzip", "zip", "unzip", "git", "php", "php8.1", "php8.2", "php8.3", "php8.4",
+		"tar", "gzip", "gunzip", "zip", "unzip", "git",
 		"composer", "mysql", "mysqldump", "wget", "curl", "rsync", "scp", "sftp", "python3", "node",
 		"npm", "npx", "ping", "diff", "patch", "make", "md5sum",
 		"sha256sum", "sleep", "env", "printenv", "getent", "lesspipe", "dircolors",
@@ -134,6 +136,15 @@ Match Group %s
 		_ = os.Remove(dest)
 		_ = os.Symlink(src, dest)
 	}
+
+	// Explicit versions (php8.2 …) stay reachable; bare `php` follows the account's version.
+	cliBins, _ := filepath.Glob("/usr/bin/php[0-9].[0-9]")
+	for _, src := range cliBins {
+		dest := filepath.Join(sshJailBinDir, filepath.Base(src))
+		_ = os.Remove(dest)
+		_ = os.Symlink(src, dest)
+	}
+	writeJailWrapper("php", accountPHPWrapper)
 
 	writeJailWrapper("rm", rmWrapper)
 	writeJailWrapper("rmdir", pathGuardWrapper("rmdir"))
@@ -333,3 +344,17 @@ func repairJailedUserShells() {
 		_ = exec.Command("usermod", "-s", sshJailShell, username).Run()
 	}
 }
+
+// accountPHPWrapper makes `php` in the jail (and composer, via `#!/usr/bin/env php`) run the
+// same PHP version as the account's websites. The version file is root-owned, see
+// paths.PHPAccountCLIDir; without it the system default php runs.
+var accountPHPWrapper = `#!/bin/bash
+# akpanel: per-account PHP CLI — same version as this account's websites.
+f="` + paths.PHPAccountCLIDir + `/$(id -un)"
+v=""
+[ -r "$f" ] && v=$(head -c 8 "$f" | tr -cd '0-9.')
+if [ -n "$v" ] && [ -x "/usr/bin/php$v" ]; then
+  exec "/usr/bin/php$v" "$@"
+fi
+exec /usr/bin/php "$@"
+`

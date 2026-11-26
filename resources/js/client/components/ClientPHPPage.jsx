@@ -19,7 +19,10 @@ import { Input } from '../../components/ui/input';
 import { Badge } from '../../components/ui/badge';
 
 export default function ClientPHPPage({ showToast, username, serverIP }) {
-  const [selectedVersion, setSelectedVersion] = useState('8.2');
+  const [selectedVersion, setSelectedVersion] = useState('');
+  const [activeVersion, setActiveVersion] = useState('');
+  const [availableVersions, setAvailableVersions] = useState([]);
+  const [serverDefault, setServerDefault] = useState('');
   const [memoryLimit, setMemoryLimit] = useState('256M');
   const [uploadMax, setUploadMax] = useState('64M');
   const [maxExecution, setMaxExecution] = useState(300);
@@ -36,7 +39,10 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
       });
       const data = await res.json();
       if (data.status && data.data) {
-        setSelectedVersion(data.data.active_version || '8.2');
+        setSelectedVersion(data.data.active_version || '');
+        setActiveVersion(data.data.active_version || '');
+        setAvailableVersions(data.data.available_versions || []);
+        setServerDefault(data.data.server_default || '');
         if (data.data.memory_limit) setMemoryLimit(data.data.memory_limit);
         if (data.data.upload_max_filesize) setUploadMax(data.data.upload_max_filesize);
         if (data.data.max_execution_time) setMaxExecution(data.data.max_execution_time);
@@ -108,6 +114,7 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
         if (data.data.ram_limit_mb) setRamCapMB(data.data.ram_limit_mb);
       }
       showToast(data.message || 'PHP Runtime environment saved successfully!', 'success');
+      fetchPHPConfig();
     } catch (err) {
       showToast(err.message, 'error');
     } finally {
@@ -163,16 +170,16 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
         <div className="bg-zinc-950/80 p-6 rounded-2xl border border-zinc-800 backdrop-blur-xl space-y-4">
           <div className="flex items-center gap-2 text-white font-bold text-sm">
             <Cpu className="w-4 h-4 text-emerald-400" />
-            <h3>Default PHP Version</h3>
+            <h3>PHP Version</h3>
           </div>
-          <p className="text-xs text-zinc-400">Select the active PHP runtime for your account's primary web handler.</p>
+          <p className="text-xs text-zinc-400">One version for the whole account: all your websites and the <code className="text-zinc-300 font-mono">php</code> command in SSH use it.</p>
 
           <div className="space-y-2 pt-2">
-            {[
-              { ver: '8.3', label: 'PHP 8.3 (Latest & Fastest)', tag: 'Recommended' },
-              { ver: '8.2', label: 'PHP 8.2 (Stable LTS)', tag: 'Active' },
-              { ver: '8.1', label: 'PHP 8.1 (Legacy Compatibility)', tag: 'Supported' },
-            ].map((item) => (
+            {availableVersions.map((ver) => ({
+              ver,
+              label: `PHP ${ver}`,
+              note: [ver === activeVersion && 'Running now', ver === serverDefault && 'Server default'].filter(Boolean).join(' · ') || 'FPM FastCGI Handler',
+            })).map((item) => (
               <div
                 key={item.ver}
                 onClick={() => setSelectedVersion(item.ver)}
@@ -184,7 +191,7 @@ export default function ClientPHPPage({ showToast, username, serverIP }) {
               >
                 <div>
                   <span className="font-bold text-xs">{item.label}</span>
-                  <div className="text-[10px] text-zinc-500 mt-0.5">FPM FastCGI Handler</div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5">{item.note}</div>
                 </div>
                 {selectedVersion === item.ver && (
                   <Badge className="bg-emerald-500 text-zinc-950 font-bold text-[10px] gap-1">

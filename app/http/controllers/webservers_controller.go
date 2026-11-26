@@ -4,7 +4,9 @@ import (
 	"fmt"
 
 	"github.com/goravel/framework/contracts/http"
+
 	"goravel/app/services"
+	"goravel/app/templates"
 )
 
 type WebServersController struct {
@@ -17,35 +19,50 @@ func NewWebServersController() *WebServersController {
 	}
 }
 
-// Profiles returns the 5 WebServer profiles
-func (r *WebServersController) Profiles(ctx http.Context) http.Response {
+// Modes returns the web server modes, the active one and the two default PHP versions.
+func (r *WebServersController) Modes(ctx http.Context) http.Response {
 	return ctx.Response().Success().Json(http.Json{
 		"status": "success",
-		"data":   r.webServerService.GetProfiles(),
+		"data":   r.webServerService.GetModes(),
 	})
 }
 
-// SwitchProfile switches global server profile
-func (r *WebServersController) SwitchProfile(ctx http.Context) http.Response {
-	profileID := ctx.Request().Input("profile_id")
-	if profileID == "" {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": "profile_id is required",
-		})
-	}
+// Profiles is the legacy name of Modes.
+func (r *WebServersController) Profiles(ctx http.Context) http.Response {
+	return r.Modes(ctx)
+}
 
-	if err := r.webServerService.SwitchGlobalProfile(profileID); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+// SwitchMode applies a mode (rebuilding every vhost) and optionally the default PHP versions.
+func (r *WebServersController) SwitchMode(ctx http.Context) http.Response {
+	mode := ctx.Request().Input("mode")
+	if mode == "" {
+		mode = ctx.Request().Input("profile_id")
 	}
-
+	if mode == "" {
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": "mode is required"})
+	}
+	res, err := r.webServerService.SwitchMode(mode, ctx.Request().Input("default_nginx_php"), ctx.Request().Input("default_apache_php"))
+	if err != nil {
+		return ctx.Response().Status(500).Json(http.Json{"status": "error", "message": err.Error(), "data": res})
+	}
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("Server profile switched to '%s' — all vhosts rebuilt and services reloaded", profileID),
+		"message": fmt.Sprintf("Web server mode is now %s — %d site(s) rebuilt", res.To, res.Sites),
+		"data":    res,
 	})
+}
+
+// SwitchProfile is the legacy name of SwitchMode.
+func (r *WebServersController) SwitchProfile(ctx http.Context) http.Response {
+	return r.SwitchMode(ctx)
+}
+
+// SetPHPDefaults stores the default PHP version for Nginx- and Apache-run sites.
+func (r *WebServersController) SetPHPDefaults(ctx http.Context) http.Response {
+	if err := r.webServerService.SetDefaultPHPVersions(ctx.Request().Input("default_nginx_php"), ctx.Request().Input("default_apache_php")); err != nil {
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": err.Error()})
+	}
+	return ctx.Response().Success().Json(http.Json{"status": "success", "message": "Default PHP versions saved", "data": r.webServerService.GetModes()})
 }
 
 // Services returns real-time status of Nginx, Apache, Varnish, PHP-FPM
@@ -92,57 +109,55 @@ func (r *WebServersController) ControlService(ctx http.Context) http.Response {
 	})
 }
 
-// TemplateFiles lists all available Vhost templates
+// TemplateFiles lists every vhost template and whether it is overridden.
 func (r *WebServersController) TemplateFiles(ctx http.Context) http.Response {
-	files, err := r.webServerService.GetTemplateFiles()
-	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
-	}
-
 	return ctx.Response().Success().Json(http.Json{
 		"status": "success",
-		"data":   files,
+		"data":   r.webServerService.GetTemplateFiles(),
 	})
 }
 
-// GetTemplate reads a specific template file
+// GetTemplate returns a template's effective text and the shipped default.
 func (r *WebServersController) GetTemplate(ctx http.Context) http.Response {
 	engine := ctx.Request().Input("engine")
 	filename := ctx.Request().Input("filename")
-
-	content, err := r.webServerService.ReadTemplateFile(engine, filename)
+	content, overridden, err := r.webServerService.ReadTemplateFile(engine, filename)
 	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return ctx.Response().Status(404).Json(http.Json{"status": "error", "message": err.Error()})
 	}
-
+	def, _ := templates.Default(engine, filename)
 	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"content": content,
+		"status":     "success",
+		"content":    content,
+		"overridden": overridden,
+		"default":    def,
 	})
 }
 
-// SaveTemplate updates a specific template file
+// SaveTemplate stores an override and rebuilds every vhost (rolled back if it breaks).
 func (r *WebServersController) SaveTemplate(ctx http.Context) http.Response {
 	engine := ctx.Request().Input("engine")
 	filename := ctx.Request().Input("filename")
 	content := ctx.Request().Input("content")
-
 	if err := r.webServerService.SaveTemplateFile(engine, filename, content); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": err.Error()})
 	}
-
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("Template %s/%s updated successfully", engine, filename),
+		"message": fmt.Sprintf("Template %s/%s saved and every vhost rebuilt", engine, filename),
+	})
+}
+
+// ResetTemplate drops an override and rebuilds.
+func (r *WebServersController) ResetTemplate(ctx http.Context) http.Response {
+	engine := ctx.Request().Input("engine")
+	filename := ctx.Request().Input("filename")
+	if err := r.webServerService.ResetTemplateFile(engine, filename); err != nil {
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": err.Error()})
+	}
+	return ctx.Response().Success().Json(http.Json{
+		"status":  "success",
+		"message": fmt.Sprintf("Template %s/%s reset to the shipped version", engine, filename),
 	})
 }
 
@@ -200,8 +215,8 @@ func (r *WebServersController) DomainVhost(ctx http.Context) http.Response {
 // SaveDomainVhost saves custom Nginx & Apache vhost configurations for a specific domain
 func (r *WebServersController) SaveDomainVhost(ctx http.Context) http.Response {
 	domain := ctx.Request().Input("domain")
-	nginxConf := ctx.Request().Input("nginx_conf")
-	apacheConf := ctx.Request().Input("apache_conf")
+	nginxConf := ctx.Request().Input("nginx_custom")
+	apacheConf := ctx.Request().Input("apache_custom")
 
 	if domain == "" {
 		return ctx.Response().Status(422).Json(http.Json{
@@ -211,7 +226,7 @@ func (r *WebServersController) SaveDomainVhost(ctx http.Context) http.Response {
 	}
 
 	if err := r.webServerService.SaveDomainVhost(domain, nginxConf, apacheConf); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
+		return ctx.Response().Status(422).Json(http.Json{
 			"status":  "error",
 			"message": err.Error(),
 		})
@@ -219,7 +234,7 @@ func (r *WebServersController) SaveDomainVhost(ctx http.Context) http.Response {
 
 	return ctx.Response().Success().Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("VirtualHost configuration for '%s' saved and applied successfully!", domain),
+		"message": fmt.Sprintf("Custom directives for '%s' saved and applied", domain),
 	})
 }
 

@@ -8,7 +8,7 @@ set +e
 # Default Settings
 DEFAULT_REPO="prefnex/AKpanel"
 GITHUB_REPO="${AKPANEL_REPO:-$DEFAULT_REPO}"
-DEFAULT_VERSION="v0.1.0"
+DEFAULT_VERSION="v0.2.0"
 INSTALL_DIR="/opt/akpanel"
 LOG_FILE="/var/log/akpanel-install.log"
 
@@ -168,26 +168,26 @@ if [ "$AUTO_CONFIRM" = false ]; then
     echo ""
 fi
 
-# Web server stack profile (default: nginx + php-fpm)
-AKPANEL_WEB_PROFILE="nginx_phpfpm"
+# Web server mode (default: nginx + php-fpm). IDs match app/domain/mode.go.
+AKPANEL_WEB_PROFILE="nginx"
 
 # PHP versions — 8.3 always installed as primary
 AKPANEL_PHP_VERSIONS="8.3"
 
 if [ "$AUTO_CONFIRM" = false ]; then
-    echo -e "${CYAN}${BOLD}Web Server Stack${NC}"
-    echo -e "  ${GREEN}1)${NC} Nginx + PHP-FPM ${DIM}(default — fastest)${NC}"
-    echo -e "  ${GREEN}2)${NC} Apache + PHP ${DIM}(.htaccess via Apache backend)${NC}"
-    echo -e "  ${GREEN}3)${NC} Nginx + Apache Hybrid ${DIM}(static Nginx, dynamic Apache)${NC}"
-    echo -e "  ${GREEN}4)${NC} Nginx + Varnish + Apache ${DIM}(cached hybrid)${NC}"
-    echo -e "  ${GREEN}5)${NC} Nginx + Varnish + PHP-FPM ${DIM}(cached pure FPM)${NC}"
-    akpanel_read "  Choose stack [1-5] (default 1): " WS_CHOICE
+    echo -e "${CYAN}${BOLD}Web Server Mode${NC} ${DIM}(can be changed later in Web servers → Mode)${NC}"
+    echo -e "  ${GREEN}1)${NC} Nginx only ${DIM}(Nginx + PHP-FPM — default, fastest)${NC}"
+    echo -e "  ${GREEN}2)${NC} Apache only ${DIM}(Apache on 80/443, PHP-FPM or PHP-CGI/suexec, .htaccess)${NC}"
+    echo -e "  ${GREEN}3)${NC} Nginx & Apache ${DIM}(Nginx front, Apache 8081 backend)${NC}"
+    echo -e "  ${GREEN}4)${NC} Nginx & Varnish ${DIM}(Nginx → Varnish → Nginx + PHP-FPM)${NC}"
+    echo -e "  ${GREEN}5)${NC} Nginx & Varnish & Apache ${DIM}(Varnish per domain)${NC}"
+    akpanel_read "  Choose mode [1-5] (default 1): " WS_CHOICE
     case "${WS_CHOICE:-1}" in
-        2) AKPANEL_WEB_PROFILE="apache_phpfpm" ;;
-        3) AKPANEL_WEB_PROFILE="hybrid_nginx_apache" ;;
-        4) AKPANEL_WEB_PROFILE="varnish_nginx_apache" ;;
-        5) AKPANEL_WEB_PROFILE="varnish_nginx_phpfpm" ;;
-        *) AKPANEL_WEB_PROFILE="nginx_phpfpm" ;;
+        2) AKPANEL_WEB_PROFILE="apache" ;;
+        3) AKPANEL_WEB_PROFILE="nginx_apache" ;;
+        4) AKPANEL_WEB_PROFILE="nginx_varnish" ;;
+        5) AKPANEL_WEB_PROFILE="nginx_varnish_apache" ;;
+        *) AKPANEL_WEB_PROFILE="nginx" ;;
     esac
     echo ""
 
@@ -219,7 +219,7 @@ fi
 build_php_package_list() {
     local PKG_LIST=""
     for ver in $AKPANEL_PHP_VERSIONS; do
-        PKG_LIST="$PKG_LIST php${ver}-cli php${ver}-fpm php${ver}-common php${ver}-mysql php${ver}-curl php${ver}-mbstring php${ver}-xml php${ver}-zip php${ver}-gd php${ver}-intl php${ver}-imap"
+        PKG_LIST="$PKG_LIST php${ver}-cli php${ver}-fpm php${ver}-cgi php${ver}-common php${ver}-mysql php${ver}-curl php${ver}-mbstring php${ver}-xml php${ver}-zip php${ver}-gd php${ver}-intl php${ver}-imap"
     done
     echo "$PKG_LIST"
 }
@@ -233,9 +233,8 @@ relocate_apache_ports() {
         echo "ServerName localhost" > /etc/apache2/conf-available/servername.conf
         a2enconf servername >> "$LOG_FILE" 2>&1 || true
     fi
-    if [ "$AKPANEL_WEB_PROFILE" = "nginx_phpfpm" ] || [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_phpfpm" ]; then
-        systemctl disable --now apache2 varnish >> "$LOG_FILE" 2>&1 || true
-    fi
+    # Nginx owns :80 until the panel applies the chosen mode (akpanel --bootstrap-services).
+    systemctl disable --now varnish >> "$LOG_FILE" 2>&1 || true
 }
 
 write_install_metadata() {
@@ -252,9 +251,9 @@ write_install_metadata() {
     PHP_JSON="${PHP_JSON}]"
 
     local VARNISH_ENABLED="false"
-    if [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_apache" ] || [ "$AKPANEL_WEB_PROFILE" = "varnish_nginx_phpfpm" ]; then
-        VARNISH_ENABLED="true"
-    fi
+    case "$AKPANEL_WEB_PROFILE" in
+        nginx_varnish|nginx_varnish_apache) VARNISH_ENABLED="true" ;;
+    esac
 
     cat << EOF > /etc/akpanel/install.conf
 {
@@ -464,31 +463,10 @@ EOF
 }
 
 apply_webserver_profile() {
-    case "$AKPANEL_WEB_PROFILE" in
-        nginx_phpfpm)
-            svc_disable_now apache2 varnish
-            svc_enable_now nginx
-            ;;
-        apache_phpfpm)
-            svc_disable_now varnish
-            svc_enable_now nginx apache2
-            ;;
-        hybrid_nginx_apache)
-            svc_disable_now varnish
-            svc_enable_now nginx apache2
-            ;;
-        varnish_nginx_apache)
-            svc_enable_now nginx apache2 varnish
-            ;;
-        varnish_nginx_phpfpm)
-            svc_disable_now apache2
-            svc_enable_now nginx varnish
-            ;;
-        *)
-            svc_disable_now apache2 varnish
-            svc_enable_now nginx
-            ;;
-    esac
+    # Nginx serves during install; the panel then applies the chosen mode itself
+    # (ports, vhosts, modules, Varnish) in `akpanel --bootstrap-services`.
+    svc_disable_now varnish
+    svc_enable_now nginx
     for v in $AKPANEL_PHP_VERSIONS; do
         svc_enable_now "php${v}-fpm"
     done
@@ -891,7 +869,7 @@ task_step3() {
     if [ "$VERBOSE" = true ]; then
         apt-get update -y
         apt-get install $APT_OPTS \
-            nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
+            nginx apache2 libapache2-mod-fcgid apache2-suexec-custom varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
             dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-managesieved \
             opendkim opendkim-tools spamassassin spamc spamass-milter redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers
@@ -903,7 +881,7 @@ task_step3() {
     else
         akp_crawl 36 38 "Refreshing apt after PHP repo" apt-get update -y
         akp_crawl 38 48 "Installing nginx, BIND, MariaDB, mail" apt-get install $APT_OPTS \
-            nginx apache2 varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
+            nginx apache2 libapache2-mod-fcgid apache2-suexec-custom varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
             dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-managesieved \
             opendkim opendkim-tools spamassassin spamc spamass-milter redis-server pure-ftpd
         a2enmod rewrite proxy proxy_fcgi proxy_http headers >> "$LOG_FILE" 2>&1 || true
@@ -1265,8 +1243,8 @@ EOF
     PROJECT_ROOT="/opt/akpanel"
 
     # Deploy pre-built binary from release assets if available
-    if [ -f "$PROJECT_ROOT/release-assets/akpanel_v0.1.0_linux_${PKG_ARCH}.tar.gz" ]; then
-        tar -xzf "$PROJECT_ROOT/release-assets/akpanel_v0.1.0_linux_${PKG_ARCH}.tar.gz" -C "$PROJECT_ROOT/" 2>/dev/null || true
+    if [ -f "$PROJECT_ROOT/release-assets/akpanel_${DEFAULT_VERSION}_linux_${PKG_ARCH}.tar.gz" ]; then
+        tar -xzf "$PROJECT_ROOT/release-assets/akpanel_${DEFAULT_VERSION}_linux_${PKG_ARCH}.tar.gz" -C "$PROJECT_ROOT/" 2>/dev/null || true
     fi
 
     # Ensure binary
@@ -1376,11 +1354,8 @@ task_step6() {
         ufw allow 993/tcp comment "IMAP SSL" >> "$LOG_FILE" 2>&1 || true
         ufw allow 995/tcp comment "POP3 SSL" >> "$LOG_FILE" 2>&1 || true
         ufw allow 30000:30009/tcp comment "FTP Passive Range" >> "$LOG_FILE" 2>&1 || true
-        case "$AKPANEL_WEB_PROFILE" in
-            varnish_nginx_apache|varnish_nginx_phpfpm)
-                ufw allow 6081/tcp comment "Varnish Cache" >> "$LOG_FILE" 2>&1 || true
-                ;;
-        esac
+        # Varnish listens on 127.0.0.1 only (nginx is the public front); keep it closed.
+        ufw delete allow 6081/tcp >> "$LOG_FILE" 2>&1 || true
         # MariaDB stays on 127.0.0.1; make the intent explicit so a later profile change
         # cannot silently expose it.
         ufw deny 3306/tcp comment "MariaDB localhost only" >> "$LOG_FILE" 2>&1 || true

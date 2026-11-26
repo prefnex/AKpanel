@@ -69,7 +69,7 @@ func (o *ProvisioningOrchestrator) ProvisionWebsite(ctx context.Context, plan *P
 	}
 
 	if facades.Log() != nil {
-		facades.Log().Info(fmt.Sprintf("[orchestrator] Website '%s' successfully provisioned (owner: %s, engine: %s)", plan.Domain, plan.OwnerUsername, plan.Engine))
+		facades.Log().Info(fmt.Sprintf("[orchestrator] Website '%s' successfully provisioned (owner: %s, backend: %s)", plan.Domain, plan.OwnerUsername, backendOrDefault(plan.Backend)))
 	}
 
 	return plan.ResultWebsite, nil

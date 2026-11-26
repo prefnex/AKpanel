@@ -14,6 +14,13 @@ import { showToast } from './lib/toast';
 
 const DashboardPage = lazy(() => import('./pages/admin/DashboardPage'));
 const WebServerManager = lazy(() => import('./components/WebServerManager'));
+const WebServerModesPage = lazy(() => import('./pages/admin/webservers/WebServerModesPage'));
+const DomainConfigPage = lazy(() => import('./pages/admin/webservers/DomainConfigPage'));
+const VhostTemplatesPage = lazy(() => import('./pages/admin/webservers/TemplatesPage'));
+const MainConfPage = lazy(() => import('./pages/admin/webservers/MainConfPage'));
+const ConfEditorPage = lazy(() => import('./pages/admin/webservers/ConfEditorPage'));
+const RedirectsPage = lazy(() => import('./pages/admin/webservers/RedirectsPage'));
+const WebServerStatusPage = lazy(() => import('./pages/admin/webservers/WebServerStatusPage'));
 const PHPLayout = lazy(() => import('./components/php/PHPLayout'));
 const PHPCLIPage = lazy(() => import('./components/php/PHPCLIPage'));
 const PHPFPMPage = lazy(() => import('./components/php/PHPFPMPage'));
@@ -26,6 +33,7 @@ const PHPIniPage = lazy(() => import('./components/php/PHPIniPage'));
 const PHPIniRawPage = lazy(() => import('./components/php/PHPIniRawPage'));
 const PHPInstallPage = lazy(() => import('./components/php/PHPInstallPage'));
 const WebsitesPage = lazy(() => import('./pages/admin/websites/WebsitesPage'));
+const SubdomainsPage = lazy(() => import('./pages/admin/websites/SubdomainsPage'));
 const CreateWebsiteSheet = lazy(() => import('./pages/admin/websites/CreateWebsiteSheet'));
 const TemplatesShowcase = lazy(() => import('./components/TemplatesShowcase'));
 const DatabasesManager = lazy(() => import('./components/DatabasesManager'));
@@ -237,7 +245,19 @@ export default function App() {
           <Route path="/users" element={legacy(<UsersManager showToast={showToast} />)} />
           <Route path="/packages" element={legacy(<PackagesManager showToast={showToast} />)} />
 
-          <Route path="/webservers" element={legacy(<WebServerManager showToast={showToast} />)} />
+          <Route path="/webservers" element={<Navigate to="/webservers/select" replace />} />
+          <Route path="/webservers/select" element={<WebServerModesPage />} />
+          <Route path="/webservers/domain-conf" element={<DomainConfigPage />} />
+          <Route path="/webservers/templates" element={<VhostTemplatesPage />} />
+          <Route path="/webservers/main-conf" element={<MainConfPage />} />
+          <Route path="/webservers/rebuild" element={<Navigate to="/webservers/main-conf" replace />} />
+          {/* Old addresses whose job moved to the new pages above. */}
+          <Route path="/webservers/mode" element={<Navigate to="/webservers/select" replace />} />
+          <Route path="/webservers/profile" element={<Navigate to="/webservers/select" replace />} />
+          <Route path="/webservers/conf-editor" element={<ConfEditorPage />} />
+          <Route path="/webservers/redirects" element={<RedirectsPage />} />
+          <Route path="/webservers/status" element={<WebServerStatusPage />} />
+          <Route path="/webservers/apache-status" element={<Navigate to="/webservers/status" replace />} />
           <Route path="/webservers/*" element={legacy(<WebServerManager showToast={showToast} />)} />
 
           <Route path="/php" element={legacy(<PHPLayout showToast={showToast} />)}>
@@ -266,6 +286,7 @@ export default function App() {
           <Route path="/security" element={<Navigate to="/firewall" replace />} />
 
           <Route path="/websites" element={<WebsitesPage onCreate={openCreateSite} />} />
+          <Route path="/subdomains" element={<SubdomainsPage />} />
           <Route path="/templates" element={legacy(
             <TemplatesShowcase
               templates={templates.data || []}

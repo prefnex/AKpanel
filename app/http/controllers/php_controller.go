@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/goravel/framework/contracts/http"
+	"goravel/app/paths"
 	"goravel/app/services"
 )
 
@@ -31,7 +32,7 @@ func (r *PHPController) Index(ctx http.Context) http.Response {
 
 // PHPInfo returns parsed phpinfo sections
 func (r *PHPController) PHPInfo(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version", "8.2")
+	version := ctx.Request().Input("version", paths.DefaultPHPVersion())
 	sections, err := r.phpService.GetPHPInfo(version)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
@@ -47,7 +48,7 @@ func (r *PHPController) PHPInfo(ctx http.Context) http.Response {
 
 // GetRawIni gets raw php.ini content
 func (r *PHPController) GetRawIni(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version", "8.2")
+	version := ctx.Request().Input("version", paths.DefaultPHPVersion())
 	content, err := r.phpService.GetRawIni(version)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
@@ -88,7 +89,7 @@ func (r *PHPController) SaveRawIni(ctx http.Context) http.Response {
 
 // GetFpmPool gets FPM pool configuration
 func (r *PHPController) GetFpmPool(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version", "8.2")
+	version := ctx.Request().Input("version", paths.DefaultPHPVersion())
 	cfg, err := r.phpService.GetFpmPoolConfig(version)
 	if err != nil {
 		return ctx.Response().Status(500).Json(http.Json{
@@ -144,7 +145,7 @@ func (r *PHPController) StartLiveInstall(ctx http.Context) http.Response {
 	switch itemType {
 	case "version":
 		title = fmt.Sprintf("PHP %s Installation", version)
-		pkgs := []string{"cli", "fpm", "common", "mysql", "curl", "mbstring", "xml", "zip", "gd", "sqlite3"}
+		pkgs := []string{"cli", "fpm", "cgi", "common", "mysql", "curl", "mbstring", "xml", "zip", "gd", "sqlite3"}
 		if packagesRaw != "" {
 			pkgs = []string{}
 			for _, p := range strings.Split(packagesRaw, ",") {

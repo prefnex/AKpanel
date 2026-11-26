@@ -1,0 +1,31 @@
+# Managed by AKpanel (template nginx/global.conf.tmpl) — http-level settings shared by every
+# AKpanel vhost. Lives in /etc/nginx/conf.d/akpanel-global.conf.
+
+ssl_session_cache shared:akpanel_ssl:10m;
+ssl_session_timeout 1h;
+server_names_hash_bucket_size 128;
+
+# Default proxy timeouts; a site's vhost templates (timeout-*) override them per server.
+proxy_read_timeout 300s;
+proxy_send_timeout 300s;
+
+# WebSocket upgrades for proxied apps.
+map $http_upgrade $connection_upgrade_akpanel {
+    default upgrade;
+    ''      close;
+}
+
+# Origins behind Varnish only trust the scheme the TLS front put in X-Forwarded-Proto
+# (Varnish listens on loopback, so only the front can reach them).
+map $http_x_forwarded_proto $akpanel_fwd_scheme {
+    default http;
+    https   https;
+}
+map $akpanel_fwd_scheme $akpanel_fwd_https {
+    default "";
+    https   on;
+}
+map $akpanel_fwd_scheme $akpanel_fwd_port {
+    default 80;
+    https   443;
+}

@@ -1,0 +1,109 @@
+{{- /* Same kinds as nginx/service.conf.tmpl, for mode "apache" (nginx not running). */ -}}
+# Managed by AKpanel (template apache/service.conf.tmpl) — kind={{.Kind}}
+{{- if eq .Kind "internal_php"}}
+<VirtualHost {{.Listen}}>
+    ServerName localhost
+    DocumentRoot {{.Root}}
+    DirectoryIndex index.php index.html
+{{- if .URLPrefix}}
+    Alias {{.URLPrefix}} {{.Root}}
+{{- end}}
+    <Directory {{.Root}}>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    <FilesMatch "\.php$">
+        <If "-f %{REQUEST_FILENAME}">
+            SetHandler "proxy:{{.PHPSocket}}|fcgi://localhost"
+        </If>
+    </FilesMatch>
+    <FilesMatch "^\.(ht|git)">
+        Require all denied
+    </FilesMatch>
+</VirtualHost>
+{{- else if eq .Kind "hostname"}}
+<VirtualHost *:80>
+    ServerName {{.Host}}
+{{template "acme" .}}
+    RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</VirtualHost>
+<IfModule mod_ssl.c>
+<VirtualHost *:443>
+    ServerName {{.Host}}
+    SSLEngine on
+    SSLCertificateFile {{.SSLCert}}
+    SSLCertificateKeyFile {{.SSLKey}}
+{{template "acme" .}}
+    RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+    RewriteRule ^ https://%{HTTP_HOST}:2087%{REQUEST_URI} [R=302,L]
+</VirtualHost>
+</IfModule>
+{{- else}}
+<VirtualHost *:80>
+{{template "body" .}}
+</VirtualHost>
+<IfModule mod_ssl.c>
+<VirtualHost *:443>
+    SSLEngine on
+    SSLCertificateFile {{.SSLCert}}
+    SSLCertificateKeyFile {{.SSLKey}}
+{{template "body" .}}
+</VirtualHost>
+</IfModule>
+{{- end}}
+{{define "acme"}}
+    Alias /.well-known/acme-challenge/ {{.AcmeRoot}}/.well-known/acme-challenge/
+    <Directory {{.AcmeRoot}}/.well-known/acme-challenge/>
+        Require all granted
+    </Directory>
+{{- end}}
+{{define "body"}}
+{{- if eq .Kind "default"}}
+    ServerName {{.Host}}
+{{- else}}
+    ServerName {{.Host}}
+{{- end}}
+{{template "acme" .}}
+{{- if eq .Kind "default"}}
+    DocumentRoot {{.Root}}
+    DirectoryIndex index.php index.html index.htm
+    <Directory {{.Root}}>
+        Options -Indexes
+        AllowOverride None
+        Require all granted
+    </Directory>
+    <FilesMatch "\.php$">
+        <If "-f %{REQUEST_FILENAME}">
+            SetHandler "proxy:{{.PHPSocket}}|fcgi://localhost"
+        </If>
+    </FilesMatch>
+    ProxyPreserveHost On
+    RedirectMatch 301 ^/webmail$ /webmail/
+    ProxyPass /webmail/ http://127.0.0.1:8086/
+    ProxyPassReverse /webmail/ http://127.0.0.1:8086/
+{{- else if eq .Kind "webmail"}}
+    ProxyPreserveHost On
+    ProxyPass /.well-known/acme-challenge/ !
+    ProxyPass / http://127.0.0.1:8086/
+    ProxyPassReverse / http://127.0.0.1:8086/
+    RequestHeader set X-Forwarded-Proto expr=%{REQUEST_SCHEME}
+{{- else if eq .Kind "info"}}
+    DocumentRoot {{.Root}}
+    <Directory {{.Root}}>
+        Require all granted
+    </Directory>
+{{- else if or (eq .Kind "client_panel") (eq .Kind "proxy")}}
+    ProxyPreserveHost On
+    ProxyPass /.well-known/acme-challenge/ !
+    ProxyPass / http://127.0.0.1:{{.Port}}/ timeout=300
+    ProxyPassReverse / http://127.0.0.1:{{.Port}}/
+    RequestHeader set X-Forwarded-Proto expr=%{REQUEST_SCHEME}
+{{- range $k, $v := .Headers}}
+    RequestHeader set {{$k}} "{{$v}}"
+{{- end}}
+{{- end}}
+{{- end}}

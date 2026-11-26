@@ -1,0 +1,166 @@
+{{- /*
+  AKpanel panel-service vhosts (not customer sites). .Kind:
+    default       catch-all on :80/:443 (landing page, /webmail)
+    hostname      panel hostname: :80 → https, :443 → https://host:2087
+    webmail       Roundcube for webmail.<domain>
+    client_panel  cpanel.<domain> → client portal (127.0.0.1:2088)
+    info          static page (ftp./imap./pop.<domain>)
+    proxy         reverse proxy to .Port with .Headers
+    internal_php  loopback PHP app (Roundcube 8086 / phpMyAdmin 8085)
+*/ -}}
+# Managed by AKpanel (template nginx/service.conf.tmpl) — kind={{.Kind}}
+{{- if eq .Kind "internal_php"}}
+server {
+    listen {{.Listen}};
+    server_name _;
+    root {{.Root}};
+    index index.php index.html;
+{{- range .Rewrites}}
+    {{.}}
+{{- end}}
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.*)$;
+        fastcgi_pass {{.PHPSocket}};
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+        fastcgi_param HTTPS $akpanel_fwd_https;
+        fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
+        fastcgi_param HTTP_X_FORWARDED_HOST $http_x_forwarded_host;
+        fastcgi_read_timeout 300;
+        fastcgi_buffers 16 16k;
+        fastcgi_buffer_size 32k;
+    }
+
+    location ~ /\.(ht|git) {
+        deny all;
+    }
+}
+{{- else if eq .Kind "hostname"}}
+server {
+    listen 80;
+{{- if .IPv6}}
+    listen [::]:80;
+{{- end}}
+    server_name {{.Host}};
+{{template "acme" .}}
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+{{- if .IPv6}}
+    listen [::]:443 ssl;
+{{- end}}
+    server_name {{.Host}};
+    ssl_certificate {{.SSLCert}};
+    ssl_certificate_key {{.SSLKey}};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+{{template "acme" .}}
+    location / {
+        return 302 https://$host:2087$request_uri;
+    }
+}
+{{- else}}
+server {
+{{- if eq .Kind "default"}}
+    listen 80 default_server;
+{{- if .IPv6}}
+    listen [::]:80 default_server;
+{{- end}}
+    listen 443 ssl default_server;
+{{- if .IPv6}}
+    listen [::]:443 ssl default_server;
+{{- end}}
+    server_name _;
+{{- else}}
+    listen 80;
+{{- if .IPv6}}
+    listen [::]:80;
+{{- end}}
+    listen 443 ssl;
+{{- if .IPv6}}
+    listen [::]:443 ssl;
+{{- end}}
+    server_name {{.Host}};
+{{- end}}
+
+    ssl_certificate {{.SSLCert}};
+    ssl_certificate_key {{.SSLKey}};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+{{template "acme" .}}
+{{- if eq .Kind "default"}}
+    root {{.Root}};
+    index index.php index.html index.htm;
+
+    location = /webmail {
+        return 301 /webmail/;
+    }
+    location /webmail/ {
+        proxy_pass http://127.0.0.1:8086/;
+        include /etc/nginx/snippets/akpanel-proxy.conf;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        include fastcgi_params;
+        fastcgi_pass {{.PHPSocket}};
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    }
+{{- else if eq .Kind "webmail"}}
+    location / {
+        proxy_pass http://127.0.0.1:8086;
+        include /etc/nginx/snippets/akpanel-proxy.conf;
+    }
+{{- else if eq .Kind "info"}}
+    root {{.Root}};
+    index index.html;
+    location / {
+        try_files $uri $uri/ =404;
+    }
+{{- else if or (eq .Kind "client_panel") (eq .Kind "proxy")}}
+    location / {
+        proxy_pass http://127.0.0.1:{{.Port}};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade_akpanel;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+{{- range $k, $v := .Headers}}
+        proxy_set_header {{$k}} {{$v}};
+{{- end}}
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+{{- end}}
+
+    location ~ /\.(ht|git) {
+        deny all;
+    }
+}
+{{- end}}
+{{define "acme"}}
+    location ^~ /.well-known/acme-challenge/ {
+        root {{.AcmeRoot}};
+        default_type text/plain;
+        allow all;
+    }
+{{end}}

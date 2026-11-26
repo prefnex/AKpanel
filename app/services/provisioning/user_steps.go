@@ -80,13 +80,15 @@ func (s *ValidateUserPlanStep) Execute(ctx context.Context, plan *UserProvisionP
 			plan.RAMLimitMB = pkg.EffectiveRAMLimitMB()
 		}
 	}
-	if b, err := os.ReadFile(paths.ServerProfileConf()); err == nil {
-		profile := strings.TrimSpace(string(b))
-		if profile != "" {
-			plan.WebEngine = domain.ProfileToSiteEngine(profile)
-		}
+	// The package's engine is the account's request; the mode decides what is allowed.
+	// No package version → server default for the backend that will run the main domain.
+	if paths.PHPFPMInstalled(plan.PHPVersion) {
+		// keep
+	} else {
+		backend, _ := domain.ParseBackend(plan.WebEngine)
+		eff := domain.ResolveStack(services.CurrentMode(), domain.SiteStack{SiteType: domain.SiteTypePHP, Backend: backend}, false)
+		plan.PHPVersion = paths.DefaultPHPVersionFor(string(eff.Backend))
 	}
-	plan.PHPVersion = paths.DetectInstalledPHPVersion(plan.PHPVersion)
 	if plan.ProcessLimit <= 0 {
 		plan.ProcessLimit = 40
 	}
@@ -288,9 +290,11 @@ func (s *CreatePHPFMPPoolStep) Execute(ctx context.Context, plan *UserProvisionP
 		time.Sleep(150 * time.Millisecond)
 	}
 	if _, err := os.Stat(sock); err != nil {
-		progressLog(plan, s.Name(), 32, fmt.Sprintf("PHP-FPM pool wrote %s (socket not up yet; vhost will use global FPM)", sock))
+		services.WriteAccountCLIVersion(plan.Username, ver)
+		progressLog(plan, s.Name(), 32, fmt.Sprintf("PHP-FPM pool wrote %s (socket not up yet)", sock))
 		return nil
 	}
+	services.WriteAccountCLIVersion(plan.Username, ver)
 	progressLog(plan, s.Name(), 32, fmt.Sprintf("PHP-FPM pool created (%s)", sock))
 	return nil
 }
@@ -449,9 +453,11 @@ func (s *CreateUserDNSZoneStep) Rollback(ctx context.Context, plan *UserProvisio
 
 // ── 10. CreateServiceSubdomains ───────────────────────────────────────────────
 
-type CreateServiceSubdomainsStep struct {
-	created []string
-}
+// CreateServiceSubdomainsStep is kept so task logs keep their step numbering. The service
+// subdomains themselves (webmail. mail. cpanel. ftp.) are derived from the site every time it
+// is rendered (services.syncSiteServices), so they follow the domain's settings and go away
+// with it.
+type CreateServiceSubdomainsStep struct{}
 
 func (s *CreateServiceSubdomainsStep) Name() string { return "CreateServiceSubdomains" }
 
@@ -459,46 +465,11 @@ func (s *CreateServiceSubdomainsStep) Execute(ctx context.Context, plan *UserPro
 	if plan.MainDomain == "" {
 		return nil
 	}
-	nginx := services.NewNginxService()
-	d := plan.MainDomain
-
-	subs := []struct {
-		host string
-		fn   func() error
-	}{
-		{"webmail." + d, func() error {
-			return nginx.CreateWebmailVhost("webmail." + d)
-		}},
-		{"cpanel." + d, func() error {
-			return nginx.CreateClientPanelVhost("cpanel." + d)
-		}},
-		{"ftp." + d, func() error {
-			return nginx.CreateStaticInfoVhost("ftp."+d, "FTP", "<h1>FTP Server</h1><p>Use FTP client on port 21.</p>")
-		}},
-		{"imap." + d, func() error {
-			return nginx.CreateStaticInfoVhost("imap."+d, "IMAP", "<h1>IMAP Server</h1><p>Connect on port 993 (SSL).</p>")
-		}},
-		{"pop." + d, func() error {
-			return nginx.CreateStaticInfoVhost("pop."+d, "POP3", "<h1>POP3 Server</h1><p>Connect on port 995 (SSL).</p>")
-		}},
-	}
-
-	for _, sub := range subs {
-		if err := sub.fn(); err != nil {
-			progressLog(plan, s.Name(), 65, fmt.Sprintf("Subdomain %s warning: %v", sub.host, err))
-			continue
-		}
-		s.created = append(s.created, sub.host)
-	}
-	progressLog(plan, s.Name(), 65, fmt.Sprintf("Service subdomains provisioned for %s", d))
+	progressLog(plan, s.Name(), 65, fmt.Sprintf("Service subdomains (webmail, mail, cpanel, ftp) follow %s", plan.MainDomain))
 	return nil
 }
 
 func (s *CreateServiceSubdomainsStep) Rollback(ctx context.Context, plan *UserProvisionPlan) error {
-	nginx := services.NewNginxService()
-	for _, host := range s.created {
-		_ = nginx.DeleteWebsite(host)
-	}
 	return nil
 }
 
@@ -548,9 +519,8 @@ func (s *RegenerateVhostsStep) Execute(ctx context.Context, plan *UserProvisionP
 	_ = nginx.CreateWebsite(services.WebsiteConfig{
 		Domain: plan.MainDomain, RootPath: plan.RootPath, ServerEngine: plan.WebEngine,
 		PHPVersion: plan.PHPVersion, SiteType: "php", PHPSocket: sock, SkipOwnershipFix: true,
+		OwnerUsername: plan.Username,
 	})
-	_ = nginx.CreateWebmailVhost("webmail." + plan.MainDomain)
-	_ = nginx.CreateClientPanelVhost("cpanel." + plan.MainDomain)
 	progressLog(plan, s.Name(), 78, "Vhosts regenerated with SSL paths")
 	return nil
 }
@@ -619,7 +589,7 @@ func (s *PersistUserRecordStep) Execute(ctx context.Context, plan *UserProvision
 		WebEngine: plan.WebEngine, PHPVersion: plan.PHPVersion,
 		MaxProcesses: plan.ProcessLimit, OpenFilesLimit: plan.OpenFilesLimit, InodesLimit: plan.InodeLimit,
 		RAMLimitMB: plan.RAMLimitMB,
-		CreatedAt: time.Now().Format("2006-01-02"),
+		CreatedAt:  time.Now().Format("2006-01-02"),
 	}
 
 	if err := services.NewUserAccountService().SaveUser(*plan.ResultUser); err != nil {
@@ -627,11 +597,15 @@ func (s *PersistUserRecordStep) Execute(ctx context.Context, plan *UserProvision
 	}
 
 	if plan.MainDomain != "" && facades.Orm() != nil {
-		engine, _ := domain.NormalizeEngine(plan.WebEngine)
+		backend, varnish := domain.ParseBackend(plan.WebEngine)
+		engine := string(backend)
+		if engine == "" {
+			engine = "default"
+		}
 		count, _ := facades.Orm().Query().Model(&models.Website{}).Where("domain = ?", plan.MainDomain).Count()
 		if count == 0 {
 			_ = facades.Orm().Query().Create(&models.Website{
-				Domain: plan.MainDomain, ServerEngine: string(engine), TemplateID: "custom",
+				Domain: plan.MainDomain, ServerEngine: engine, Backend: string(backend), Varnish: varnish, TemplateID: "custom",
 				PHPVersion: plan.PHPVersion, SiteType: "php", RootPath: plan.RootPath,
 				SSLActive: plan.AutoSSL, OwnerUsername: plan.Username, PackageID: plan.PackageID, Status: "active",
 			})

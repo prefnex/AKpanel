@@ -57,6 +57,8 @@ RUN LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php \
     redis-server \
     nginx \
     apache2 \
+    libapache2-mod-fcgid \
+    apache2-suexec-custom \
     varnish \
     bind9 \
     bind9utils \
@@ -71,9 +73,9 @@ RUN LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php \
     opendkim-tools \
     spamassassin \
     pure-ftpd \
-    php8.1-cli php8.1-fpm php8.1-mysql php8.1-mbstring php8.1-xml php8.1-curl php8.1-zip php8.1-gd \
-    php8.2-cli php8.2-fpm php8.2-mysql php8.2-mbstring php8.2-xml php8.2-curl php8.2-zip php8.2-gd \
-    php8.3-cli php8.3-fpm php8.3-mysql php8.3-mbstring php8.3-xml php8.3-curl php8.3-zip php8.3-gd \
+    php8.1-cli php8.1-fpm php8.1-cgi php8.1-mysql php8.1-mbstring php8.1-xml php8.1-curl php8.1-zip php8.1-gd \
+    php8.2-cli php8.2-fpm php8.2-cgi php8.2-mysql php8.2-mbstring php8.2-xml php8.2-curl php8.2-zip php8.2-gd \
+    php8.3-cli php8.3-fpm php8.3-cgi php8.3-mysql php8.3-mbstring php8.3-xml php8.3-curl php8.3-zip php8.3-gd \
     phpmyadmin \
     && rm -rf /var/lib/apt/lists/*
 
@@ -97,7 +99,7 @@ RUN systemctl mask getty@tty1.service console-getty.service systemd-logind.servi
 COPY docker/akpanel-dev-setup.sh /usr/local/bin/akpanel-dev-setup.sh
 COPY docker/akpanel-dev-setup.service /etc/systemd/system/akpanel-dev-setup.service
 # Hybrid profile: Apache sits behind Nginx on 8081, so it must never grab port 80 at boot.
-RUN sed -i 's/^Listen 80$/Listen 8081/' /etc/apache2/ports.conf \
+RUN sed -i 's/^Listen 80$/Listen 127.0.0.1:8081/' /etc/apache2/ports.conf \
     && sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8081>/' /etc/apache2/sites-available/000-default.conf \
     && a2enmod -q rewrite proxy proxy_fcgi proxy_http headers setenvif
 RUN chmod +x /usr/local/bin/akpanel-dev-setup.sh \

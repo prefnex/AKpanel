@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'Release Tag (e.g., v0.1.0)'
+        description: 'Release Tag (e.g., v0.2.0)'
         required: true
-        default: 'v0.1.0'
+        default: 'v0.2.0'
 
 permissions:
   contents: write
@@ -93,6 +93,7 @@ jobs:
             cp .env.example "${BUNDLE_DIR}/.env.example"
             cp LICENSE "${BUNDLE_DIR}/LICENSE"
             cp README.md "${BUNDLE_DIR}/README.md"
+            cp CHANGELOG.md "${BUNDLE_DIR}/CHANGELOG.md"
             [ -f install.sh ] && cp install.sh "${BUNDLE_DIR}/install.sh"
 
             # Create tarball
@@ -109,6 +110,17 @@ jobs:
           sha256sum akpanel_*.tar.gz install.sh > checksums.txt
           cd ..
 
+      - name: Extract Release Notes from CHANGELOG.md
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          awk -v tag="$TAG" '
+            $0 ~ "^## \\[" tag "\\]" { on=1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then echo "AKpanel ${TAG}" > release-notes.md; fi
+          cat release-notes.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -116,7 +128,8 @@ jobs:
           name: "AKpanel ${{ steps.vars.outputs.tag }}"
           draft: false
           prerelease: false
-          generate_release_notes: true
+          generate_release_notes: false
+          body_path: release-notes.md
           files: |
             release-assets/akpanel_*.tar.gz
             release-assets/install.sh

@@ -28,7 +28,7 @@ func LookupTenant(username string) (*TenantIdentity, error) {
 	}
 	u, err := user.Lookup(username)
 	if err != nil {
-		return nil, fmt.Errorf("linux account for '%s' not found", username)
+		return nil, fmt.Errorf("linux account for '%s' not found: use Repair account on the Users page", username)
 	}
 	uid, err1 := strconv.Atoi(u.Uid)
 	gid, err2 := strconv.Atoi(u.Gid)

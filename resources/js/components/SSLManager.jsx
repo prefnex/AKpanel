@@ -361,6 +361,7 @@ export default function SSLManager({ showToast }) {
             <thead>
               <tr className="border-b border-zinc-800/80 bg-zinc-900/50 text-[11px] font-semibold text-zinc-400 uppercase tracking-wider">
                 <th className="py-3.5 px-4">Domain / Common Name</th>
+                <th className="py-3.5 px-4">Services</th>
                 <th className="py-3.5 px-4">Issuer</th>
                 <th className="py-3.5 px-4">Status</th>
                 <th className="py-3.5 px-4">Expiry Date</th>
@@ -372,7 +373,7 @@ export default function SSLManager({ showToast }) {
             <tbody className="divide-y divide-zinc-800/50">
               {filteredCerts.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="py-8 text-center text-zinc-500 text-xs">
+                  <td colSpan="8" className="py-8 text-center text-zinc-500 text-xs">
                     No SSL certificates installed. Click "Issue SSL Certificate" to secure your domains.
                   </td>
                 </tr>
@@ -381,7 +382,23 @@ export default function SSLManager({ showToast }) {
                   <tr key={c.domain} className="hover:bg-zinc-900/40 transition">
                     <td className="py-3.5 px-4 font-mono font-bold text-white flex items-center gap-2">
                       <Lock className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>{c.domain === 'server' ? 'server (Hostname SSL :2087/:2083)' : c.domain}</span>
+                      <span title={(c.sans || []).join(', ')}>{c.domain === 'server' ? 'server (Hostname SSL :2087/:2083)' : c.domain}</span>
+                      {c.owner && <span className="font-sans text-[10px] font-normal text-zinc-500">{c.owner}</span>}
+                    </td>
+
+                    <td className="py-3.5 px-4">
+                      <div className="flex max-w-[14rem] flex-wrap gap-1">
+                        {(c.services || []).length === 0 && <span className="text-[11px] text-zinc-500">None</span>}
+                        {(c.services || []).map((s) => (
+                          <span
+                            key={s.service}
+                            title={s.covered ? `${s.host} is on this certificate` : `${s.host} is not on this certificate yet: renew to add it`}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${s.covered ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-800 text-zinc-500 line-through'}`}
+                          >
+                            {s.service}
+                          </span>
+                        ))}
+                      </div>
                     </td>
 
                     <td className="py-3.5 px-4 text-zinc-300">

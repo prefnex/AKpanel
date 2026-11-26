@@ -1,0 +1,188 @@
+{{- /*
+  AKpanel nginx vhost for one domain.
+  .Upstream: ""        → nginx serves the site itself (PHP-FPM / static)
+             "apache"  → proxy dynamic requests to Apache (127.0.0.1:8081)
+             "varnish" → proxy everything to Varnish (127.0.0.1:6081); .VarnishBackend says
+                         whether Varnish fetches from Apache or from the nginx origin below
+  .NginxOrigin → also render the loopback origin server on 127.0.0.1:8080 (Varnish → nginx)
+  Vhost library (per domain): .VhostTemplates names, .NginxSnippets (public server),
+  .NginxLocation (app `location /` for the PHP/static origin), .HTTP2, .Timeout, .MaxBodyMB.
+*/ -}}
+# Managed by AKpanel (template nginx/site.conf.tmpl) — changes here are overwritten.
+# Put custom directives in {{.NginxCustom}}
+{{- if .Owner}}
+# akpanel-owner: {{.Owner}}
+{{- end}}
+# akpanel-site: {{.Domain}} mode={{.Mode}} backend={{.Backend}} varnish={{.Varnish}}
+{{- if .VhostTemplates}}
+# akpanel-templates: {{join .VhostTemplates " "}}
+{{- end}}
+
+server {
+{{- if .NginxHold}}
+    include {{.NginxHold}};
+{{- end}}
+    listen 80;
+{{- if .IPv6}}
+    listen [::]:80;
+{{- end}}
+    listen 443 ssl{{if and .HTTP2 (not .HTTP2Directive)}} http2{{end}};
+{{- if .IPv6}}
+    listen [::]:443 ssl{{if and .HTTP2 (not .HTTP2Directive)}} http2{{end}};
+{{- end}}
+    server_name {{.ServerNames}};
+{{- if and .HTTP2 .HTTP2Directive}}
+    http2 on;
+{{- end}}
+
+    ssl_certificate {{.SSLCert}};
+    ssl_certificate_key {{.SSLKey}};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    access_log /var/log/nginx/{{.Domain}}.access.log;
+    error_log /var/log/nginx/{{.Domain}}.error.log;
+
+    client_max_body_size {{.MaxBodyMB}}m;
+    proxy_read_timeout {{.Timeout}}s;
+    proxy_send_timeout {{.Timeout}}s;
+    fastcgi_read_timeout {{.Timeout}}s;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root {{.AcmeRoot}};
+        default_type text/plain;
+        allow all;
+    }
+
+    # System redirects (/cpanel, /webmail …), shared by every site.
+    include /etc/nginx/snippets/akpanel-redirects.conf*;
+{{- if .NginxSnippets}}
+
+{{.NginxSnippets}}
+{{- end}}
+
+    include {{.NginxCustom}}*;
+{{- if eq .SiteType "proxy"}}
+
+    location / {
+        proxy_pass http://{{.ProxyAddr}};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade_akpanel;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+{{- else if eq .Upstream "varnish"}}
+
+    location / {
+        proxy_pass http://{{.VarnishAddr}};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-AKpanel-Backend {{.VarnishBackend}};
+    }
+{{- else if eq .Upstream "apache"}}
+    root {{.Root}};
+
+    # Static files straight from nginx; everything else (and missing files) to Apache.
+    location ~* \.(jpg|jpeg|gif|png|webp|avif|svg|ico|css|js|mjs|map|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf|zip|txt)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+        access_log off;
+        try_files $uri @apache;
+    }
+
+    location / {
+        proxy_pass http://{{.ApacheAddr}};
+        include /etc/nginx/snippets/akpanel-proxy.conf;
+    }
+
+    location @apache {
+        proxy_pass http://{{.ApacheAddr}};
+        include /etc/nginx/snippets/akpanel-proxy.conf;
+    }
+{{- else}}
+{{template "origin" (origin . false)}}
+{{- end}}
+}
+{{- if .NginxOrigin}}
+
+# Origin for Varnish (loopback only).
+server {
+{{- if .NginxHold}}
+    include {{.NginxHold}};
+{{- end}}
+    listen {{.NginxOriginAddr}};
+    server_name {{.ServerNames}};
+
+    set_real_ip_from 127.0.0.1;
+    real_ip_header X-Forwarded-For;
+    real_ip_recursive on;
+
+    access_log off;
+    error_log /var/log/nginx/{{.Domain}}.error.log;
+    client_max_body_size {{.MaxBodyMB}}m;
+    fastcgi_read_timeout {{.Timeout}}s;
+
+    include {{.NginxCustom}}*;
+{{template "origin" (origin . true)}}
+}
+{{- end}}
+{{define "origin"}}
+    root {{.S.Root}};
+{{- if eq .S.SiteType "static"}}
+    index index.html index.htm;
+{{- if .S.NginxLocation}}
+
+{{.S.NginxLocation}}
+{{- else}}
+
+    location / {
+        try_files $uri $uri/ /index.html =404;
+    }
+{{- end}}
+{{- else}}
+    index index.php index.html index.htm;
+{{- if .S.NginxLocation}}
+
+{{.S.NginxLocation}}
+{{- else}}
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+{{- end}}
+
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.*)$;
+        fastcgi_pass {{.S.PHPSocket}};
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+{{- if .Proxied}}
+        # Behind Varnish: scheme and port come from the TLS front.
+        fastcgi_param HTTPS $akpanel_fwd_https;
+        fastcgi_param REQUEST_SCHEME $akpanel_fwd_scheme;
+        fastcgi_param SERVER_PORT $akpanel_fwd_port;
+{{- end}}
+        fastcgi_buffers 16 16k;
+        fastcgi_buffer_size 32k;
+    }
+
+    location ~* \.(jpg|jpeg|gif|png|webp|avif|svg|ico|css|js|mjs|woff2?|ttf|otf|eot)$ {
+        expires 30d;
+        access_log off;
+        try_files $uri =404;
+    }
+{{- end}}
+
+    location ~ /\.(ht|git|env) {
+        deny all;
+    }
+{{- end}}

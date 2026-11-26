@@ -5,20 +5,11 @@ import (
 	"os/exec"
 	"strings"
 
-	"goravel/app/domain"
-	"goravel/app/paths"
 )
 
+// currentServerProfile returns the active mode ID (see CurrentMode).
 func currentServerProfile() string {
-	b, err := os.ReadFile(paths.ServerProfileConf())
-	if err != nil {
-		return domain.ProfileNginxPHPFPM
-	}
-	p := strings.TrimSpace(string(b))
-	if p == "" {
-		return domain.ProfileNginxPHPFPM
-	}
-	return p
+	return string(CurrentMode())
 }
 
 func systemdUnitFiles(unit string) []string {

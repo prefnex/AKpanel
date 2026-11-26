@@ -1,6 +1,6 @@
 import {
   LayoutDashboard, Users, Package, Globe, Network, Mail, Server, ShieldCheck, Code2,
-  Database, FolderTree, SquareTerminal, Flame, Settings, LayoutTemplate,
+  Database, FolderTree, SquareTerminal, Flame, Settings, LayoutTemplate, GitBranch,
 } from 'lucide-react';
 
 // Single source of truth for admin navigation: sidebar, breadcrumbs and ⌘K palette.
@@ -20,17 +20,17 @@ export const adminNav = [
     label: 'Hosting',
     items: [
       { title: 'Websites', url: '/websites', icon: Globe },
+      { title: 'Subdomains', url: '/subdomains', icon: GitBranch },
       { title: 'Site templates', url: '/templates', icon: LayoutTemplate },
       {
         title: 'Web servers', url: '/webservers', icon: Server,
         children: [
-          { title: 'Profile', url: '/webservers/select' },
+          { title: 'Mode', url: '/webservers/select' },
           { title: 'Main config', url: '/webservers/main-conf' },
           { title: 'Domain config', url: '/webservers/domain-conf' },
           { title: 'Templates', url: '/webservers/templates' },
-          { title: 'Config editor', url: '/webservers/conf-editor' },
-          { title: 'Apache status', url: '/webservers/apache-status' },
-          { title: 'Rebuild vhosts', url: '/webservers/rebuild' },
+          { title: 'Conf editor', url: '/webservers/conf-editor' },
+          { title: 'Status', url: '/webservers/status' },
           { title: 'Redirects', url: '/webservers/redirects' },
         ],
       },

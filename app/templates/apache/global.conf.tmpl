@@ -1,0 +1,31 @@
+# Managed by AKpanel (template apache/global.conf.tmpl) — /etc/apache2/conf-available/akpanel.conf
+ServerName {{.Hostname}}
+ServerTokens Prod
+ServerSignature Off
+TraceEnable Off
+Timeout 300
+{{- if .BehindProxy}}
+
+# Apache only listens on loopback behind nginx/Varnish: take the client address and scheme
+# from the front. Nothing else can reach this port, so the headers can be trusted.
+<IfModule mod_remoteip.c>
+    RemoteIPHeader X-Forwarded-For
+    RemoteIPInternalProxy 127.0.0.1 ::1
+</IfModule>
+SetEnvIf X-Forwarded-Proto "^https$" HTTPS=on
+{{- end}}
+
+<IfModule mod_fcgid.c>
+    FcgidMaxRequestLen 1073741824
+    FcgidIOTimeout 300
+    FcgidConnectTimeout 20
+    FcgidMaxRequestsPerProcess 500
+    FcgidIdleTimeout 300
+</IfModule>
+
+<IfModule mod_ssl.c>
+    SSLProtocol -all +TLSv1.2 +TLSv1.3
+    SSLCipherSuite HIGH:!aNULL:!MD5
+    SSLHonorCipherOrder off
+    SSLSessionCache shmcb:${APACHE_RUN_DIR}/akpanel_ssl_scache(512000)
+</IfModule>

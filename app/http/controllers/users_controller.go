@@ -63,9 +63,13 @@ func (c *UsersController) buildPlan(req CreateUserRequest) *provisioning.UserPro
 // Index lists all users with live quota telemetry
 func (c *UsersController) Index(ctx goravelhttp.Context) goravelhttp.Response {
 	list := c.userAccountService.ListUsers()
+	out := make([]userWithHealth, 0, len(list))
+	for _, u := range list {
+		out = append(out, userWithHealth{UserAccount: u, Issues: services.AccountIssues(u)})
+	}
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status": "success",
-		"data":   list,
+		"data":   out,
 	})
 }
 
@@ -192,6 +196,28 @@ func (c *UsersController) FixPermissions(ctx goravelhttp.Context) goravelhttp.Re
 	return ctx.Response().Status(200).Json(goravelhttp.Json{
 		"status":  "success",
 		"message": "Permissions repaired successfully (user:user ownership, 711/755)!",
+	})
+}
+
+// userWithHealth is an account plus what is broken on the system for it (see AccountIssues).
+type userWithHealth struct {
+	services.UserAccount
+	Issues []string `json:"issues"`
+}
+
+// Repair recreates an account's Linux user, home layout, PHP-FPM pool and vhosts from its
+// panel record (provisioning.RepairAccount). Files, databases and mail are left alone.
+func (c *UsersController) Repair(ctx goravelhttp.Context) goravelhttp.Response {
+	username := ctx.Request().Input("username")
+	if username == "" {
+		return ctx.Response().Status(400).Json(goravelhttp.Json{"status": "error", "message": "Username is required"})
+	}
+	log, err := provisioning.RepairAccount(context.Background(), username)
+	if err != nil {
+		return ctx.Response().Status(500).Json(goravelhttp.Json{"status": "error", "message": err.Error(), "data": goravelhttp.Json{"log": log}})
+	}
+	return ctx.Response().Status(200).Json(goravelhttp.Json{
+		"status": "success", "message": "Account " + username + " repaired", "data": goravelhttp.Json{"log": log},
 	})
 }
 

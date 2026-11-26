@@ -141,12 +141,11 @@ func (c *ConfigService) Paths() PathConfig {
 	return c.installConfig.Paths
 }
 
-// ActiveEngine returns the current canonical WebEngine based on active server profile
-func (c *ConfigService) ActiveEngine() domain.WebEngine {
+// ActiveMode returns the web server mode recorded at install time (live value: CurrentMode).
+func (c *ConfigService) ActiveMode() domain.Mode {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	engine, _ := domain.NormalizeEngine(c.installConfig.Components.WebserverProfile)
-	return engine
+	return domain.NormalizeMode(c.installConfig.Components.WebserverProfile)
 }
 
 // Secrets retrieves sensitive secrets safely (never logs them)

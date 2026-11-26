@@ -34,7 +34,16 @@ func (r *WebsitesController) Templates(ctx http.Context) http.Response {
 	})
 }
 
-// Index lists all websites
+// websiteWithStack is a website row plus what its stack resolves to in the current mode.
+type websiteWithStack struct {
+	models.Website
+	Stack    services.SiteResult  `json:"stack"`
+	Services []domain.SiteService `json:"services"`
+	// Vhost library templates in effect (stored choice or the Main Conf default).
+	VhostTemplates []string `json:"vhost_templates"`
+}
+
+// Index lists all websites with their requested and effective web stack.
 func (r *WebsitesController) Index(ctx http.Context) http.Response {
 	var websites []models.Website
 	if err := facades.Orm().Query().OrderByDesc("created_at").Find(&websites); err != nil {
@@ -43,19 +52,31 @@ func (r *WebsitesController) Index(ctx http.Context) http.Response {
 			"message": "Failed to fetch websites: " + err.Error(),
 		})
 	}
-
+	stack := services.GetWebStack()
+	out := make([]websiteWithStack, 0, len(websites))
+	for i := range websites {
+		out = append(out, websiteWithStack{
+			Website:        websites[i],
+			Stack:          stack.SiteStatus(&websites[i]),
+			Services:       services.EnabledSiteServicesFor(&websites[i]),
+			VhostTemplates: services.SiteVhostTemplateNamesFor(&websites[i]),
+		})
+	}
 	return ctx.Response().Success().Json(http.Json{
 		"status": "success",
-		"data":   websites,
+		"data":   out,
+		"mode":   services.CurrentMode().Info(),
 	})
 }
 
 // Store creates a new website via the Provisioning Orchestrator
 func (r *WebsitesController) Store(ctx http.Context) http.Response {
 	domainName := strings.ToLower(strings.TrimSpace(ctx.Request().Input("domain")))
-	serverEngine := ctx.Request().Input("server_engine", "nginx")
+	backend := ctx.Request().Input("backend")
+	if backend == "" {
+		backend = ctx.Request().Input("server_engine")
+	}
 	templateID := ctx.Request().Input("template_id", "laravel")
-	phpVersion := ctx.Request().Input("php_version", "8.2")
 	siteType := ctx.Request().Input("site_type", "php")
 	proxyPort := ctx.Request().InputInt("proxy_port", 3000)
 
@@ -66,14 +87,18 @@ func (r *WebsitesController) Store(ctx http.Context) http.Response {
 		})
 	}
 
-	engine, _ := domain.NormalizeEngine(serverEngine)
-
+	parsed, varnish := domain.ParseBackend(backend)
+	if v := ctx.Request().Input("varnish"); v != "" {
+		varnish = domain.ParseVarnish(v)
+	}
 	plan := &provisioning.ProvisionPlan{
 		Domain:        domainName,
 		OwnerUsername: "root",
 		PackageID:     "default",
-		Engine:        engine,
-		PHPVersion:    phpVersion,
+		Backend:       parsed,
+		PHPHandler:    ctx.Request().Input("php_handler"),
+		Varnish:       varnish,
+		PHPVersion:    ctx.Request().Input("php_version"),
 		TemplateID:    templateID,
 		SiteType:      siteType,
 		ProxyPort:     proxyPort,
@@ -89,64 +114,95 @@ func (r *WebsitesController) Store(ctx http.Context) http.Response {
 		})
 	}
 
+	st := services.GetWebStack().SiteStatus(website)
 	return ctx.Response().Status(201).Json(http.Json{
 		"status":  "success",
-		"message": fmt.Sprintf("Website '%s' created successfully using %s (%s)", domainName, strings.ToUpper(string(engine)), templateID),
-		"data":    website,
+		"message": fmt.Sprintf("Website '%s' created (%s, PHP %s)", domainName, describeStack(st.Effective), website.PHPVersion),
+		"data":    websiteWithStack{Website: *website, Stack: st},
 	})
 }
 
-// SwitchEngine dynamically switches a website between Nginx, Apache, and Hybrid
-func (r *WebsitesController) SwitchEngine(ctx http.Context) http.Response {
-	domainName := ctx.Request().Input("domain")
-	newEngine := ctx.Request().Input("server_engine")
-
-	if domainName == "" || newEngine == "" {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": "Domain and server_engine are required",
-		})
+func describeStack(e domain.EffectiveStack) string {
+	s := string(e.Backend)
+	if e.Backend == domain.BackendApache && e.SiteType == domain.SiteTypePHP {
+		s += " + php-" + string(e.PHPHandler)
 	}
-
-	var website models.Website
-	if err := facades.Orm().Query().Where("domain = ?", domainName).First(&website); err != nil {
-		return ctx.Response().Status(404).Json(http.Json{
-			"status":  "error",
-			"message": "Website not found in database",
-		})
+	if e.Varnish {
+		s += " + varnish"
 	}
+	return s
+}
 
-	engine, err := domain.NormalizeEngine(newEngine)
+// UpdateStack changes one domain's web stack (backend, Apache PHP handler, Varnish) within
+// what the current mode allows; the request is stored even when the mode overrides it.
+func (r *WebsitesController) UpdateStack(ctx http.Context) http.Response {
+	domainName := strings.ToLower(strings.TrimSpace(ctx.Request().Input("domain")))
+	if domainName == "" {
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": "domain is required"})
+	}
+	backend := ctx.Request().Input("backend")
+	if backend == "" {
+		backend = ctx.Request().Input("server_engine")
+	}
+	parsed, legacyVarnish := domain.ParseBackend(backend)
+	varnish := domain.ParseVarnish(ctx.Request().Input("varnish"))
+	if varnish == "" {
+		varnish = legacyVarnish
+	}
+	req := domain.SiteStack{
+		Backend:    parsed,
+		PHPHandler: domain.ParsePHPHandler(ctx.Request().Input("php_handler")),
+		Varnish:    varnish,
+		SiteType:   ctx.Request().Input("site_type"),
+		ProxyPort:  ctx.Request().InputInt("proxy_port", 0),
+		ProxyHost:  strings.TrimSpace(ctx.Request().Input("proxy_host")),
+	}
+	res, err := services.GetWebStack().SetSiteStack(domainName, req)
 	if err != nil {
-		engine = domain.EngineNginx
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": err.Error()})
 	}
-
-	nginxSvc := services.NewNginxService()
-	cfg := services.WebsiteConfig{
-		Domain:       website.Domain,
-		ServerEngine: string(engine),
-		TemplateID:   website.TemplateID,
-		PHPVersion:   website.PHPVersion,
-		SiteType:     website.SiteType,
-		ProxyPort:    website.ProxyPort,
-		RootPath:     website.RootPath,
+	msg := fmt.Sprintf("%s now runs on %s", domainName, describeStack(res.Effective))
+	if len(res.Effective.Notes) > 0 {
+		msg += " (" + strings.Join(res.Effective.Notes, "; ") + ")"
 	}
+	return ctx.Response().Success().Json(http.Json{"status": "success", "message": msg, "data": res})
+}
 
-	if err := nginxSvc.CreateWebsite(cfg); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": "Failed to switch web engine: " + err.Error(),
-		})
+// Services returns one domain's service subdomains (webmail. mail. cpanel. ftp.).
+func (r *WebsitesController) Services(ctx http.Context) http.Response {
+	domainName := strings.ToLower(strings.TrimSpace(ctx.Request().Query("domain")))
+	st, err := services.GetWebStack().SiteServices(domainName)
+	if err != nil {
+		return ctx.Response().Status(404).Json(http.Json{"status": "error", "message": err.Error()})
 	}
+	return ctx.Response().Success().Json(http.Json{"status": "success", "data": st})
+}
 
-	website.ServerEngine = string(engine)
-	_ = facades.Orm().Query().Save(&website)
+// UpdateServices turns a domain's service subdomains on or off. use_default=true goes back
+// to the default for the domain (all four for account domains, webmail and mail for root sites).
+func (r *WebsitesController) UpdateServices(ctx http.Context) http.Response {
+	domainName := strings.ToLower(strings.TrimSpace(ctx.Request().Input("domain")))
+	if domainName == "" {
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": "domain is required"})
+	}
+	st, err := services.GetWebStack().SetSiteServices(domainName, ctx.Request().InputArray("services"), ctx.Request().InputBool("use_default"))
+	if err != nil {
+		return ctx.Response().Status(422).Json(http.Json{"status": "error", "message": err.Error()})
+	}
+	names := make([]string, 0, len(st.Enabled))
+	for _, s := range st.Enabled {
+		names = append(names, st.Hosts[string(s)])
+	}
+	msg := fmt.Sprintf("%s: no service subdomains", domainName)
+	if len(names) > 0 {
+		msg = fmt.Sprintf("%s now serves %s", domainName, strings.Join(names, ", "))
+	}
+	return ctx.Response().Success().Json(http.Json{"status": "success", "message": msg, "data": st})
+}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("Engine for '%s' switched to %s successfully", domainName, strings.ToUpper(string(engine))),
-		"data":    website,
-	})
+// SwitchEngine is the legacy name of UpdateStack.
+func (r *WebsitesController) SwitchEngine(ctx http.Context) http.Response {
+	return r.UpdateStack(ctx)
 }
 
 // Destroy deletes a website via the Provisioning Orchestrator

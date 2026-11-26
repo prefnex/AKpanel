@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ScrollArea } from '@/components/ui/scroll-area';
 import SegmentedControl from '@/components/app/SegmentedControl';
 import { useInstalledPHPVersions } from '@/hooks/usePHPVersions';
+import { BACKEND_LABEL, HANDLER_LABEL, useWebServerModes } from '@/hooks/useWebServerModes';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -22,18 +23,14 @@ const domainRe = /^(?=.{1,253}$)(?!-)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/;
 
 const schema = z.object({
   domain: z.string().trim().toLowerCase().regex(domainRe, 'Enter a valid domain, e.g. example.com'),
-  server_engine: z.enum(['nginx', 'apache', 'hybrid']),
+  backend: z.enum(['default', 'apache', 'nginx']),
+  php_handler: z.enum(['fpm', 'cgi']),
   template_id: z.string().min(1),
   site_type: z.string(),
   php_version: z.string(),
   proxy_port: z.coerce.number().int().min(1024, 'Use a port between 1024 and 65535').max(65535),
 });
 
-const ENGINES = [
-  { value: 'nginx', label: 'Nginx' },
-  { value: 'apache', label: 'Apache' },
-  { value: 'hybrid', label: 'Nginx + Apache' },
-];
 
 export default function CreateWebsiteSheet({ open, onOpenChange, presetTemplate }) {
   const qc = useQueryClient();
@@ -43,18 +40,25 @@ export default function CreateWebsiteSheet({ open, onOpenChange, presetTemplate 
     staleTime: Infinity,
   });
   const php = useInstalledPHPVersions();
+  const modes = useWebServerModes();
+  const mode = modes.data?.modes?.find((m) => m.id === modes.data?.active);
+  const allowed = mode?.backends || [];
+  const modeDefault = allowed.includes('apache') ? 'apache' : 'nginx';
 
   const form = useForm({
     resolver: zodResolver(schema),
-    defaultValues: { domain: '', server_engine: 'nginx', template_id: 'laravel', site_type: 'php', php_version: '8.2', proxy_port: 3000 },
+    defaultValues: { domain: '', backend: 'default', php_handler: 'fpm', template_id: 'laravel', site_type: 'php', php_version: '', proxy_port: 3000 },
   });
   const siteType = form.watch('site_type');
   const templateId = form.watch('template_id');
+  const backend = form.watch('backend');
+  const effectiveBackend = backend === 'default' ? modeDefault : backend;
 
   const pickTemplate = (tpl) => {
     form.setValue('template_id', tpl.id);
     form.setValue('site_type', tpl.default_type);
-    if (tpl.php_version && tpl.php_version !== 'none') form.setValue('php_version', tpl.php_version);
+    // A template's recommended PHP wins over the server default when it is installed.
+    if (tpl.php_version && (php.data || []).includes(tpl.php_version)) form.setValue('php_version', tpl.php_version, { shouldDirty: true });
   };
 
   useEffect(() => {
@@ -65,15 +69,26 @@ export default function CreateWebsiteSheet({ open, onOpenChange, presetTemplate 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, presetTemplate, templates.data]);
 
+  // Default to the server default for whoever will run the site's PHP. Runs after the reset
+  // above on every open (effects run in order), so a reopened sheet gets a version again.
   useEffect(() => {
+    if (!open) return;
     const versions = php.data || [];
-    if (versions.length && !versions.includes(form.getValues('php_version'))) {
+    const preferred = effectiveBackend === 'apache' ? modes.data?.default_apache_php : modes.data?.default_nginx_php;
+    const cur = form.getValues('php_version');
+    if (!form.getFieldState('php_version').isDirty && preferred && versions.includes(preferred)) {
+      form.setValue('php_version', preferred);
+    } else if (versions.length && !versions.includes(cur)) {
       form.setValue('php_version', versions[0]);
     }
-  }, [php.data, form]);
+  }, [open, php.data, modes.data, effectiveBackend, form]);
 
   const create = useMutation({
-    mutationFn: (v) => api.post('/api/websites', v),
+    mutationFn: (v) => api.post('/api/websites', {
+      ...v,
+      backend: v.backend === 'default' ? '' : v.backend,
+      php_handler: effectiveBackend === 'apache' ? v.php_handler : 'fpm',
+    }),
     onSuccess: (res, v) => {
       toast.success(res?.message || `${v.domain} is live`);
       qc.invalidateQueries({ queryKey: ['websites'] });
@@ -86,7 +101,7 @@ export default function CreateWebsiteSheet({ open, onOpenChange, presetTemplate 
       <SheetContent className="flex w-full flex-col gap-0 p-0 sm:max-w-lg">
         <SheetHeader className="border-b p-6">
           <SheetTitle>New website</SheetTitle>
-          <SheetDescription>Creates the vhost for the active web server profile, the document root and a DNS zone.</SheetDescription>
+          <SheetDescription>Creates the vhost for the active web server mode{mode ? ` (${mode.title})` : ''}, the document root and a DNS zone.</SheetDescription>
         </SheetHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit((v) => create.mutate(v))} className="flex min-h-0 flex-1 flex-col">
@@ -100,13 +115,48 @@ export default function CreateWebsiteSheet({ open, onOpenChange, presetTemplate 
                   </FormItem>
                 )} />
 
-                <FormField control={form.control} name="server_engine" render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Web server</FormLabel>
-                    <div><SegmentedControl size="md" value={field.value} onChange={field.onChange} options={ENGINES} /></div>
-                    <FormDescription>Nginx + Apache serves static files from Nginx and passes PHP/.htaccess to Apache.</FormDescription>
-                  </FormItem>
-                )} />
+                {siteType === 'php' && (
+                  <FormField control={form.control} name="backend" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Runs PHP</FormLabel>
+                      <div>
+                        <SegmentedControl
+                          size="md"
+                          value={field.value}
+                          onChange={field.onChange}
+                          options={[
+                            { value: 'default', label: `Mode default (${BACKEND_LABEL[modeDefault]})` },
+                            ...allowed.map((b) => ({ value: b, label: BACKEND_LABEL[b] })),
+                          ]}
+                        />
+                      </div>
+                      <FormDescription>
+                        {effectiveBackend === 'apache'
+                          ? 'Apache runs PHP with full .htaccess support.'
+                          : 'Nginx passes PHP straight to PHP-FPM (no .htaccess).'}
+                      </FormDescription>
+                    </FormItem>
+                  )} />
+                )}
+
+                {siteType === 'php' && effectiveBackend === 'apache' && (
+                  <FormField control={form.control} name="php_handler" render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Apache PHP handler</FormLabel>
+                      <div>
+                        <SegmentedControl
+                          size="md"
+                          value={field.value}
+                          onChange={field.onChange}
+                          options={[{ value: 'fpm', label: HANDLER_LABEL.fpm }, { value: 'cgi', label: HANDLER_LABEL.cgi }]}
+                        />
+                      </div>
+                      {field.value === 'cgi' && !modes.data?.cgi_available && (
+                        <FormDescription className="text-warning">php-cgi is not installed; the site starts on PHP-FPM.</FormDescription>
+                      )}
+                    </FormItem>
+                  )} />
+                )}
 
                 <div className="space-y-2">
                   <Label>Application template</Label>

@@ -129,11 +129,12 @@ Task لا تُعتبر مكتملة إلا إذا:
 ## تثبيت / إصدار / ريليز (إلزامي)
 
 - الاختبار يكون على **VPS نظيف يُعاد بناؤه كل مرة** — لا تفترض باتش على سيرفر قديم.
-- الإصدار الحالي ثابت: **`v0.1.0`**. بعد أي فيكس: ادفع `main` ثم حرّك **نفس التاج** `v0.1.0` (force-push) وانتظر ريليز GitHub Actions.
+- الإصدار الحالي: **`v0.2.0`**. كل ريليز جديد = نسخة جديدة (SemVer): حدّث `CHANGELOG.md` + `DEFAULT_VERSION` في `install.sh` + الإصدار في `README.md`، ادفع `main`، ثم ادفع تاج جديد `vX.Y.Z`. GitHub Actions يبني الريليز وملاحظاته من قسم النسخة في `CHANGELOG.md`.
+- لا `Co-Authored-By` ولا أي ذكر لـ AI في رسائل الكوميت أو الـ PR.
 - أمر التثبيت على VPS جديد (root):
 
 ```bash
-curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.1.0/install.sh | bash
+curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.2.0/install.sh | bash
 ```
 
 - لا تشغّل `nginx` / `systemctl` / البانل على جهاز التطوير.

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"goravel/app/domain"
+	"goravel/app/paths"
+	"goravel/app/services"
 )
 
 type FailingStep struct {
@@ -51,7 +53,7 @@ func TestValidatePlanStep(t *testing.T) {
 	// 2. Normalization check
 	validPlan := &ProvisionPlan{
 		Domain:        "  MySite.COM  ",
-		Engine:        domain.WebEngine("nginx+apache"),
+		Backend:       domain.Backend("nginx+apache"),
 		PHPVersion:    "",
 		OwnerUsername: "",
 	}
@@ -65,10 +67,11 @@ func TestValidatePlanStep(t *testing.T) {
 	if validPlan.OwnerUsername != "root" {
 		t.Errorf("expected default owner 'root', got '%s'", validPlan.OwnerUsername)
 	}
-	if validPlan.Engine != domain.EngineHybrid {
-		t.Errorf("expected normalized engine 'hybrid', got '%s'", validPlan.Engine)
+	if validPlan.Backend != domain.BackendApache {
+		t.Errorf("expected legacy 'nginx+apache' to mean backend apache, got '%s'", validPlan.Backend)
 	}
-	if validPlan.PHPVersion != "8.2" {
-		t.Errorf("expected default PHP '8.2', got '%s'", validPlan.PHPVersion)
+	eff := domain.ResolveStack(services.CurrentMode(), domain.SiteStack{SiteType: "php", Backend: validPlan.Backend}, false)
+	if want := paths.DefaultPHPVersionFor(string(eff.Backend)); validPlan.PHPVersion != want {
+		t.Errorf("expected server default PHP %q, got %q", want, validPlan.PHPVersion)
 	}
 }

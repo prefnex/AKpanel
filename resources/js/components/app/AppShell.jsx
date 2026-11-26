@@ -87,8 +87,8 @@ function Crumbs({ nav, pathname, rootLabel }) {
   }, [nav, pathname]);
 
   return (
-    <Breadcrumb className="hidden md:block">
-      <BreadcrumbList>
+    <Breadcrumb className="hidden min-w-0 overflow-hidden md:block">
+      <BreadcrumbList className="flex-nowrap whitespace-nowrap">
         <BreadcrumbItem>
           {crumbs.length ? (
             <BreadcrumbLink asChild><Link to="/">{rootLabel}</Link></BreadcrumbLink>
@@ -99,9 +99,9 @@ function Crumbs({ nav, pathname, rootLabel }) {
         {crumbs.map((c, i) => (
           <Fragment key={c.url}>
             <BreadcrumbSeparator />
-            <BreadcrumbItem>
+            <BreadcrumbItem className={i === crumbs.length - 1 ? 'min-w-0' : undefined}>
               {i === crumbs.length - 1 ? (
-                <BreadcrumbPage>{c.title}</BreadcrumbPage>
+                <BreadcrumbPage className="truncate">{c.title}</BreadcrumbPage>
               ) : (
                 <BreadcrumbLink asChild><Link to={c.url}>{c.title}</Link></BreadcrumbLink>
               )}
@@ -198,7 +198,7 @@ export default function AppShell({
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="mr-1 h-4" />
           <Crumbs nav={nav} pathname={pathname} rootLabel={brand.name} />
-          <div className="ml-auto flex items-center gap-1.5">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
             <div className="hidden sm:block"><CommandTrigger /></div>
             {headerActions}
             <ThemeToggle />

@@ -13,6 +13,16 @@ import { TooltipProvider } from './components/ui/tooltip';
 import '../css/app.css';
 import '../css/legacy-light.css';
 
+// After a deploy, a tab still running the previous build asks for chunk files that no longer
+// exist. Reload once to pick up the new build instead of showing a render error.
+window.addEventListener('vite:preloadError', (event) => {
+  const last = Number(sessionStorage.getItem('akpanel:chunk-reload') || 0);
+  if (Date.now() - last < 10_000) return; // already reloaded just now: let the error surface
+  event.preventDefault();
+  sessionStorage.setItem('akpanel:chunk-reload', String(Date.now()));
+  window.location.reload();
+});
+
 const App = lazy(() => import('./App'));
 const ClientApp = lazy(() => import('./client/ClientApp'));
 

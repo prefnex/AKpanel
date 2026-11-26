@@ -150,6 +150,10 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 			return exec.CommandContext(ctx, a.acmeBin, args...).CombinedOutput()
 		}
 		wwwExtra := strings.Count(domain, ".") == 1 && !strings.HasPrefix(domain, "www.")
+		// The domain's service subdomains (webmail. mail. cpanel. ftp.) ride on its
+		// certificate. One that does not point here fails the whole order, so the retry
+		// drops them and secures the domain alone.
+		serviceHosts := SiteServiceHosts(domain)
 		for attempt := 1; attempt <= 2 && !issueSuccess; attempt++ {
 			if attempt > 1 {
 				time.Sleep(time.Duration(attempt*8) * time.Second)
@@ -157,6 +161,11 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 			issueArgs := []string{"--issue", "-d", domain}
 			if wwwExtra {
 				issueArgs = append(issueArgs, "-d", "www."+domain)
+			}
+			if attempt == 1 {
+				for _, h := range serviceHosts {
+					issueArgs = append(issueArgs, "-d", h)
+				}
 			}
 			issueArgs = append(issueArgs, "-w", webroot, "--server", "letsencrypt", "--force")
 			out, err := runAcme(80*time.Second, issueArgs...)
@@ -166,6 +175,11 @@ func (a *ACMEService) IssueSSL(domain, webroot, email string) (*SSLStatus, error
 				zeroArgs := []string{"--issue", "-d", domain}
 				if wwwExtra {
 					zeroArgs = append(zeroArgs, "-d", "www."+domain)
+				}
+				if attempt == 1 {
+					for _, h := range serviceHosts {
+						zeroArgs = append(zeroArgs, "-d", h)
+					}
 				}
 				zeroArgs = append(zeroArgs, "-w", webroot, "--server", "zerossl", "--force")
 				outZero, errZero := runAcme(40*time.Second, zeroArgs...)
@@ -251,6 +265,7 @@ type CertFileInfo struct {
 	SelfSigned bool
 	DaysLeft   int
 	ExpiryDate string
+	DNSNames   []string
 }
 
 func InspectCertificateFile(certPath string) (CertFileInfo, bool) {
@@ -275,6 +290,10 @@ func InspectCertificateFile(certPath string) (CertFileInfo, bool) {
 	}
 
 	info.SelfSigned = cert.CheckSignatureFrom(cert) == nil
+	info.DNSNames = cert.DNSNames
+	if len(info.DNSNames) == 0 && cert.Subject.CommonName != "" {
+		info.DNSNames = []string{cert.Subject.CommonName}
+	}
 	org := ""
 	if len(cert.Issuer.Organization) > 0 {
 		org = cert.Issuer.Organization[0]
@@ -304,6 +323,33 @@ type CertificateDetail struct {
 	KeyPath      string   `json:"key_path"`
 	IsSelfSigned bool     `json:"is_self_signed"`
 	AutoRenew    bool     `json:"auto_renew"`
+	// Owner of the site the certificate belongs to ("" when it is not a site's).
+	Owner string `json:"owner"`
+	// Services: the domain's enabled service subdomains and whether this certificate covers them.
+	Services []CertServiceCoverage `json:"services"`
+}
+
+// CertServiceCoverage is one service subdomain on a certificate.
+type CertServiceCoverage struct {
+	Service string `json:"service"`
+	Host    string `json:"host"`
+	Covered bool   `json:"covered"`
+}
+
+// certCovers reports whether a certificate's names include host (wildcards one level deep).
+func certCovers(names []string, host string) bool {
+	for _, n := range names {
+		n = strings.ToLower(n)
+		if n == host {
+			return true
+		}
+		if strings.HasPrefix(n, "*.") {
+			if i := strings.IndexByte(host, '.'); i > 0 && host[i+1:] == n[2:] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // GetAllCertificates scans /etc/akpanel/ssl and reads certificate details
@@ -337,6 +383,9 @@ func (a *ACMEService) GetAllCertificates() []CertificateDetail {
 		sans := []string{domain}
 
 		if info, ok := InspectCertificateFile(certPath); ok {
+			if len(info.DNSNames) > 0 {
+				sans = info.DNSNames
+			}
 			issuer = info.Issuer
 			expiryStr = info.ExpiryDate
 			daysLeft = info.DaysLeft
@@ -361,7 +410,19 @@ func (a *ACMEService) GetAllCertificates() []CertificateDetail {
 			KeyPath:      keyPath,
 			IsSelfSigned: isSelfSigned,
 			AutoRenew:    true,
+			Services:     []CertServiceCoverage{},
 		})
+		d := &list[len(list)-1]
+		if row := lookupWebsiteRow(domain); row != nil {
+			d.Owner = row.OwnerUsername
+			if d.Owner == "" {
+				d.Owner = "root"
+			}
+			for _, svc := range EnabledSiteServicesFor(row) {
+				host := svc.Host(domain)
+				d.Services = append(d.Services, CertServiceCoverage{Service: string(svc), Host: host, Covered: !isSelfSigned && certCovers(sans, host)})
+			}
+		}
 	}
 
 	return list
@@ -470,10 +531,12 @@ func (a *ACMEService) IssueWildcard(domain, webroot string) (*SSLStatus, error) 
 		if err != nil {
 			// HTTP-01 on the shared challenge root (every vhost aliases this).
 			_ = os.MkdirAll("/var/www/html/.well-known/acme-challenge", 0777)
-			cmdHTTP := exec.Command(a.acmeBin, "--issue",
-				"-d", domain, "-d", "www."+domain,
-				"-d", "webmail."+domain, "-d", "cpanel."+domain, "-d", "mail."+domain,
-				"-w", "/var/www/html", "--server", "letsencrypt", "--force")
+			httpArgs := []string{"--issue", "-d", domain, "-d", "www." + domain}
+			for _, h := range SiteServiceHosts(domain) {
+				httpArgs = append(httpArgs, "-d", h)
+			}
+			httpArgs = append(httpArgs, "-w", "/var/www/html", "--server", "letsencrypt", "--force")
+			cmdHTTP := exec.Command(a.acmeBin, httpArgs...)
 			out2, err2 := cmdHTTP.CombinedOutput()
 			acmeOutput += "\n[HTTP-01 fallback]\n" + string(out2)
 			if err2 == nil {

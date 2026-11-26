@@ -20,12 +20,15 @@ export default defineConfig({
       },
       output: {
         entryFileNames: 'app.js',
-        chunkFileNames: 'chunks/[name].js',
+        // Chunks carry a content hash: an open tab from an older build must never load a chunk
+        // from a newer one (export names differ between builds). app.js/app.css stay fixed
+        // because dashboard.tmpl references them by name.
+        chunkFileNames: 'chunks/[name]-[hash].js',
         assetFileNames: (assetInfo) => {
           if (assetInfo.name && assetInfo.name.endsWith('.css')) {
             return 'app.css';
           }
-          return 'assets/[name][extname]';
+          return 'assets/[name]-[hash][extname]';
         },
       },
     },

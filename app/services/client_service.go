@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	webdomain "goravel/app/domain"
 	"goravel/app/paths"
 )
 
@@ -194,7 +193,7 @@ func (c *ClientService) GetDashboardStats(username string) (*ClientDashboardStat
 			BandwidthLimitMB: 1000000,
 			MaxDomains:       100,
 			MaxDatabases:     100,
-			PHPVersion:       "8.2",
+			PHPVersion:       paths.DefaultPHPVersion(),
 			RAMLimitMB:       2048,
 		}
 	}
@@ -289,7 +288,7 @@ func (c *ClientService) GetDashboardStats(username string) (*ClientDashboardStat
 		MaxEmails:        10,
 		FTPUsed:          ftpCount,
 		MaxFTP:           5,
-		PHPVersion:       "8.2",
+		PHPVersion:       paths.DetectInstalledPHPVersion(user.PHPVersion),
 		RAMLimitMB:       2048,
 		AutoSSL:          true,
 	}, nil
@@ -305,12 +304,17 @@ func (c *ClientService) GetWebsites(username string) ([]ClientWebsite, error) {
 
 	// 1. Check user main domain from UserAccount
 	user := c.findUser(username)
+	// Every site of an account runs on the account's PHP pool, so they share its version.
+	siteVer := paths.DefaultPHPVersion()
+	if user != nil {
+		siteVer = paths.DetectInstalledPHPVersion(user.PHPVersion)
+	}
 	if user != nil && user.MainDomain != "" {
 		docRoot := paths.UserDomainRoot(username, user.MainDomain)
 		mySites = append(mySites, ClientWebsite{
 			Domain:       user.MainDomain,
 			DocumentRoot: docRoot,
-			PHPVersion:   "8.2",
+			PHPVersion:   siteVer,
 			SSLEnabled:   true,
 			ForceHTTPS:   false,
 			CreatedAt:    user.SetupTime,
@@ -337,7 +341,7 @@ func (c *ClientService) GetWebsites(username string) ([]ClientWebsite, error) {
 					mySites = append(mySites, ClientWebsite{
 						Domain:       e.Name(),
 						DocumentRoot: pubHtml,
-						PHPVersion:   "8.2",
+						PHPVersion:   siteVer,
 						SSLEnabled:   true,
 						ForceHTTPS:   false,
 						CreatedAt:    time.Now().Format("2006-01-02 15:04:05"),
@@ -364,7 +368,7 @@ func (c *ClientService) GetWebsites(username string) ([]ClientWebsite, error) {
 						mySites = append(mySites, ClientWebsite{
 							Domain:       e.Name(),
 							DocumentRoot: pubHtml,
-							PHPVersion:   "8.2",
+							PHPVersion:   siteVer,
 							SSLEnabled:   true,
 							ForceHTTPS:   false,
 							CreatedAt:    time.Now().Format("2006-01-02 15:04:05"),
@@ -391,7 +395,7 @@ func (c *ClientService) GetWebsites(username string) ([]ClientWebsite, error) {
 					mySites = append(mySites, ClientWebsite{
 						Domain:       e.Name(),
 						DocumentRoot: filepath.Join(sitesDir, e.Name(), "public_html"),
-						PHPVersion:   "8.2",
+						PHPVersion:   siteVer,
 						SSLEnabled:   true,
 						ForceHTTPS:   false,
 						CreatedAt:    time.Now().Format("2006-01-02 15:04:05"),
@@ -428,26 +432,41 @@ func (c *ClientService) CreateWebsite(username, domain, phpVersion string) error
 	_ = exec.Command("chown", "-R", fmt.Sprintf("%s:%s", username, username), filepath.Dir(siteRoot)).Run()
 	_ = exec.Command("chmod", "-R", "755", siteRoot).Run()
 
-	if phpVersion == "" {
-		phpVersion = "8.2"
+	// A client site runs on the account's own pool and PHP version (the phpVersion argument
+	// is ignored: one version per account, changed through ApplyAccountPHPVersion).
+	_ = phpVersion
+	user := c.findUser(username)
+	accountVer := paths.DefaultPHPVersion()
+	packageID := "default"
+	if user != nil {
+		accountVer = paths.DetectInstalledPHPVersion(user.PHPVersion)
+		if user.PackageID != "" {
+			packageID = user.PackageID
+		}
 	}
 
-	// Use the user's package engine, not hardcoded "nginx" (fixes AP-07)
 	engineStr := "nginx" // safe default
-	if pkg, err := NewPackagesService().GetPackage("default"); err == nil {
-		engineStr = webdomain.EngineFromPackage(pkg.DefaultWebEngine).String()
+	if pkg, err := NewPackagesService().GetPackage(packageID); err == nil {
+		engineStr = pkg.DefaultWebEngine
 	}
 
 	err := c.nginxService.CreateWebsite(WebsiteConfig{
-		Domain:       domain,
-		RootPath:     siteRoot,
-		ServerEngine: engineStr,
-		PHPVersion:   phpVersion,
-		SiteType:     "php",
+		Domain:           domain,
+		RootPath:         siteRoot,
+		ServerEngine:     engineStr,
+		PHPVersion:       accountVer,
+		OwnerUsername:    username,
+		PHPSocket:        "unix:" + paths.PHPSocketForUser(accountVer, username),
+		SiteType:         "php",
+		SkipOwnershipFix: true,
 	})
 	if err != nil {
 		return err
 	}
+	UpsertWebsiteRecord(WebsiteConfig{
+		Domain: domain, RootPath: siteRoot, OwnerUsername: username, ServerEngine: engineStr,
+		PHPVersion: accountVer, SiteType: "php", TemplateID: "custom",
+	})
 
 	// Auto create DNS zone for domain if not exists
 	serverIP := "127.0.0.1"
@@ -1337,11 +1356,9 @@ func (c *ClientService) GetPHPConfig(username string) (map[string]any, error) {
 	user := c.findUser(username)
 	ramCap := 256
 	children := 5
-	version := "8.2"
+	version := paths.DefaultPHPVersion()
 	if user != nil {
-		if user.PHPVersion != "" {
-			version = user.PHPVersion
-		}
+		version = paths.DetectInstalledPHPVersion(user.PHPVersion)
 		if user.RAMLimitMB > 0 {
 			ramCap = user.RAMLimitMB
 		}
@@ -1384,7 +1401,8 @@ func (c *ClientService) GetPHPConfig(username string) (map[string]any, error) {
 
 	return map[string]any{
 		"active_version":      version,
-		"available_versions":  []string{"8.1", "8.2", "8.3"},
+		"available_versions":  paths.InstalledPHPVersions(),
+		"server_default":      paths.DefaultPHPVersion(),
 		"memory_limit":        memoryLimit,
 		"memory_limit_mb":     memMB,
 		"ram_limit_mb":        ramCap,
@@ -1399,6 +1417,13 @@ func (c *ClientService) GetPHPConfig(username string) (map[string]any, error) {
 
 func (c *ClientService) SavePHPConfig(username, version string, memoryLimit, uploadMax, maxExec int) error {
 	user := c.findUser(username)
+	if version = strings.TrimSpace(version); version != "" && user != nil &&
+		version != paths.DetectInstalledPHPVersion(user.PHPVersion) {
+		if _, err := ApplyAccountPHPVersion(username, version); err != nil {
+			return err
+		}
+		user = c.findUser(username)
+	}
 	ramCap := 256
 	if user != nil && user.RAMLimitMB > 0 {
 		ramCap = user.RAMLimitMB

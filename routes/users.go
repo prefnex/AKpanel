@@ -17,6 +17,7 @@ func registerUsersRoutes(usersController *controllers.UsersController) {
 	facades.Route().Post("/api/users/unsuspend", usersController.Unsuspend)
 	facades.Route().Post("/api/users/reset-password", usersController.ResetPassword)
 	facades.Route().Post("/api/users/fix-permissions", usersController.FixPermissions)
+	facades.Route().Post("/api/users/repair", usersController.Repair)
 	facades.Route().Post("/api/users/change-package", usersController.ChangePackage)
 	facades.Route().Post("/api/users/delete", usersController.Destroy)
 }

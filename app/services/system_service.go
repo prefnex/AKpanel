@@ -471,9 +471,14 @@ func binaryInstalled(name string) bool {
 }
 
 func (s *SystemService) readInstalledStack(stats *SystemStats) []ServiceStatusItem {
-	profile := currentServerProfile()
-	needApache := domain.ProfileNeedsApache(profile)
-	needVarnish := domain.ProfileNeedsVarnish(profile)
+	mode := CurrentMode()
+	needNginx := mode.HasNginx()
+	needApache := mode.HasApache()
+	needVarnish := mode.HasVarnish()
+	apachePort, apacheDesc := "127.0.0.1:8081", "Backend behind nginx (.htaccess)"
+	if mode == domain.ModeApache {
+		apachePort, apacheDesc = "80 / 443", "Public HTTP/HTTPS (Apache only mode)"
+	}
 
 	type def struct {
 		Key, Name, Desc, Port, Category string
@@ -488,9 +493,9 @@ func (s *SystemService) readInstalledStack(stats *SystemStats) []ServiceStatusIt
 	pdnsInstalled := systemdUnitInstalled("pdns") || binaryInstalled("pdns_server")
 
 	defs := []def{
-		{"nginx", "Nginx", "Public HTTP/HTTPS for this stack", "80 / 443", "web", []string{"nginx"}, systemdUnitInstalled("nginx"), true, nil},
-		{"apache2", "Apache HTTP Server", "Internal .htaccess backend (this stack only)", "127.0.0.1:8081", "web", []string{"apache2"}, systemdUnitInstalled("apache2"), needApache, nil},
-		{"varnish", "Varnish HTTP Cache", "In-memory cache (this stack only)", "6081", "web", []string{"varnish"}, systemdUnitInstalled("varnish"), needVarnish, nil},
+		{"nginx", "Nginx", "Public HTTP/HTTPS for this stack", "80 / 443", "web", []string{"nginx"}, systemdUnitInstalled("nginx"), needNginx, nil},
+		{"apache2", "Apache HTTP Server", apacheDesc, apachePort, "web", []string{"apache2"}, systemdUnitInstalled("apache2"), needApache, nil},
+		{"varnish", "Varnish HTTP Cache", "Cache between nginx and the backends", "127.0.0.1:6081", "web", []string{"varnish"}, systemdUnitInstalled("varnish"), needVarnish, nil},
 		{"mariadb", "MariaDB / MySQL", "Relational database", "3306", "database", resolveServiceUnits("mariadb"), systemdUnitInstalled("mariadb") || systemdUnitInstalled("mysql"), true, nil},
 		{"redis-server", "Redis", "In-memory cache", "6379", "database", resolveServiceUnits("redis"), systemdUnitInstalled("redis-server") || systemdUnitInstalled("redis"), true, nil},
 		{"postgresql", "PostgreSQL", "Relational database", "5432", "database", resolveServiceUnits("postgresql"), systemdUnitInstalled("postgresql"), true, nil},

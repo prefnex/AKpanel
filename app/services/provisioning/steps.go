@@ -34,15 +34,23 @@ func (s *ValidatePlanStep) Execute(ctx context.Context, plan *ProvisionPlan) err
 		plan.PackageID = "default"
 	}
 
-	// Normalize engine
-	engine, err := domain.NormalizeEngine(string(plan.Engine))
-	if err != nil {
-		engine = domain.EngineNginx
+	// Normalize the stack request (legacy engine strings accepted).
+	backend, varnish := domain.ParseBackend(string(plan.Backend))
+	plan.Backend = backend
+	if plan.Varnish == "" {
+		plan.Varnish = varnish
+	} else {
+		plan.Varnish = domain.ParseVarnish(plan.Varnish)
 	}
-	plan.Engine = engine
+	plan.PHPHandler = string(domain.ParsePHPHandler(plan.PHPHandler))
 
-	if plan.PHPVersion == "" {
-		plan.PHPVersion = "8.2"
+	// Store the version the site will actually run on: the requested one when installed,
+	// else the server default for the backend that will run it in the current mode.
+	if paths.PHPFPMInstalled(plan.PHPVersion) {
+		// keep
+	} else {
+		eff := domain.ResolveStack(services.CurrentMode(), domain.SiteStack{SiteType: plan.SiteType, Backend: plan.Backend}, false)
+		plan.PHPVersion = paths.DefaultPHPVersionFor(string(eff.Backend))
 	}
 	if plan.TemplateID == "" {
 		if plan.IsClientSite {
@@ -139,7 +147,9 @@ func (s *CreateWebServersStep) Name() string { return "CreateWebServers" }
 func (s *CreateWebServersStep) Execute(ctx context.Context, plan *ProvisionPlan) error {
 	cfg := services.WebsiteConfig{
 		Domain:       plan.Domain,
-		ServerEngine: string(plan.Engine),
+		Backend:      string(plan.Backend),
+		PHPHandler:   plan.PHPHandler,
+		Varnish:      plan.Varnish,
 		TemplateID:   plan.TemplateID,
 		PHPVersion:   plan.PHPVersion,
 		SiteType:     plan.SiteType,
@@ -201,7 +211,10 @@ func (s *SaveDatabaseStep) Execute(ctx context.Context, plan *ProvisionPlan) err
 		OwnerUsername: plan.OwnerUsername,
 		PackageID:     plan.PackageID,
 		Status:        "active",
-		ServerEngine:  string(plan.Engine),
+		ServerEngine:  backendOrDefault(plan.Backend),
+		Backend:       string(plan.Backend),
+		PHPHandler:    plan.PHPHandler,
+		Varnish:       plan.Varnish,
 		TemplateID:    plan.TemplateID,
 		PHPVersion:    plan.PHPVersion,
 		SiteType:      plan.SiteType,
@@ -249,4 +262,11 @@ func (s *IssueSSLStep) Execute(ctx context.Context, plan *ProvisionPlan) error {
 
 func (s *IssueSSLStep) Rollback(ctx context.Context, plan *ProvisionPlan) error {
 	return nil
+}
+
+func backendOrDefault(b domain.Backend) string {
+	if b == "" {
+		return "default"
+	}
+	return string(b)
 }

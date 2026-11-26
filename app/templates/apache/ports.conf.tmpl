@@ -1,0 +1,14 @@
+# Managed by AKpanel (template apache/ports.conf.tmpl) — mode {{.Mode}}
+{{- if .ApachePublic}}
+Listen 80
+<IfModule ssl_module>
+    Listen 443
+</IfModule>
+# Loopback panel tools (Roundcube, phpMyAdmin) — nginx is not running in this mode.
+{{- range .ExtraListen}}
+Listen {{.}}
+{{- end}}
+{{- else}}
+# Apache is a loopback backend behind nginx.
+Listen {{.ApacheAddr}}
+{{- end}}

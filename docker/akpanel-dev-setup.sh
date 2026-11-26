@@ -55,8 +55,8 @@ ENV
 chmod 600 /etc/akpanel/akpanel.env
 
 # ── Web stack defaults (hybrid profile: Apache behind Nginx on 8081) ───────
-[ -f /etc/akpanel/server_profile.conf ] || echo "hybrid_nginx_apache" > /etc/akpanel/server_profile.conf
-sed -i 's/^Listen 80$/Listen 8081/' /etc/apache2/ports.conf 2>/dev/null || true
+[ -f /etc/akpanel/server_profile.conf ] || echo "nginx_apache" > /etc/akpanel/server_profile.conf
+sed -i 's/^Listen 80$/Listen 127.0.0.1:8081/' /etc/apache2/ports.conf 2>/dev/null || true
 sed -i 's/<VirtualHost \*:80>/<VirtualHost *:8081>/' /etc/apache2/sites-available/000-default.conf 2>/dev/null || true
 systemctl restart apache2 || true
 systemctl restart nginx || true
@@ -67,7 +67,7 @@ if [ ! -f /etc/akpanel/install.conf ]; then
   "admin_email": "admin@localhost",
   "panel": { "admin_port": 2087, "client_port": 2083 },
   "components": {
-    "webserver_profile": "hybrid_nginx_apache",
+    "webserver_profile": "nginx_apache",
     "php_versions": ["8.1", "8.2", "8.3"],
     "mariadb": true, "redis": true, "bind_dns": true, "mail_stack": true
   },

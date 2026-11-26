@@ -100,8 +100,9 @@ export default function WebServerManager({ showToast }) {
       const res = await fetch('/api/webservers/profiles');
       if (res.ok) {
         const json = await res.json();
-        setProfiles(json.data || []);
-        const active = json.data.find(p => p.is_active);
+        const list = json.data?.modes || [];
+        setProfiles(list);
+        const active = list.find(p => p.is_active);
         if (active) setActiveProfile(active.id);
       }
     } catch (e) {
@@ -185,8 +186,12 @@ export default function WebServerManager({ showToast }) {
       const res = await fetch('/api/webservers/templates');
       if (res.ok) {
         const json = await res.json();
-        setTemplates(json.data || {});
-        loadTemplateContent('nginx', 'php.conf.tmpl');
+        // The API returns [{engine, name}]; this page groups them by engine.
+        const grouped = Array.isArray(json.data)
+          ? json.data.reduce((acc, f) => ({ ...acc, [f.engine]: [...(acc[f.engine] || []), f.name] }), {})
+          : (json.data || {});
+        setTemplates(grouped);
+        loadTemplateContent('nginx', 'site.conf.tmpl');
       }
     } catch (e) {
       console.error(e);
@@ -526,7 +531,7 @@ export default function WebServerManager({ showToast }) {
 
           {/* 5 WebServer Profiles Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {profiles.map((p) => {
+            {(Array.isArray(profiles) ? profiles : []).map((p) => {
               const isCurrent = (p.id === activeProfile);
               return (
                 <div 
@@ -770,7 +775,7 @@ export default function WebServerManager({ showToast }) {
                   <span>{engine} Templates</span>
                 </span>
                 <div className="pl-2 space-y-0.5">
-                  {templates[engine]?.map((file) => {
+                  {(Array.isArray(templates[engine]) ? templates[engine] : []).map((file) => {
                     const isSelected = selectedTemplate.engine === engine && selectedTemplate.file === file;
                     return (
                       <button

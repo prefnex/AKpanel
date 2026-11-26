@@ -144,5 +144,7 @@ func (o *UserProvisioningOrchestrator) DeprovisionUser(ctx context.Context, user
 	}
 
 	services.NewPHPManagerService().RemoveUserFPMPools(username)
+	services.RemoveAccountCLIVersion(username)
+	services.RemovePHPCGIWrappers(username)
 	return uas.DeleteUser(username)
 }

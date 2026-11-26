@@ -1,0 +1,34 @@
+{{- /*
+  AKpanel PHP-FPM pool for one hosting account (/etc/php/<version>/fpm/pool.d/<user>.conf).
+  .PM is the Main Conf pool mode: ondemand | dynamic | static. .MaxChildren and .MemoryMB come
+  from the account's package.
+*/ -}}
+; Managed by AKpanel (template php-fpm/pool.conf.tmpl) — changes here are overwritten.
+[{{.Username}}]
+user = {{.Username}}
+group = {{.Username}}
+listen = {{.Socket}}
+listen.owner = www-data
+listen.group = www-data
+listen.mode = 0660
+
+pm = {{.PM}}
+pm.max_children = {{.MaxChildren}}
+{{- if eq .PM "ondemand"}}
+pm.process_idle_timeout = {{.IdleTimeout}}s
+{{- else if eq .PM "dynamic"}}
+pm.start_servers = {{.StartServers}}
+pm.min_spare_servers = {{.MinSpare}}
+pm.max_spare_servers = {{.MaxSpare}}
+{{- end}}
+{{- if gt .MaxRequests 0}}
+pm.max_requests = {{.MaxRequests}}
+{{- end}}
+{{- if gt .RequestTimeout 0}}
+request_terminate_timeout = {{.RequestTimeout}}s
+{{- end}}
+chdir = /
+
+php_admin_value[open_basedir] = {{.HomeDir}}/:/tmp/
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
+php_admin_value[memory_limit] = {{.MemoryMB}}M

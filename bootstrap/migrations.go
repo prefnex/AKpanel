@@ -14,5 +14,10 @@ func Migrations() []schema.Migration {
 		&migrations.M20260201000002CreateUsersTable{},
 		&migrations.M20260201000003CreateProvisionTasksTable{},
 		&migrations.M20260222000001CreateMailDeliveriesTable{},
+		&migrations.M20261125000001AddSiteStackToWebsitesTable{},
+		&migrations.M20261125000002AddServicesToWebsitesTable{},
+		&migrations.M20261125000003AddVhostTemplatesToWebsitesTable{},
+		&migrations.M20261125000004AddProxyHostToWebsitesTable{},
+		&migrations.M20261125000004AddProxyHostToWebsitesTable{},
 	}
 }

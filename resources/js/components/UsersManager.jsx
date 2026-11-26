@@ -328,6 +328,25 @@ export default function UsersManager({ showToast }) {
     }
   };
 
+  // Recreates the Linux user, home layout, PHP-FPM pool and vhosts from the panel record.
+  const handleRepair = async (user) => {
+    try {
+      showToast(`Repairing ${user.username}…`);
+      const res = await fetch('/api/users/repair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: user.username }),
+      });
+      const json = await res.json();
+      const log = (json.data?.log || []).join(' · ');
+      if (!res.ok) throw new Error(`${json.message}${log ? ` — ${log}` : ''}`);
+      showToast(`${json.message}${log ? `: ${log}` : ''}`);
+      fetchUsers();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
   const handleFixPermissions = async (user) => {
     try {
       const res = await fetch('/api/users/fix-permissions', {
@@ -673,6 +692,16 @@ export default function UsersManager({ showToast }) {
                       {/* Actions (Switch, Pass, Edit, Susp, Delete) */}
                       <td className="py-3 px-3 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {/* Broken on the system (e.g. Linux user missing): offer a repair */}
+                          {u.issues?.length > 0 && (
+                            <button
+                              onClick={() => handleRepair(u)}
+                              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition"
+                              title={`Needs repair: ${u.issues.join('; ')}`}
+                            >
+                              <AlertTriangle className="w-3 h-3" />Repair
+                            </button>
+                          )}
                           {/* Toggle Active Status */}
                           <button
                             onClick={() => handleToggleActive(u)}

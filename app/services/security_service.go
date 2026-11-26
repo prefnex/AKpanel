@@ -68,7 +68,8 @@ func (s *SecurityService) IssueSSL(domain, email string) (*SSLStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = NewNginxService().ReloadNginx()
+	// The vhost may still point at the fallback certificate: re-render it.
+	_ = GetWebStack().RefreshDomain(domain)
 	return res, nil
 }
 
@@ -83,7 +84,10 @@ func (s *SecurityService) GetAllCertificates() []CertificateDetail {
 }
 
 func (s *SecurityService) InstallCustomCertificate(domain, certContent, keyContent, caBundle string) error {
-	return s.acmeService.InstallCustomCertificate(domain, certContent, keyContent, caBundle)
+	if err := s.acmeService.InstallCustomCertificate(domain, certContent, keyContent, caBundle); err != nil {
+		return err
+	}
+	return GetWebStack().RefreshDomain(domain)
 }
 
 func (s *SecurityService) RenewAll() (string, error) {

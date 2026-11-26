@@ -17,20 +17,12 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Badge } from '../../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../components/ui/dialog';
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
-} from '../../components/ui/select';
 
 export default function ClientWebsitesPage({ showToast, onNavigateFiles }) {
   const [websites, setWebsites] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [newDomain, setNewDomain] = useState('');
-  const [newPHP, setNewPHP] = useState('8.2');
   const [search, setSearch] = useState('');
 
   const fetchWebsites = async () => {
@@ -60,7 +52,6 @@ export default function ClientWebsitesPage({ showToast, onNavigateFiles }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           domain: newDomain.trim(),
-          php_version: newPHP,
         }),
       });
       const json = await res.json();
@@ -182,7 +173,7 @@ export default function ClientWebsitesPage({ showToast, onNavigateFiles }) {
               <div className="mt-4 pt-3 border-t border-zinc-800/80 flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2">
                   <Badge className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-[10px] font-mono font-bold">
-                    PHP {site.php_version || '8.2'}
+                    PHP {site.php_version}
                   </Badge>
                   {site.ssl_enabled ? (
                     <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/30 text-[10px] flex items-center gap-1">
@@ -235,19 +226,9 @@ export default function ClientWebsitesPage({ showToast, onNavigateFiles }) {
               />
             </div>
 
-            <div className="space-y-1">
-              <label className="text-xs font-semibold text-zinc-300 block">PHP Runtime Version</label>
-              <Select value={newPHP} onValueChange={setNewPHP}>
-                <SelectTrigger className="bg-zinc-950 border-zinc-800 text-xs rounded-xl h-10 text-white font-mono">
-                  <SelectValue placeholder="PHP Version" />
-                </SelectTrigger>
-                <SelectContent className="bg-zinc-950 border-zinc-800 text-white rounded-xl shadow-2xl">
-                  <SelectItem value="8.3" className="text-xs font-mono">PHP 8.3 (Latest Fast-FPM)</SelectItem>
-                  <SelectItem value="8.2" className="text-xs font-mono font-bold text-emerald-400">PHP 8.2 (Recommended)</SelectItem>
-                  <SelectItem value="8.1" className="text-xs font-mono">PHP 8.1 (Legacy Compatibility)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <p className="text-[11px] text-zinc-500">
+              The site runs on your account's PHP version — change it from the PHP page.
+            </p>
 
             <DialogFooter className="pt-2">
               <Button type="button" variant="ghost" onClick={() => setIsAddOpen(false)} className="rounded-xl text-xs">

@@ -75,7 +75,7 @@ type PHPManagerService struct {
 
 func NewPHPManagerService() *PHPManagerService {
 	return &PHPManagerService{
-		supportedVersions: []string{"7.4", "8.0", "8.1", "8.2", "8.3", "8.4"},
+		supportedVersions: []string{"7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"},
 		tasks:             make(map[string]*LiveInstallTask),
 		allExtensions: []PHPExtensionInfo{
 			{Name: "opcache", Category: "Performance", Description: "Bytecode compilation cache for 3x PHP speed", PackageName: "opcache"},
@@ -442,6 +442,7 @@ func (p *PHPManagerService) InstallVersion(version string) error {
 	cmd := exec.Command("apt-get", "install", "-y",
 		fmt.Sprintf("php%s-cli", version),
 		fmt.Sprintf("php%s-fpm", version),
+		fmt.Sprintf("php%s-cgi", version), // Apache "cgi" handler (mod_fcgid + suexec)
 		fmt.Sprintf("php%s-common", version),
 		fmt.Sprintf("php%s-sqlite3", version),
 		fmt.Sprintf("php%s-curl", version),
@@ -527,23 +528,30 @@ func (p *PHPManagerService) RestartFPM(version string) error {
 	return cmd.Run()
 }
 
-// SetDefaultCLI switches the system `php` binary via update-alternatives.
+// SetDefaultCLI pins the system `php` binary (admin choice, recorded so boot repair keeps it).
 func (p *PHPManagerService) SetDefaultCLI(version string) error {
 	version = strings.TrimSpace(version)
-	cliPath := fmt.Sprintf("/usr/bin/php%s", version)
-	if _, err := os.Stat(cliPath); err != nil {
-		return fmt.Errorf("PHP %s CLI is not installed (%s)", version, cliPath)
+	if err := p.applyCLIAlternative(version); err != nil {
+		return err
 	}
+	_ = os.WriteFile(paths.PHPDefaultCLIConf, []byte(version+"\n"), 0644)
+	return nil
+}
 
-	// Register and select php alternative
+// applyCLIAlternative points /usr/bin/php (and companions) at php<version> via update-alternatives.
+func (p *PHPManagerService) applyCLIAlternative(version string) error {
+	if !paths.PHPCLIInstalled(version) {
+		return fmt.Errorf("PHP %s CLI is not installed (/usr/bin/php%s)", version, version)
+	}
+	cliPath := "/usr/bin/php" + version
+
 	_ = exec.Command("update-alternatives", "--install", "/usr/bin/php", "php", cliPath, "100").Run()
 	if out, err := exec.Command("update-alternatives", "--set", "php", cliPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("update-alternatives failed: %s — %v", strings.TrimSpace(string(out)), err)
 	}
 
 	// Companion binaries (best-effort)
-	companions := []string{"phpize", "php-config", "phar", "phar.phar"}
-	for _, name := range companions {
+	for _, name := range []string{"phpize", "php-config", "phar", "phar.phar"} {
 		path := fmt.Sprintf("/usr/bin/%s%s", name, version)
 		if _, err := os.Stat(path); err != nil {
 			continue
@@ -551,36 +559,53 @@ func (p *PHPManagerService) SetDefaultCLI(version string) error {
 		_ = exec.Command("update-alternatives", "--install", fmt.Sprintf("/usr/bin/%s", name), name, path, "100").Run()
 		_ = exec.Command("update-alternatives", "--set", name, path).Run()
 	}
-
-	_ = os.WriteFile("/etc/akpanel/php_default_cli.conf", []byte(version+"\n"), 0644)
 	return nil
 }
 
-// SetDefaultFPM records the PHP-FPM version used for new websites and fallback sockets.
+// SetDefaultFPM sets the server-wide PHP version (paths.DefaultPHPVersion) used for new sites,
+// new accounts and panel tools. The system CLI follows it unless an admin pinned another CLI.
 func (p *PHPManagerService) SetDefaultFPM(version string) error {
 	version = strings.TrimSpace(version)
-	sock := fmt.Sprintf("/run/php/php%s-fpm.sock", version)
-	cli := fmt.Sprintf("/usr/bin/php%s", version)
-	if _, err := os.Stat(cli); err != nil {
-		if _, err2 := os.Stat(sock); err2 != nil {
-			return fmt.Errorf("PHP %s FPM is not installed", version)
-		}
+	if !paths.PHPFPMInstalled(version) {
+		return fmt.Errorf("PHP %s FPM is not installed", version)
 	}
-	_ = os.MkdirAll("/etc/akpanel", 0755)
-	if err := os.WriteFile("/etc/akpanel/php_default_fpm.conf", []byte(version+"\n"), 0644); err != nil {
+	_ = os.MkdirAll(paths.EtcAKpanel, 0755)
+	if err := os.WriteFile(paths.PHPDefaultFPMConf, []byte(version+"\n"), 0644); err != nil {
 		return err
+	}
+	if _, err := os.Stat(paths.PHPDefaultCLIConf); os.IsNotExist(err) {
+		_ = p.applyCLIAlternative(version)
 	}
 	return nil
 }
 
 func (p *PHPManagerService) getDefaultFPMVersion() string {
-	if data, err := os.ReadFile("/etc/akpanel/php_default_fpm.conf"); err == nil {
-		v := strings.TrimSpace(string(data))
-		if v != "" {
-			return v
-		}
+	return paths.DefaultPHPVersion()
+}
+
+// EnsureCLIDefault pins the system `php` to the admin's CLI choice, or to the server default
+// PHP when none was made. Package installs (phpMyAdmin pulls the newest php-cli) otherwise
+// leave `php` on a version the panel has no FPM for.
+func (p *PHPManagerService) EnsureCLIDefault() {
+	want := strings.TrimSpace(readFileString(paths.PHPDefaultCLIConf))
+	if !paths.PHPCLIInstalled(want) {
+		want = paths.DefaultPHPVersion()
 	}
-	return p.getDefaultCLIVersion()
+	if !paths.PHPCLIInstalled(want) {
+		return
+	}
+	if cur, err := filepath.EvalSymlinks("/usr/bin/php"); err == nil && cur == "/usr/bin/php"+want {
+		return
+	}
+	_ = p.applyCLIAlternative(want)
+}
+
+func readFileString(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // GetCLIOverview returns current system `php -v` output and default version.
@@ -643,24 +668,14 @@ func (p *PHPManagerService) extractDirective(content, directive, fallback string
 	return fallback
 }
 
+// getDefaultCLIVersion reports what `php` actually runs right now.
 func (p *PHPManagerService) getDefaultCLIVersion() string {
-	if data, err := os.ReadFile("/etc/akpanel/php_default_cli.conf"); err == nil {
-		v := strings.TrimSpace(string(data))
-		if v != "" {
+	if cur, err := filepath.EvalSymlinks("/usr/bin/php"); err == nil {
+		if v := strings.TrimPrefix(filepath.Base(cur), "php"); paths.IsPHPVersionString(v) {
 			return v
 		}
 	}
-	out, err := exec.Command("php", "-v").Output()
-	if err != nil {
-		return "8.3"
-	}
-	str := string(out)
-	for _, ver := range p.supportedVersions {
-		if strings.Contains(str, fmt.Sprintf("PHP %s", ver)) {
-			return ver
-		}
-	}
-	return "8.3"
+	return paths.DefaultPHPVersion()
 }
 
 // WriteUserFPMPool writes the per-account PHP-FPM pool with package worker and RAM caps.
@@ -669,10 +684,9 @@ func (p *PHPManagerService) WriteUserFPMPool(username, version, homeDir string, 
 	if username == "" {
 		return fmt.Errorf("username is required")
 	}
-	version = strings.TrimSpace(version)
-	if version == "" {
-		version = paths.DetectInstalledPHPVersion("8.2")
-	}
+	// One PHP version per account: run on the requested version when installed, else the
+	// server default, and drop the account's pools on every other version.
+	version = paths.DetectInstalledPHPVersion(version)
 	if homeDir == "" {
 		homeDir = filepath.Join("/home", username)
 	}
@@ -684,29 +698,18 @@ func (p *PHPManagerService) WriteUserFPMPool(username, version, homeDir string, 
 	}
 
 	poolFile := fmt.Sprintf("/etc/php/%s/fpm/pool.d/%s.conf", version, username)
-	sock := paths.PHPSocketForUser(version, username)
-	pool := fmt.Sprintf(`[%s]
-user = %s
-group = %s
-listen = %s
-listen.owner = www-data
-listen.group = www-data
-listen.mode = 0660
-pm = ondemand
-pm.max_children = %d
-pm.process_idle_timeout = 10s
-chdir = /
-php_admin_value[open_basedir] = %s/:/tmp/
-php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
-php_admin_value[memory_limit] = %dM
-`, username, username, username, sock, maxChildren, homeDir, ramMB)
-
-	_ = os.MkdirAll("/run/php", 0755)
-	_ = os.MkdirAll(filepath.Dir(poolFile), 0755)
-	if err := os.WriteFile(poolFile, []byte(pool), 0644); err != nil {
+	pool, err := RenderUserFPMPool(username, version, homeDir, maxChildren, ramMB, LoadWebServerDefaults().FPM)
+	if err != nil {
 		return err
 	}
-	_ = p.RestartFPM(version)
+	_ = os.MkdirAll("/run/php", 0755)
+	if err := writePoolTested(poolFile, version, pool); err != nil {
+		return err
+	}
+	if err := p.RestartFPM(version); err != nil {
+		return fmt.Errorf("php%s-fpm restart failed: %w", version, err)
+	}
+	p.removeOtherUserPools(username, version)
 	return nil
 }
 
@@ -724,6 +727,23 @@ func (p *PHPManagerService) RemoveUserFPMPools(username string) {
 		}
 		version := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(poolFile))))
 		_ = p.RestartFPM(version)
+	}
+}
+
+// removeOtherUserPools deletes the account's pools on every version except keep.
+func (p *PHPManagerService) removeOtherUserPools(username, keep string) {
+	if !IsValidAccountUsername(username) {
+		return
+	}
+	matches, _ := filepath.Glob(fmt.Sprintf("/etc/php/*/fpm/pool.d/%s.conf", username))
+	for _, poolFile := range matches {
+		version := filepath.Base(filepath.Dir(filepath.Dir(filepath.Dir(poolFile))))
+		if version == keep {
+			continue
+		}
+		if os.Remove(poolFile) == nil {
+			_ = p.RestartFPM(version)
+		}
 	}
 }
 

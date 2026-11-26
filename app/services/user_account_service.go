@@ -259,7 +259,6 @@ func (s *UserAccountService) ChangePackage(username, packageID string) error {
 	list, _ := s.readUsers()
 	found := false
 	ver := ""
-	home := ""
 	uname := username
 	for i, u := range list {
 		if u.Username == username {
@@ -276,7 +275,6 @@ func (s *UserAccountService) ChangePackage(username, packageID string) error {
 			list[i].WebEngine = pkg.DefaultWebEngine
 			list[i].PHPVersion = pkg.DefaultPHPVersion
 			ver = list[i].PHPVersion
-			home = list[i].HomeDir
 			uname = list[i].Username
 			found = true
 			break
@@ -291,11 +289,10 @@ func (s *UserAccountService) ChangePackage(username, packageID string) error {
 	if err != nil {
 		return err
 	}
-	if home == "" {
-		home = "/home/" + uname
-	}
-	_ = NewPHPManagerService().WriteUserFPMPool(uname, ver, home, pkg.EffectiveMaxPHPChildren(), pkg.EffectiveRAMLimitMB())
-	return nil
+	// Moves pool, vhosts and the jailed CLI together, so the account's sites never point at
+	// the socket of the version it just left.
+	_, err = ApplyAccountPHPVersion(uname, paths.DetectInstalledPHPVersion(ver))
+	return err
 }
 
 // SuspendUser locks user shell & updates status

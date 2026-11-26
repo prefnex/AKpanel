@@ -113,41 +113,6 @@ func ApacheEnabled(domain string) string {
 	return filepath.Join(ApacheEnabledDir, fmt.Sprintf("%s.conf", domain))
 }
 
-// DetectInstalledPHPVersion returns preferred if that FPM/CLI exists, else the newest installed PHP.
-func DetectInstalledPHPVersion(preferred string) string {
-	if versionHasPHP(preferred) {
-		return preferred
-	}
-	if data, err := os.ReadFile("/etc/akpanel/php_default_fpm.conf"); err == nil {
-		v := strings.TrimSpace(string(data))
-		if versionHasPHP(v) {
-			return v
-		}
-	}
-	for _, ver := range []string{"8.4", "8.3", "8.2", "8.1", "8.0", "7.4"} {
-		if versionHasPHP(ver) {
-			return ver
-		}
-	}
-	if preferred != "" {
-		return preferred
-	}
-	return "8.3"
-}
-
-func versionHasPHP(ver string) bool {
-	if ver == "" {
-		return false
-	}
-	if _, err := os.Stat(filepath.Join("/usr/bin", "php"+ver)); err == nil {
-		return true
-	}
-	if _, err := os.Stat(filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm.sock", ver))); err == nil {
-		return true
-	}
-	return false
-}
-
 // SSLCert returns the canonical fullchain.pem path for a domain.
 func SSLCert(domain string) string {
 	return filepath.Join(SSLBase, domain, "fullchain.pem")
@@ -193,20 +158,4 @@ func UsersJSON() string {
 // PackagesJSON returns the path to packages.json.
 func PackagesJSON() string {
 	return filepath.Join(EtcAKpanel, "packages.json")
-}
-
-// PHPSocket returns the unix socket path for a given PHP version (e.g. "8.2").
-func PHPSocket(version string) string {
-	if version == "" {
-		version = "8.3"
-	}
-	return filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm.sock", version))
-}
-
-// PHPSocketForUser returns the per-user PHP-FPM socket path.
-func PHPSocketForUser(version, username string) string {
-	if version == "" {
-		version = "8.3"
-	}
-	return filepath.Join(PHPSocketDir, fmt.Sprintf("php%s-fpm-%s.sock", version, username))
 }

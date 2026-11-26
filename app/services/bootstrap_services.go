@@ -52,8 +52,13 @@ func BootstrapPanelServices() error {
 			NewDatabaseService().EnsurePhpMyAdminSetup()
 			return nil
 		}},
+		{"php cli default", func() error {
+			NewPHPManagerService().EnsureCLIDefault()
+			return nil
+		}},
 		{"ssh jail", func() error {
 			EnsureSSHJail()
+			SyncAccountCLIVersions()
 			return nil
 		}},
 		{"pure-ftpd", func() error {
@@ -65,12 +70,14 @@ func BootstrapPanelServices() error {
 			ftp.EnsureBruteForceProtection()
 			return nil
 		}},
-		{"internal listeners", func() error {
-			nginx := NewNginxService()
-			if err := nginx.EnsureRoundcubeListener(); err != nil {
-				return err
+		{"web server mode", func() error {
+			// Applies the installer's chosen mode end to end: ports, modules, Varnish,
+			// every vhost and the Roundcube/phpMyAdmin loopback listeners.
+			res, err := GetWebStack().ApplyMode(CurrentMode())
+			for _, l := range res.Log {
+				fmt.Println("bootstrap: webstack:", l)
 			}
-			return nginx.EnsurePhpMyAdminListener()
+			return err
 		}},
 	}
 
@@ -117,6 +124,8 @@ func RepairOnBoot() {
 		run  func()
 	}{
 		{"panel file permissions", HardenPanelFilePermissions},
+		{"php cli default", func() { NewPHPManagerService().EnsureCLIDefault() }},
+		{"account php cli", SyncAccountCLIVersions},
 		{"postfix identity", func() { GetMailAuthService().EnsureMailIdentity() }},
 		{"dkim key repair", func() {
 			if repaired := NewDNSService().RepairDKIMKeys(); len(repaired) > 0 {

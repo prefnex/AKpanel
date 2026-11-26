@@ -1,73 +1,96 @@
 vcl 4.1;
+# Managed by AKpanel (template varnish/default.vcl.tmpl) — mode {{.Mode}}
+#
+# nginx (TLS front) tags every request with X-AKpanel-Backend so one Varnish can cache for
+# both origins. Varnish listens on {{.VarnishAddr}} only, so the tag cannot be forged.
 
-backend default {
+import std;
+
+backend apache {
     .host = "127.0.0.1";
-    .port = "80"; # Backend Web Server (Nginx/Apache)
+    .port = "{{.ApachePort}}";
     .connect_timeout = 5s;
-    .first_byte_timeout = 60s;
-    .between_bytes_timeout = 2s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 60s;
+}
+
+backend nginx {
+    .host = "127.0.0.1";
+    .port = "{{.NginxOriginPort}}";
+    .connect_timeout = 5s;
+    .first_byte_timeout = 300s;
+    .between_bytes_timeout = 60s;
 }
 
 acl purge {
-    "localhost";
     "127.0.0.1";
     "::1";
 }
 
 sub vcl_recv {
-    # Allow cache purging
+    if (req.http.X-AKpanel-Backend == "nginx") {
+        set req.backend_hint = nginx;
+    } else {
+        set req.backend_hint = apache;
+    }
+
     if (req.method == "PURGE") {
-        if (!client.ip ~ purge) {
-            return (synth(405, "Not allowed."));
+        if (client.ip !~ purge) {
+            return (synth(405, "Not allowed"));
         }
         return (purge);
     }
 
-    # Only cache GET and HEAD requests
     if (req.method != "GET" && req.method != "HEAD") {
         return (pass);
     }
-
-    # Bypass cache for admin panels and auth
-    if (req.url ~ "/(wp-admin|wp-login|admin|login|cart|checkout|api)") {
+    if (req.url ~ "^/\.well-known/acme-challenge/") {
+        return (pass);
+    }
+    # Admin areas and logged-in users are never cached.
+    if (req.url ~ "^/(wp-admin|wp-login\.php|admin|administrator|user|login|cart|checkout|my-account)") {
+        return (pass);
+    }
+    if (req.http.Authorization) {
+        return (pass);
+    }
+    if (req.http.Cookie ~ "(wordpress_logged_in|wp-postpass|comment_author|woocommerce_items_in_cart|PHPSESSID|laravel_session|XSRF-TOKEN|SESS[a-z0-9]+)") {
         return (pass);
     }
 
-    # Normalize Accept-Encoding header for gzip
-    if (req.http.Accept-Encoding) {
-        if (req.http.Accept-Encoding ~ "gzip") {
-            set req.http.Accept-Encoding = "gzip";
-        } elsif (req.http.Accept-Encoding ~ "deflate") {
-            set req.http.Accept-Encoding = "deflate";
-        } else {
-            unset req.http.Accept-Encoding;
-        }
+    # Static files: drop cookies so they cache.
+    if (req.url ~ "\.(css|js|mjs|jpg|jpeg|png|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf)(\?.*)?$") {
+        unset req.http.Cookie;
     }
-
     return (hash);
 }
 
+sub vcl_hash {
+    hash_data(req.http.X-Forwarded-Proto);
+}
+
 sub vcl_backend_response {
-    # Cache static assets for 24h
-    if (bereq.url ~ "\.(jpg|jpeg|gif|png|css|js|ico|svg|woff2|woff|ttf)$") {
-        unset beresp.http.set-cookie;
-        set beresp.ttl = 24h;
+    if (bereq.url ~ "\.(css|js|mjs|jpg|jpeg|png|gif|webp|avif|svg|ico|woff2?|ttf|otf|eot|mp4|webm|mp3|pdf)(\?.*)?$") {
+        unset beresp.http.Set-Cookie;
+        set beresp.ttl = 7d;
     }
-
-    # Cache dynamic HTML for 5 minutes if no cookies
-    if (beresp.status == 200 && !beresp.http.set-cookie) {
-        set beresp.ttl = 300s;
+    if (beresp.http.Set-Cookie || beresp.http.Cache-Control ~ "(private|no-cache|no-store)") {
+        set beresp.uncacheable = true;
+        set beresp.ttl = 120s;
+        return (deliver);
     }
-
-    return (deliver);
+    if (beresp.ttl <= 0s) {
+        set beresp.ttl = {{.DefaultTTL}};
+    }
+    set beresp.grace = 6h;
 }
 
 sub vcl_deliver {
-    # Add cache hit/miss indicator header
     if (obj.hits > 0) {
-        set resp.http.X-Cache = "HIT - AKpanel Varnish (" + obj.hits + ")";
+        set resp.http.X-Cache = "HIT";
     } else {
-        set resp.http.X-Cache = "MISS - AKpanel Varnish";
+        set resp.http.X-Cache = "MISS";
     }
-    return (deliver);
+    unset resp.http.Via;
+    unset resp.http.X-Varnish;
 }

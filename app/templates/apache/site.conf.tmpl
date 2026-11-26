@@ -1,0 +1,121 @@
+{{- /*
+  AKpanel Apache vhost for one domain.
+  .ApachePublic → Apache owns :80/:443 (mode "apache"), TLS here.
+  otherwise     → loopback backend on .ApachePort behind nginx (and maybe Varnish).
+  .Handler: "fpm" → account PHP-FPM pool, "cgi" → php-cgi through mod_fcgid + suexec.
+*/ -}}
+# Managed by AKpanel (template apache/site.conf.tmpl) — changes here are overwritten.
+# Put custom directives in {{.ApacheCustom}}
+{{- if .Owner}}
+# akpanel-owner: {{.Owner}}
+{{- end}}
+# akpanel-site: {{.Domain}} mode={{.Mode}} backend={{.Backend}} handler={{.Handler}}
+{{- if .VhostTemplates}}
+# akpanel-templates: {{join .VhostTemplates " "}}
+{{- end}}
+{{- if .ApachePublic}}
+
+<VirtualHost *:80>
+{{template "body" .}}
+</VirtualHost>
+
+<IfModule mod_ssl.c>
+<VirtualHost *:443>
+    SSLEngine on
+    SSLCertificateFile {{.SSLCert}}
+    SSLCertificateKeyFile {{.SSLKey}}
+{{template "body" .}}
+</VirtualHost>
+</IfModule>
+{{- else}}
+
+<VirtualHost *:{{.ApachePort}}>
+{{template "body" .}}
+</VirtualHost>
+{{- end}}
+{{define "body"}}
+    ServerName {{.Domain}}
+    ServerAlias {{.ServerAliases}}
+{{- if ne .SiteType "proxy"}}
+    DocumentRoot {{.Root}}
+{{- end}}
+
+    Timeout {{.Timeout}}
+    LimitRequestBody {{.LimitRequestBody}}
+
+    ErrorLog ${APACHE_LOG_DIR}/{{.Domain}}_error.log
+    CustomLog ${APACHE_LOG_DIR}/{{.Domain}}_access.log combined
+
+    Alias /.well-known/acme-challenge/ {{.AcmeRoot}}/.well-known/acme-challenge/
+    <Directory {{.AcmeRoot}}/.well-known/acme-challenge/>
+        Require all granted
+    </Directory>
+{{- if .ApachePublic}}
+
+    # System redirects (/cpanel, /webmail …), shared by every site.
+    IncludeOptional /etc/apache2/akpanel/redirects.conf
+{{- end}}
+{{- if .ApacheHold}}
+
+{{.ApacheHold}}
+{{- end}}
+{{- if eq .SiteType "proxy"}}
+
+    ProxyPreserveHost On
+    ProxyRequests Off
+    RewriteEngine On
+    RewriteCond %{HTTP:Upgrade} =websocket [NC]
+    RewriteRule ^/?(.*) ws://{{.ProxyAddr}}/$1 [P,L]
+    ProxyPass /.well-known/acme-challenge/ !
+    ProxyPass / http://{{.ProxyAddr}}/
+    ProxyPassReverse / http://{{.ProxyAddr}}/
+    RequestHeader set X-Forwarded-Proto expr=%{REQUEST_SCHEME}
+{{- else}}
+
+    <Directory {{.Root}}>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+{{- if eq .SiteType "php"}}
+    DirectoryIndex index.php index.html index.htm
+{{- if eq .Handler "cgi"}}
+
+    # php-cgi as {{.SuexecUser}} through mod_fcgid + suexec
+{{- if .SuexecUser}}
+    SuexecUserGroup {{.SuexecUser}} {{.SuexecUser}}
+{{- end}}
+    <FilesMatch "\.php$">
+        Options +ExecCGI
+        SetHandler fcgid-script
+    </FilesMatch>
+    <Directory {{.Root}}>
+        FcgidWrapper {{.CGIWrapper}} .php
+    </Directory>
+{{- else}}
+
+    # PHP-FPM ({{.PHPVersion}})
+    <FilesMatch "\.php$">
+        <If "-f %{REQUEST_FILENAME}">
+            SetHandler "proxy:{{.PHPSocket}}|fcgi://localhost"
+        </If>
+    </FilesMatch>
+    <Proxy "fcgi://localhost">
+        ProxySet timeout={{.Timeout}}
+    </Proxy>
+{{- end}}
+{{- else}}
+    DirectoryIndex index.html index.htm
+{{- end}}
+
+    <FilesMatch "^\.(ht|git|env)">
+        Require all denied
+    </FilesMatch>
+{{- end}}
+{{- if .ApacheSnippets}}
+
+{{.ApacheSnippets}}
+{{- end}}
+
+    IncludeOptional {{.ApacheCustom}}
+{{- end}}

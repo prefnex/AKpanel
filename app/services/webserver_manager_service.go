@@ -1,28 +1,36 @@
 package services
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"goravel/app/domain"
 	"goravel/app/facades"
-	"goravel/app/models"
 	"goravel/app/paths"
+	"goravel/app/templates"
 )
 
-type ServerProfile struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Badge       string `json:"badge"`
-	Description string `json:"description"`
-	BestFor     string `json:"best_for"`
-	Architecture string `json:"architecture"`
-	IsActive    bool   `json:"is_active"`
+// ModeView is one web server mode for the "Select web server" page.
+type ModeView struct {
+	domain.ModeInfo
+	IsActive  bool     `json:"is_active"`
+	Available bool     `json:"available"`
+	Missing   []string `json:"missing,omitempty"`
+}
+
+// ModesOverview is the whole page: modes, the two default PHP versions, installed versions.
+type ModesOverview struct {
+	Active           domain.Mode `json:"active"`
+	Modes            []ModeView  `json:"modes"`
+	DefaultNginxPHP  string      `json:"default_nginx_php"`
+	DefaultApachePHP string      `json:"default_apache_php"`
+	InstalledPHP     []string    `json:"installed_php"`
+	CGIAvailable     bool        `json:"cgi_available"`
 }
 
 type ServiceState struct {
@@ -33,85 +41,107 @@ type ServiceState struct {
 	Port        string `json:"port"`
 }
 
-type WebServerManagerService struct {
-	currentProfile string
-	profileFile    string
-	templatesDir   string
-}
+type WebServerManagerService struct{}
 
 func NewWebServerManagerService() *WebServerManagerService {
-	s := &WebServerManagerService{
-		currentProfile: "nginx_phpfpm",
-		profileFile:    "/etc/akpanel/server_profile.conf",
-		templatesDir:   "app/templates",
-	}
-	s.loadCurrentProfile()
+	s := &WebServerManagerService{}
 	s.EnsureDefaultLandingPage()
 	return s
 }
 
-func (w *WebServerManagerService) GetProfiles() []ServerProfile {
-	profiles := []ServerProfile{
-		{
-			ID:           "nginx_phpfpm",
-			Name:         "Nginx + PHP-FPM",
-			Badge:        "Lightning Speed",
-			Description:  "Pure event-driven Nginx serving static assets and connecting directly to PHP-FPM unix sockets.",
-			BestFor:      "Modern APIs, Laravel, Node.js, and Single Page Apps (Sub-millisecond latency).",
-			Architecture: "Internet -> Nginx (80/443) -> PHP-FPM Unix Socket",
-			IsActive:     (w.currentProfile == "nginx_phpfpm"),
-		},
-		{
-			ID:           "apache_phpfpm",
-			Name:         "Apache + PHP",
-			Badge:        "Full .htaccess",
-			Description:  "Apache handles PHP via mod_proxy_fcgi with full .htaccess rewrite support on every request.",
-			BestFor:      "Legacy CMS, WordPress plugins, and apps that rely heavily on per-folder .htaccess rules.",
-			Architecture: "Internet -> Nginx (80/443 SSL) -> Apache (8081) -> PHP-FPM",
-			IsActive:     (w.currentProfile == "apache_phpfpm"),
-		},
-		{
-			ID:           "hybrid_nginx_apache",
-			Name:         "Nginx + Apache Hybrid",
-			Badge:        "Most Popular",
-			Description:  "Nginx edge reverse proxy caches static media and passes dynamic PHP requests to Apache.",
-			BestFor:      "Standard WordPress, WooCommerce, and Prestashop (Nginx speed + Apache .htaccess).",
-			Architecture: "Internet -> Nginx (80/443) -> Static Direct Cache / Dynamic to Apache (8081)",
-			IsActive:     (w.currentProfile == "hybrid_nginx_apache"),
-		},
-		{
-			ID:           "varnish_nginx_apache",
-			Name:         "Nginx + Varnish + Apache",
-			Badge:        "Max Traffic Turbo",
-			Description:  "Nginx handles SSL termination -> Varnish in-memory RAM cache -> Apache backend for dynamic pages.",
-			BestFor:      "High-traffic News, Articles, Media, Blogs with high read-to-write ratio (100x traffic capacity).",
-			Architecture: "Internet -> Nginx (443 SSL) -> Varnish RAM (6081) -> Apache (8081)",
-			IsActive:     (w.currentProfile == "varnish_nginx_apache"),
-		},
-		{
-			ID:           "varnish_nginx_phpfpm",
-			Name:         "Nginx + Varnish + PHP-FPM",
-			Badge:        "High Concurrency",
-			Description:  "Nginx SSL termination -> Varnish in-memory cache -> Nginx PHP-FPM backend.",
-			BestFor:      "Extreme load API endpoints and static-first web applications.",
-			Architecture: "Internet -> Nginx SSL -> Varnish Cache -> Nginx PHP-FPM Socket",
-			IsActive:     (w.currentProfile == "varnish_nginx_phpfpm"),
-		},
+// GetModes describes every mode, which one is active and whether its packages exist.
+func (w *WebServerManagerService) GetModes() ModesOverview {
+	active := CurrentMode()
+	out := ModesOverview{
+		Active:           active,
+		DefaultNginxPHP:  paths.DefaultPHPVersion(),
+		DefaultApachePHP: paths.DefaultApachePHPVersion(),
+		InstalledPHP:     paths.InstalledPHPVersions(),
 	}
-	return profiles
+	for _, v := range out.InstalledPHP {
+		if cgiHandlerAvailable(v) {
+			out.CGIAvailable = true
+		}
+	}
+	for _, m := range domain.Modes {
+		mv := ModeView{ModeInfo: m.Info(), IsActive: m == active}
+		if err := modePrerequisites(m); err != nil {
+			mv.Missing = missingFor(m)
+		}
+		mv.Available = len(mv.Missing) == 0
+		out.Modes = append(out.Modes, mv)
+	}
+	return out
+}
+
+func missingFor(m domain.Mode) []string {
+	var missing []string
+	if m.HasNginx() && !nginxInstalled() {
+		missing = append(missing, "nginx")
+	}
+	if m.HasApache() && !apacheInstalled() {
+		missing = append(missing, "apache2")
+	}
+	if m.HasVarnish() && !varnishInstalled() {
+		missing = append(missing, "varnish")
+	}
+	return missing
+}
+
+// SetDefaultPHPVersions stores the Nginx and Apache defaults (either may be empty = unchanged).
+func (w *WebServerManagerService) SetDefaultPHPVersions(nginxVer, apacheVer string) error {
+	php := NewPHPManagerService()
+	if nginxVer != "" {
+		if err := php.SetDefaultFPM(nginxVer); err != nil {
+			return err
+		}
+	}
+	if apacheVer != "" {
+		if !paths.PHPFPMInstalled(apacheVer) {
+			return fmt.Errorf("PHP %s is not installed", apacheVer)
+		}
+		if err := os.WriteFile(paths.PHPDefaultApacheConf, []byte(apacheVer+"\n"), 0644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// SwitchMode applies a mode (and optionally the two default PHP versions first).
+func (w *WebServerManagerService) SwitchMode(modeID, nginxPHP, apachePHP string) (ModeSwitchResult, error) {
+	mode, err := domain.ParseMode(modeID)
+	if err != nil {
+		return ModeSwitchResult{}, err
+	}
+	if err := w.SetDefaultPHPVersions(nginxPHP, apachePHP); err != nil {
+		return ModeSwitchResult{}, err
+	}
+	res, err := GetWebStack().ApplyMode(mode)
+	if err == nil && facades.Log() != nil {
+		facades.Log().Info(fmt.Sprintf("[webserver] mode %s → %s, %d site(s)", res.From, res.To, res.Sites))
+	}
+	return res, err
 }
 
 func (w *WebServerManagerService) GetServicesState() []ServiceState {
-	profile := currentServerProfile()
-	type row struct{ Name, DisplayName, Port string; Show bool }
-	rows := []row{
-		{"nginx", "Nginx Web Server", "80, 443", true},
-		{"apache2", "Apache HTTP Server", "8081", domain.ProfileNeedsApache(profile)},
-		{"varnish", "Varnish HTTP Accelerator", "6081", domain.ProfileNeedsVarnish(profile)},
-		{"php8.3-fpm", "PHP 8.3 FPM Daemon", "unix socket", systemdUnitInstalled("php8.3-fpm")},
-		{"php8.2-fpm", "PHP 8.2 FPM Daemon", "unix socket", systemdUnitInstalled("php8.2-fpm")},
-		{"bind9", "BIND 9 DNS", "53", systemdUnitInstalled("bind9") || systemdUnitInstalled("named")},
+	mode := CurrentMode()
+	apachePort := domain.ApacheBackendAddr
+	if mode == domain.ModeApache {
+		apachePort = "80, 443"
 	}
+	type row struct {
+		Name, DisplayName, Port string
+		Show                    bool
+	}
+	rows := []row{
+		{"nginx", "Nginx Web Server", "80, 443", mode.HasNginx()},
+		{"apache2", "Apache HTTP Server", apachePort, mode.HasApache()},
+		{"varnish", "Varnish HTTP Accelerator", domain.VarnishListenAddr, mode.HasVarnish()},
+	}
+	for _, v := range paths.InstalledPHPVersions() {
+		rows = append(rows, row{"php" + v + "-fpm", "PHP " + v + " FPM", "unix socket", true})
+	}
+	rows = append(rows, row{"bind9", "BIND 9 DNS", "53", systemdUnitInstalled("bind9") || systemdUnitInstalled("named")})
 
 	var states []ServiceState
 	for _, s := range rows {
@@ -129,267 +159,67 @@ func (w *WebServerManagerService) GetServicesState() []ServiceState {
 	return states
 }
 
+var webServiceName = regexp.MustCompile(`^(nginx|apache|apache2|httpd|varnish|php-fpm|php\d+\.\d+-fpm)$`)
+
 func (w *WebServerManagerService) ControlService(serviceName, action string) error {
 	validActions := map[string]bool{"start": true, "stop": true, "restart": true, "reload": true}
 	if !validActions[action] {
 		return fmt.Errorf("invalid action '%s'", action)
 	}
+	if !webServiceName.MatchString(serviceName) {
+		return fmt.Errorf("only web server services can be controlled here")
+	}
 	return controlSystemdUnit(serviceName, action)
 }
 
-func (w *WebServerManagerService) SwitchGlobalProfile(profileID string) error {
-	if err := domain.ValidateProfile(profileID); err != nil {
-		return err
-	}
-
-	w.currentProfile = profileID
-	_ = os.MkdirAll("/etc/akpanel", 0755)
-	if err := os.WriteFile(w.profileFile, []byte(profileID), 0644); err != nil {
-		return err
-	}
-	w.syncInstallConfProfile(profileID)
-
-	if err := w.applyProfileInfrastructure(profileID); err != nil {
-		return fmt.Errorf("apply profile infrastructure: %w", err)
-	}
-
-	rebuilt, err := w.rebuildAllVhostsForProfile(profileID)
-	if err != nil {
-		return fmt.Errorf("rebuild vhosts: %w", err)
-	}
-
-	if err := w.reloadServicesForProfile(profileID); err != nil {
-		return fmt.Errorf("reload services: %w", err)
-	}
-
-	if facades.Log() != nil {
-		facades.Log().Info(fmt.Sprintf("[webserver] profile switched to %s — rebuilt %d vhost(s)", profileID, rebuilt))
-	}
-	return nil
+// GetTemplateFiles lists every vhost template and whether it is overridden.
+func (w *WebServerManagerService) GetTemplateFiles() []templates.File {
+	return templates.List()
 }
 
-func (w *WebServerManagerService) syncInstallConfProfile(profileID string) {
-	confPath := paths.InstallConf()
-	var conf map[string]any
-	if data, err := os.ReadFile(confPath); err == nil {
-		_ = json.Unmarshal(data, &conf)
-	}
-	if conf == nil {
-		conf = map[string]any{}
-	}
-	components, _ := conf["components"].(map[string]any)
-	if components == nil {
-		components = map[string]any{}
-	}
-	components["webserver_profile"] = profileID
-	if profileID == domain.ProfileVarnishNginxApache || profileID == domain.ProfileVarnishNginxPHPFPM {
-		components["varnish"] = true
-	} else {
-		components["varnish"] = false
-	}
-	conf["components"] = components
-	if bytes, err := json.MarshalIndent(conf, "", "  "); err == nil {
-		_ = os.WriteFile(confPath, bytes, 0644)
-	}
+// ReadTemplateFile returns the effective template text.
+func (w *WebServerManagerService) ReadTemplateFile(engine, filename string) (string, bool, error) {
+	return templates.Source(engine, filename)
 }
 
-func (w *WebServerManagerService) applyProfileInfrastructure(profileID string) error {
-	apache := NewApacheService()
-
-	if domain.ProfileNeedsApache(profileID) {
-		if err := apache.EnsureInternalBackend(); err != nil {
-			return err
-		}
-	}
-
-	varnish := NewVarnishService()
-	if domain.ProfileNeedsVarnish(profileID) {
-		if err := varnish.EnsureDefaultVCL(profileID); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (w *WebServerManagerService) rebuildAllVhostsForProfile(profileID string) (int, error) {
-	siteEngine := domain.ProfileToSiteEngine(profileID)
-	nginx := NewNginxService()
-	rebuilt := 0
-	seen := map[string]bool{}
-
-	type siteEntry struct {
-		domain, root, owner, phpVer, siteType, templateID string
-		proxyPort                                         int
-	}
-
-	var entries []siteEntry
-
-	if facades.Orm() != nil {
-		var websites []models.Website
-		if err := facades.Orm().Query().Where("status != ?", "deleted").Find(&websites); err == nil {
-			for _, site := range websites {
-				if site.Domain == "" || seen[site.Domain] {
-					continue
-				}
-				seen[site.Domain] = true
-				entries = append(entries, siteEntry{
-					domain: site.Domain, root: site.RootPath, owner: site.OwnerUsername,
-					phpVer: site.PHPVersion, siteType: site.SiteType, templateID: site.TemplateID,
-					proxyPort: site.ProxyPort,
-				})
-			}
-		}
-	}
-
-	if data, err := os.ReadFile(paths.UsersJSON()); err == nil {
-		var users []UserAccount
-		if json.Unmarshal(data, &users) == nil {
-			for _, u := range users {
-				if u.MainDomain == "" || seen[u.MainDomain] {
-					continue
-				}
-				seen[u.MainDomain] = true
-				root := paths.UserDomainRoot(u.Username, u.MainDomain)
-				phpVer := u.PHPVersion
-				if phpVer == "" {
-					phpVer = "8.3"
-				}
-				entries = append(entries, siteEntry{
-					domain: u.MainDomain, root: root, owner: u.Username,
-					phpVer: phpVer, siteType: "php", templateID: "custom",
-				})
-			}
-		}
-	}
-
-	enabledDir := "/etc/nginx/sites-enabled"
-	if files, err := os.ReadDir(enabledDir); err == nil {
-		for _, f := range files {
-			name := f.Name()
-			if strings.HasPrefix(name, "akpanel-hostname-") || name == "default" {
-				continue
-			}
-			domain := strings.TrimSuffix(strings.TrimSuffix(name, ".conf"), ".conf")
-			if domain == "" || seen[domain] {
-				continue
-			}
-			seen[domain] = true
-			entries = append(entries, siteEntry{
-				domain: domain, root: fmt.Sprintf("%s/%s/public", paths.SitesRoot, domain),
-				owner: "root", phpVer: "8.3", siteType: "php", templateID: "custom",
-			})
-		}
-	}
-
-	for _, e := range entries {
-		if e.phpVer == "" {
-			e.phpVer = "8.3"
-		}
-		if e.siteType == "" {
-			e.siteType = "php"
-		}
-		if e.root == "" {
-			e.root = fmt.Sprintf("%s/%s/public", paths.SitesRoot, e.domain)
-		}
-
-		cfg := WebsiteConfig{
-			Domain:           e.domain,
-			RootPath:         e.root,
-			ServerEngine:     siteEngine,
-			PHPVersion:       e.phpVer,
-			SiteType:         e.siteType,
-			TemplateID:       e.templateID,
-			ProxyPort:        e.proxyPort,
-			SkipOwnershipFix: true,
-		}
-		if e.owner != "" && e.owner != "root" {
-			cfg.PHPSocket = paths.PHPSocketForUser(e.phpVer, e.owner)
-		}
-
-		if err := nginx.CreateWebsite(cfg); err != nil {
-			return rebuilt, fmt.Errorf("domain %s: %w", e.domain, err)
-		}
-
-		if facades.Orm() != nil {
-			engine, _ := domain.NormalizeEngine(siteEngine)
-			_, _ = facades.Orm().Query().Model(&models.Website{}).Where("domain = ?", e.domain).Update(map[string]any{
-				"server_engine": string(engine),
-			})
-		}
-		rebuilt++
-	}
-
-	return rebuilt, nil
-}
-
-func (w *WebServerManagerService) reloadServicesForProfile(profileID string) error {
-	switch profileID {
-	case domain.ProfileNginxPHPFPM:
-		disableNow("apache2", "varnish")
-	case domain.ProfileApachePHPFPM, domain.ProfileHybridNginxApache:
-		disableNow("varnish")
-		enableNow("apache2")
-	case domain.ProfileVarnishNginxApache:
-		enableNow("apache2", "varnish")
-	case domain.ProfileVarnishNginxPHPFPM:
-		disableNow("apache2")
-		enableNow("varnish")
-	}
-	enableNow("nginx")
-
-	if out, err := exec.Command("nginx", "-t").CombinedOutput(); err != nil {
-		return fmt.Errorf("nginx -t failed: %s", strings.TrimSpace(string(out)))
-	}
-
-	if domain.ProfileNeedsApache(profileID) {
-		if out, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {
-			return fmt.Errorf("apache configtest failed: %s", strings.TrimSpace(string(out)))
-		}
-	}
-
-	_ = exec.Command("service", "nginx", "reload").Run()
-	if domain.ProfileNeedsApache(profileID) {
-		_ = exec.Command("service", "apache2", "reload").Run()
-	}
-	if domain.ProfileNeedsVarnish(profileID) {
-		_ = exec.Command("service", "varnish", "reload").Run()
-	}
-
-	return nil
-}
-
-func (w *WebServerManagerService) GetTemplateFiles() (map[string][]string, error) {
-	result := make(map[string][]string)
-	engines := []string{"nginx", "apache", "varnish"}
-
-	for _, eng := range engines {
-		dir := filepath.Join(w.templatesDir, eng)
-		files, _ := os.ReadDir(dir)
-		fileNames := []string{}
-		for _, f := range files {
-			if !f.IsDir() {
-				fileNames = append(fileNames, f.Name())
-			}
-		}
-		result[eng] = fileNames
-	}
-	return result, nil
-}
-
-func (w *WebServerManagerService) ReadTemplateFile(engine, filename string) (string, error) {
-	path := filepath.Join(w.templatesDir, engine, filename)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
+// SaveTemplateFile stores an override and rebuilds every vhost with it; a broken template
+// (render or syntax test failure) is rolled back.
 func (w *WebServerManagerService) SaveTemplateFile(engine, filename, content string) error {
-	path := filepath.Join(w.templatesDir, engine, filename)
-	_ = os.MkdirAll(filepath.Dir(path), 0755)
-	return os.WriteFile(path, []byte(content), 0644)
+	prev, hadOverride, err := templates.Source(engine, filename)
+	if err != nil {
+		return err
+	}
+	if err := templates.SaveOverride(engine, filename, content); err != nil {
+		return err
+	}
+	if err := rebuildForEngine(engine); err != nil {
+		if hadOverride {
+			_ = templates.SaveOverride(engine, filename, prev)
+		} else {
+			_ = templates.ResetOverride(engine, filename)
+		}
+		return fmt.Errorf("template rejected, previous version kept: %w", err)
+	}
+	return nil
+}
+
+// ResetTemplateFile drops an override and rebuilds.
+func (w *WebServerManagerService) ResetTemplateFile(engine, filename string) error {
+	if err := templates.ResetOverride(engine, filename); err != nil {
+		return err
+	}
+	return rebuildForEngine(engine)
+}
+
+// rebuildForEngine re-renders what a base template feeds: account pools for php-fpm,
+// every vhost otherwise.
+func rebuildForEngine(engine string) error {
+	if engine == "php-fpm" {
+		_, err := RewriteAllPools()
+		return err
+	}
+	_, err := GetWebStack().RebuildAll()
+	return err
 }
 
 type MainConfigFile struct {
@@ -431,115 +261,88 @@ func (w *WebServerManagerService) GetMainConfigs() []MainConfigFile {
 	return list
 }
 
-// SaveMainConfig updates a global web server configuration file with syntax verification
+// SaveMainConfig updates one of the configuration files GetMainConfigs lists, through the
+// conf editor (tested, restored on failure). Any other path is refused.
 func (w *WebServerManagerService) SaveMainConfig(filePath, content string) error {
-	_ = os.MkdirAll(filepath.Dir(filePath), 0755)
-	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return err
-	}
-
-	// Test syntax based on engine
-	if strings.Contains(filePath, "nginx") {
-		if out, err := exec.Command("nginx", "-t").CombinedOutput(); err != nil {
-			return fmt.Errorf("nginx syntax test failed: %s", string(out))
+	for _, c := range w.GetMainConfigs() {
+		if c.Path != filePath {
+			continue
 		}
-		_ = exec.Command("service", "nginx", "reload").Run()
-	} else if strings.Contains(filePath, "apache2") {
-		if out, err := exec.Command("apache2ctl", "configtest").CombinedOutput(); err != nil {
-			return fmt.Errorf("apache syntax test failed: %s", string(out))
+		for _, r := range ConfRoots() {
+			if strings.HasPrefix(filePath, r.Path+"/") {
+				return SaveConfFile(r.ID, strings.TrimPrefix(filePath, r.Path+"/"), content, false)
+			}
 		}
-		_ = exec.Command("service", "apache2", "reload").Run()
-	} else if strings.Contains(filePath, "varnish") {
-		_ = exec.Command("service", "varnish", "reload").Run()
 	}
-
-	return nil
+	return fmt.Errorf("%s is not an editable main config file", filePath)
 }
 
+// DomainVhostInfo is the "Domain config" page: generated files (read-only), the custom
+// include files (editable, kept across rebuilds) and the domain's stack.
 type DomainVhostInfo struct {
-	Domain     string `json:"domain"`
-	User       string `json:"user"`
-	Engine     string `json:"engine"`
-	NginxConf  string `json:"nginx_conf"`
-	ApacheConf string `json:"apache_conf"`
-	HasSSL     bool   `json:"has_ssl"`
+	Domain           string      `json:"domain"`
+	User             string      `json:"user"`
+	NginxConf        string      `json:"nginx_conf"`
+	ApacheConf       string      `json:"apache_conf"`
+	NginxCustom      string      `json:"nginx_custom"`
+	ApacheCustom     string      `json:"apache_custom"`
+	NginxCustomPath  string      `json:"nginx_custom_path"`
+	ApacheCustomPath string      `json:"apache_custom_path"`
+	HasSSL           bool        `json:"has_ssl"`
+	Stack            *SiteResult `json:"stack,omitempty"`
 }
 
-// GetDomainVhost retrieves Nginx and Apache vhost configurations for a specific domain
-func (w *WebServerManagerService) GetDomainVhost(domain string) DomainVhostInfo {
-	nginxPath := fmt.Sprintf("/etc/nginx/sites-available/%s", domain)
-	apachePath := fmt.Sprintf("/etc/apache2/sites-available/%s.conf", domain)
-
-	nginxContent := ""
-	if data, err := os.ReadFile(nginxPath); err == nil {
-		nginxContent = string(data)
+func readOr(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
 	}
-
-	apacheContent := ""
-	if data, err := os.ReadFile(apachePath); err == nil {
-		apacheContent = string(data)
-	}
-
-	hasSSL := false
-	if _, err := os.Stat(fmt.Sprintf("/etc/akpanel/ssl/%s/fullchain.pem", domain)); err == nil {
-		hasSSL = true
-	}
-
-	engine := "nginx+apache"
-	if strings.Contains(nginxContent, "proxy_pass http://127.0.0.1:8081") {
-		engine = "nginx+apache"
-	} else if strings.Contains(nginxContent, "fastcgi_pass") {
-		engine = "nginx_phpfpm"
-	}
-
-	return DomainVhostInfo{
-		Domain:     domain,
-		User:       "admin",
-		Engine:     engine,
-		NginxConf:  nginxContent,
-		ApacheConf: apacheContent,
-		HasSSL:     hasSSL,
-	}
+	return string(b)
 }
 
-// SaveDomainVhost saves custom Nginx & Apache vhost configurations
-func (w *WebServerManagerService) SaveDomainVhost(domain, nginxConf, apacheConf string) error {
-	nginxPath := fmt.Sprintf("/etc/nginx/sites-available/%s", domain)
-	apachePath := fmt.Sprintf("/etc/apache2/sites-available/%s.conf", domain)
-
-	if nginxConf != "" {
-		_ = os.WriteFile(nginxPath, []byte(nginxConf), 0644)
-		_ = os.Symlink(nginxPath, fmt.Sprintf("/etc/nginx/sites-enabled/%s", domain))
+// GetDomainVhost returns the generated vhosts, the custom includes and the stack.
+func (w *WebServerManagerService) GetDomainVhost(domainName string) DomainVhostInfo {
+	info := DomainVhostInfo{
+		Domain:           domainName,
+		User:             "root",
+		NginxConf:        readOr(paths.NginxAvailable(domainName)),
+		ApacheConf:       readOr(paths.ApacheAvailable(domainName)),
+		NginxCustomPath:  filepath.Join(nginxCustomDir, domainName+".conf"),
+		ApacheCustomPath: filepath.Join(apacheCustomDir, domainName+".conf"),
+		HasSSL:           domain.SSLCertsExist(domainName),
 	}
-	if apacheConf != "" {
-		_ = os.WriteFile(apachePath, []byte(apacheConf), 0644)
-		_ = os.Symlink(apachePath, fmt.Sprintf("/etc/apache2/sites-enabled/%s.conf", domain))
+	info.NginxCustom = readOr(info.NginxCustomPath)
+	info.ApacheCustom = readOr(info.ApacheCustomPath)
+	if row := lookupWebsiteRow(domainName); row != nil {
+		if row.OwnerUsername != "" {
+			info.User = row.OwnerUsername
+		}
+		st := GetWebStack().SiteStatus(row)
+		info.Stack = &st
 	}
-
-	_ = exec.Command("service", "nginx", "reload").Run()
-	_ = exec.Command("service", "apache2", "reload").Run()
-
-	return nil
+	return info
 }
 
-// RebuildAllVhosts reloads and recompiles all web server virtual hosts for the active profile.
+// SaveDomainVhost stores the domain's custom include directives and re-applies the site;
+// a failing syntax test restores the previous custom files.
+func (w *WebServerManagerService) SaveDomainVhost(domainName, nginxCustom, apacheCustom string) error {
+	return GetWebStack().SaveCustomIncludes(domainName, nginxCustom, apacheCustom)
+}
+
+// RebuildAllVhosts re-renders every vhost for the active mode.
 func (w *WebServerManagerService) RebuildAllVhosts() (string, error) {
-	w.loadCurrentProfile()
-	count, err := w.rebuildAllVhostsForProfile(w.currentProfile)
+	count, err := GetWebStack().RebuildAll()
 	if err != nil {
 		return "", err
 	}
-	if err := w.reloadServicesForProfile(w.currentProfile); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Rebuilt %d virtual host(s) for profile %s successfully.", count, w.currentProfile), nil
+	return fmt.Sprintf("Rebuilt %d site(s) for mode %s.", count, CurrentMode()), nil
 }
 
 // EnsureDefaultLandingPage creates an ultra-sleek AKpanel default landing page at /var/www/html/index.html
 func (w *WebServerManagerService) EnsureDefaultLandingPage() {
 	_ = os.MkdirAll("/var/www/html", 0755)
 	landingPath := "/var/www/html/index.html"
-	
+
 	htmlContent := `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -715,19 +518,6 @@ func (w *WebServerManagerService) EnsureDefaultLandingPage() {
 	_ = os.WriteFile(landingPath, []byte(htmlContent), 0644)
 }
 
-func (w *WebServerManagerService) loadCurrentProfile() {
-	if data, err := os.ReadFile(w.profileFile); err == nil {
-		w.currentProfile = stringsTrim(string(data))
-	}
-}
-
-func stringsTrim(s string) string {
-	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == '\r' || s[len(s)-1] == ' ') {
-		s = s[:len(s)-1]
-	}
-	return s
-}
-
 type ApacheStatusData struct {
 	RawOutput     string `json:"raw_output"`
 	IsRunning     bool   `json:"is_running"`
@@ -809,5 +599,3 @@ func (w *WebServerManagerService) GetApacheStatus() ApacheStatusData {
 
 	return data
 }
-
-

@@ -11,7 +11,9 @@ type ProvisionPlan struct {
 	OwnerUsername string           `json:"owner_username"`
 	PackageID     string           `json:"package_id"`
 	RootPath      string           `json:"root_path"`
-	Engine        domain.WebEngine `json:"engine"`
+	Backend       domain.Backend   `json:"backend"`     // "" = mode default (domain.SiteStack)
+	PHPHandler    string           `json:"php_handler"` // "fpm" | "cgi" (Apache backend)
+	Varnish       string           `json:"varnish"`     // "on" | "off" | "" (mode default)
 	PHPVersion    string           `json:"php_version"`
 	TemplateID    string           `json:"template_id"`
 	SiteType      string           `json:"site_type"`
