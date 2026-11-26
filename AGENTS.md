@@ -134,7 +134,7 @@ Task لا تُعتبر مكتملة إلا إذا:
 - أمر التثبيت على VPS جديد (root):
 
 ```bash
-curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.2.0/install.sh | bash
+curl -fsSL https://github.com/prefnex/AKpanel/releases/latest/download/install.sh | bash
 ```
 
 - لا تشغّل `nginx` / `systemctl` / البانل على جهاز التطوير.

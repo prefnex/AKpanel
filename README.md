@@ -39,10 +39,16 @@ This is not a Windows panel, not a shared Docker demo, and not something you “
 On the VPS, as root:
 
 ```bash
-curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.2.0/install.sh | bash
+curl -fsSL https://github.com/prefnex/AKpanel/releases/latest/download/install.sh | bash
 ```
 
-That script downloads `akpanel_v0.2.0_linux_<amd64|arm64>.tar.gz` from the **same GitHub release**. Do not copy a binary from your PC onto an old VPS unless you are deliberately debugging.
+This always installs the **latest release**: the script downloads `akpanel_<version>_linux_<amd64|arm64>.tar.gz` from that same release. To install a specific version instead:
+
+```bash
+curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.2.0/install.sh | AKPANEL_VERSION=v0.2.0 bash
+```
+
+Do not copy a binary from your PC onto an old VPS unless you are deliberately debugging.
 
 ### What the installer asks
 
