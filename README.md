@@ -2,7 +2,7 @@
 
 A Linux hosting control panel you actually run on a VPS: websites, DNS, mail, FTP, PHP, and databases — with a root admin desk and a separate panel for each customer.
 
-It is early software (`v0.2.0`). Treat a **clean Ubuntu VPS** as the real test environment, not a laptop and not an old server you keep patching.
+It is early software (`v0.2.1`). Treat a **clean Ubuntu VPS** as the real test environment, not a laptop and not an old server you keep patching.
 
 ---
 
@@ -45,7 +45,7 @@ curl -fsSL https://github.com/prefnex/AKpanel/releases/latest/download/install.s
 This always installs the **latest release**: the script downloads `akpanel_<version>_linux_<amd64|arm64>.tar.gz` from that same release. To install a specific version instead:
 
 ```bash
-curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.2.0/install.sh | AKPANEL_VERSION=v0.2.0 bash
+curl -fsSL https://github.com/prefnex/AKpanel/releases/download/v0.2.1/install.sh | AKPANEL_VERSION=v0.2.1 bash
 ```
 
 Do not copy a binary from your PC onto an old VPS unless you are deliberately debugging.
@@ -242,6 +242,6 @@ Local `npm run build` writes into `public/build/`. Do not run `nginx -t` / `syst
 
 ## Support and honesty
 
-This is `v0.2.0`. Expect sharp edges. Report issues with: Ubuntu version, web profile, hostname, and the installer log. Issues and releases: [github.com/prefnex/AKpanel](https://github.com/prefnex/AKpanel).
+This is `v0.2.1`. Expect sharp edges. Report issues with: Ubuntu version, web profile, hostname, and the installer log. Issues and releases: [github.com/prefnex/AKpanel](https://github.com/prefnex/AKpanel).
 
 If something failed halfway, start over on a clean VPS rather than hand-editing five config trees. That is how the panel is meant to be tested.

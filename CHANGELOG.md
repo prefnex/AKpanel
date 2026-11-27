@@ -2,6 +2,37 @@
 
 All notable changes to AKpanel are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [v0.2.1] - 2026-11-27
+
+Fixes PHP installation on new Ubuntu releases and rebuilds the PHP pages. Install on a clean VPS.
+
+### Fixed
+- **PHP install on Ubuntu 26.04 and other new releases**: the installer pointed apt at the
+  `noble` suite of ondrej/php with the wrong key, which broke `apt-get update` and left the
+  server without PHP. The repository is now added only for the server's own release with the
+  current signing key; when it has no build, the distro PHP is used instead.
+- Unavailable PHP versions and packages (e.g. `php8.4-imap`) are skipped instead of failing
+  the whole install; the distro PHP becomes the primary version when 8.3 is not packaged.
+- The panel repairs a broken PHP repository entry before every install and explains clearly
+  when a version is not available for the OS release.
+- Boot deadlock between the DNS and server-settings services (`all goroutines are asleep`).
+- Webmail no longer assumes the PHP 8.3 socket.
+- OPcache showed as disabled even when loaded.
+
+### Security
+- Every PHP endpoint validates the version before building paths under `/etc/php`.
+- Install and extension commands are built in the service with validated names instead of a
+  shell string from request input; php.ini values are validated per directive.
+
+### PHP pages
+- Versions overview with install, per-release package picker (Minimal / WordPress / Laravel)
+  and safe removal (blocked while a site or account still uses the version).
+- PHP-FPM: start / stop / reload / restart, validated pool form per `pm` mode with presets,
+  `php-fpm -t` check with rollback, read-only list of account pools.
+- php.ini settings with real controls (presets, switches, timezone search), CLI option, and
+  a raw editor with a syntax check and `php.ini.akpanel.bak` backup.
+- Extensions can be switched on and off (`phpenmod` / `phpdismod`); IonCube loader installs.
+
 ## [v0.2.0] - 2026-11-26
 
 A large release: a new web-server engine with five real modes, a CWP-style vhost template
