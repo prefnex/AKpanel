@@ -1161,14 +1161,7 @@ Alias /roundcube %s
 	_ = os.WriteFile("/etc/apache2/conf-available/roundcube.conf", []byte(apacheConf), 0644)
 	_ = exec.Command("bash", "-c", "a2enconf roundcube 2>/dev/null; systemctl reload apache2 2>/dev/null || service apache2 reload 2>/dev/null").Run()
 
-	phpSock := "unix:/run/php/php8.3-fpm.sock"
-	for _, ver := range []string{"8.3", "8.2", "8.1", "8.0", "7.4"} {
-		sock := fmt.Sprintf("/run/php/php%s-fpm.sock", ver)
-		if _, err := os.Stat(sock); err == nil {
-			phpSock = fmt.Sprintf("unix:%s", sock)
-			break
-		}
-	}
+	phpSock := "unix:" + paths.PHPSocket(paths.DefaultPHPVersion())
 	_ = os.MkdirAll("/etc/nginx/snippets", 0755)
 	nginxSnippet := fmt.Sprintf(`location /webmail {
     alias %s;

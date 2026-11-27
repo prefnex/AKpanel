@@ -2,130 +2,84 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { CheckCircle2, DownloadCloud, Server } from 'lucide-react';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { Loader2 } from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import PageHeader from '@/components/app/PageHeader';
 import { useWebServerModes } from '@/hooks/useWebServerModes';
 import { api } from '@/lib/api';
-import { Card } from '../ui/card';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
 import { usePHPRuntime } from './PHPRuntimeContext';
-import PHPSectionIntro from './PHPSectionIntro';
+import { NoPHPInstalled } from './PHPShared';
 
+// Server defaults: the PHP version new websites and accounts get when they do not choose.
 export default function PHPDefaultPage() {
-  const {
-    phpDetails, selectedVer, setSelectedVer, navigate,
-    handleSetDefaultFPM, settingDefaultFPM,
-  } = usePHPRuntime();
-
-  return (
-    <div className="space-y-4">
-      <PHPSectionIntro
-        title="PHP FPM selector"
-        goal="Choose which PHP-FPM version new websites use when they did not pick one. There are two defaults: one for sites whose PHP runs under Nginx (the cards below — also the CLI and panel tools default) and one for sites whose PHP runs under Apache. An account's own version always wins."
-      />
-      <BackendDefaults />
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {phpDetails.map(ver => (
-          <Card
-            key={ver.version}
-            onClick={() => {
-              if (ver.is_installed) setSelectedVer(ver.version);
-              else navigate(`/php/install/${ver.version}`);
-            }}
-            className={`bg-[#121215] border rounded-3xl p-5 cursor-pointer ${
-              ver.is_default_fpm
-                ? 'border-indigo-500/80 bg-indigo-950/10 ring-2 ring-indigo-500/30'
-                : ver.version === selectedVer
-                  ? 'border-zinc-600'
-                  : 'border-zinc-800/80 hover:border-zinc-700'
-            }`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="text-xl font-black text-white font-mono">PHP {ver.version}</span>
-              {ver.is_default_fpm ? (
-                <Badge className="bg-indigo-500/15 text-indigo-300 border-indigo-500/30 text-[10px]">Default FPM</Badge>
-              ) : ver.is_installed ? (
-                <Badge className="bg-emerald-500/10 text-emerald-400 border-emerald-500/20 text-[10px]">Installed</Badge>
-              ) : (
-                <Badge variant="outline" className="text-zinc-500 border-zinc-800 text-[10px]">Not Installed</Badge>
-              )}
-            </div>
-            <div className="mt-4 space-y-1.5 text-xs text-zinc-400">
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Socket:</span>
-                <span className="font-mono text-zinc-200 truncate ml-2">{ver.socket_path || `/run/php/php${ver.version}-fpm.sock`}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-zinc-500">FPM:</span>
-                <span className={ver.is_fpm_running ? 'text-emerald-400' : 'text-zinc-500'}>
-                  {ver.is_fpm_running ? 'Running' : 'Stopped'}
-                </span>
-              </div>
-            </div>
-            <div className="mt-5 pt-3 border-t border-zinc-800/80 flex justify-end">
-              <Button
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (ver.is_installed) handleSetDefaultFPM(ver.version);
-                  else navigate(`/php/install/${ver.version}`);
-                }}
-                disabled={settingDefaultFPM && selectedVer === ver.version}
-                className={`rounded-xl text-xs font-bold gap-1.5 ${
-                  ver.is_default_fpm
-                    ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                    : ver.is_installed
-                      ? 'bg-zinc-800 hover:bg-zinc-700 text-white'
-                      : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                }`}
-              >
-                {ver.is_installed ? (
-                  <>
-                    {ver.is_default_fpm ? <CheckCircle2 className="w-3 h-3" /> : <Server className="w-3 h-3" />}
-                    {ver.is_default_fpm ? 'Active FPM' : 'Set as default FPM'}
-                  </>
-                ) : (
-                  <><DownloadCloud className="w-3 h-3" />Install</>
-                )}
-              </Button>
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// The default for Apache-run sites, next to the Nginx default the cards below set.
-function BackendDefaults() {
   const qc = useQueryClient();
+  const { versionsQuery, installed, serverDefault, refresh } = usePHPRuntime();
   const modes = useWebServerModes();
   const d = modes.data;
-  const save = useMutation({
-    mutationFn: (v) => api.post('/api/webservers/php-defaults', { default_apache_php: v }),
-    onSuccess: (res) => {
-      toast.success(res?.message || 'Saved');
-      qc.invalidateQueries({ queryKey: ['webservers'] });
-    },
-    onError: (err) => toast.error(err.message),
-  });
-  if (!d) return null;
+
+  const done = (r) => {
+    toast.success(r?.message || 'Saved');
+    refresh();
+    qc.invalidateQueries({ queryKey: ['webservers'] });
+  };
+  const fail = (e) => toast.error(e.message, { duration: 10000 });
+
+  const setNginx = useMutation({ mutationFn: (v) => api.post('/api/php/fpm/default', { version: v }), onSuccess: done, onError: fail });
+  const setApache = useMutation({ mutationFn: (v) => api.post('/api/webservers/php-defaults', { default_apache_php: v }), onSuccess: done, onError: fail });
+
+  if (versionsQuery.isLoading) return <div className="space-y-6"><PageHeader title="Default version" /><Skeleton className="h-64" /></div>;
+  if (installed.length === 0) return <div className="space-y-6"><PageHeader title="Default version" /><NoPHPInstalled /></div>;
+
+  const options = installed.map((v) => (
+    <SelectItem key={v.version} value={v.version}>PHP {v.version}{v.is_fpm_running ? '' : ' (FPM stopped)'}</SelectItem>
+  ));
+
   return (
-    <Card className="flex flex-wrap items-center justify-between gap-4 p-4">
-      <div className="text-sm">
-        <p className="font-medium">Default for sites run by Apache</p>
-        <p className="text-xs text-muted-foreground">
-          Nginx-run sites: PHP {d.default_nginx_php}. Both can also be set on the{' '}
-          <Link to="/webservers/select" className="underline underline-offset-2">web server mode</Link> page.
-        </p>
+    <div className="space-y-6">
+      <PageHeader
+        title="Default version"
+        description="The PHP version new websites and hosting accounts get when they do not choose one. A site's or account's own choice always wins; existing sites are not changed."
+      />
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Sites run by Nginx</CardTitle>
+            <CardDescription>Also the version for webmail, phpMyAdmin and the system CLI unless you pinned another one.</CardDescription>
+          </CardHeader>
+          <CardContent className="flex items-center gap-3">
+            <Select value={serverDefault} onValueChange={(v) => setNginx.mutate(v)} disabled={setNginx.isPending}>
+              <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+              <SelectContent>{options}</SelectContent>
+            </Select>
+            {setNginx.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Sites run by Apache</CardTitle>
+            <CardDescription>
+              Used in the Apache and Nginx+Apache <Link to="/webservers/select" className="underline underline-offset-2">web server modes</Link>. Falls back to the Nginx default.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex items-center gap-3">
+            {modes.isLoading || !d ? <Skeleton className="h-9 w-56" /> : (
+              <Select value={d.default_apache_php || serverDefault} onValueChange={(v) => setApache.mutate(v)} disabled={setApache.isPending}>
+                <SelectTrigger className="w-56"><SelectValue /></SelectTrigger>
+                <SelectContent>{options}</SelectContent>
+              </Select>
+            )}
+            {setApache.isPending && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+          </CardContent>
+        </Card>
       </div>
-      <Select value={d.default_apache_php} onValueChange={(v) => save.mutate(v)} disabled={save.isPending}>
-        <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          {(d.installed_php || []).map((v) => <SelectItem key={v} value={v}>PHP {v}</SelectItem>)}
-        </SelectContent>
-      </Select>
-    </Card>
+
+      <p className="text-xs text-muted-foreground">
+        To move existing sites, change their PHP version on the <Link to="/websites" className="underline underline-offset-2">Websites</Link> page; for accounts, edit the account or its package.
+      </p>
+    </div>
   );
 }

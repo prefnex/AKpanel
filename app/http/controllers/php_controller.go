@@ -19,298 +19,285 @@ func NewPHPController() *PHPController {
 	}
 }
 
+func phpFail(ctx http.Context, status int, err error) http.Response {
+	return ctx.Response().Status(status).Json(http.Json{"status": "error", "message": err.Error()})
+}
+
+func phpOK(ctx http.Context, payload http.Json) http.Response {
+	payload["status"] = "success"
+	return ctx.Response().Success().Json(payload)
+}
+
+// phpVersionInput reads "version", defaulting to the server default, and validates it.
+func phpVersionInput(ctx http.Context, required bool) (string, error) {
+	v := strings.TrimSpace(ctx.Request().Input("version"))
+	if v == "" && !required {
+		v = paths.DefaultPHPVersion()
+	}
+	if !paths.IsPHPVersionString(v) {
+		return "", fmt.Errorf("a valid PHP version is required")
+	}
+	return v, nil
+}
+
 // Index returns all supported PHP versions details and installed extension matrix
 func (r *PHPController) Index(ctx http.Context) http.Response {
-	details := r.phpService.GetAllVersionsDetails()
-	overview := r.phpService.GetCLIOverview()
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"data":    details,
-		"cli":     overview,
+	return phpOK(ctx, http.Json{
+		"data":    r.phpService.GetAllVersionsDetails(),
+		"cli":     r.phpService.GetCLIOverview(),
+		"default": paths.DefaultPHPVersion(),
 	})
 }
 
 // PHPInfo returns parsed phpinfo sections
 func (r *PHPController) PHPInfo(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version", paths.DefaultPHPVersion())
+	version, err := phpVersionInput(ctx, false)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
 	sections, err := r.phpService.GetPHPInfo(version)
 	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return phpFail(ctx, 500, err)
 	}
-	return ctx.Response().Success().Json(http.Json{
-		"status": "success",
-		"data":   sections,
-	})
+	return phpOK(ctx, http.Json{"data": sections})
 }
 
-// GetRawIni gets raw php.ini content
+// GetRawIni gets raw php.ini content (sapi=fpm|cli)
 func (r *PHPController) GetRawIni(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version", paths.DefaultPHPVersion())
-	content, err := r.phpService.GetRawIni(version)
+	version, err := phpVersionInput(ctx, false)
 	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return phpFail(ctx, 422, err)
 	}
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"content": content,
-	})
+	sapi := ctx.Request().Input("sapi", "fpm")
+	content, err := r.phpService.GetRawIni(version, sapi)
+	if err != nil {
+		return phpFail(ctx, 500, err)
+	}
+	return phpOK(ctx, http.Json{"content": content, "path": fmt.Sprintf("/etc/php/%s/%s/php.ini", version, sapi)})
 }
 
 // SaveRawIni saves raw php.ini content
 func (r *PHPController) SaveRawIni(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
-	content := ctx.Request().Input("content")
-
-	if version == "" {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": "version is required",
-		})
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
 	}
-
-	if err := r.phpService.SaveRawIni(version, content); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+	sapi := ctx.Request().Input("sapi", "fpm")
+	if err := r.phpService.SaveRawIni(version, sapi, ctx.Request().Input("content")); err != nil {
+		return phpFail(ctx, 422, err)
 	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("php.ini for PHP %s saved and FPM reloaded successfully", version),
-	})
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("PHP %s %s php.ini saved (backup kept as php.ini.akpanel.bak)", version, sapi)})
 }
 
-// GetFpmPool gets FPM pool configuration
+// GetIniSettings returns the managed php.ini directives with current values.
+func (r *PHPController) GetIniSettings(ctx http.Context) http.Response {
+	version, err := phpVersionInput(ctx, false)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	settings, err := r.phpService.GetIniSettings(version, ctx.Request().Input("sapi", "fpm"))
+	if err != nil {
+		return phpFail(ctx, 500, err)
+	}
+	return phpOK(ctx, http.Json{"data": settings})
+}
+
+// UpdateIni saves managed php.ini directives: {version, targets: ["fpm","cli"], settings: {k: v}}.
+func (r *PHPController) UpdateIni(ctx http.Context) http.Response {
+	var req struct {
+		Version  string            `json:"version"`
+		Targets  []string          `json:"targets"`
+		Settings map[string]string `json:"settings"`
+	}
+	if err := ctx.Request().Bind(&req); err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	if len(req.Settings) == 0 {
+		return phpFail(ctx, 422, fmt.Errorf("nothing to save"))
+	}
+	if err := r.phpService.SaveIniSettings(strings.TrimSpace(req.Version), req.Targets, req.Settings); err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("php.ini for PHP %s updated and FPM reloaded", req.Version)})
+}
+
+// GetFpmPool gets the shared www pool plus a summary of account pools.
 func (r *PHPController) GetFpmPool(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version", paths.DefaultPHPVersion())
+	version, err := phpVersionInput(ctx, false)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
 	cfg, err := r.phpService.GetFpmPoolConfig(version)
 	if err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return phpFail(ctx, 500, err)
 	}
-	return ctx.Response().Success().Json(http.Json{
-		"status": "success",
-		"data":   cfg,
-	})
+	return phpOK(ctx, http.Json{"data": cfg, "account_pools": r.phpService.ListAccountPools(version)})
 }
 
-// SaveFpmPool saves FPM pool configuration
+// SaveFpmPool saves the shared www pool configuration
 func (r *PHPController) SaveFpmPool(ctx http.Context) http.Response {
 	var cfg services.FpmPoolConfig
-	cfg.Version = ctx.Request().Input("version")
-	cfg.Pm = ctx.Request().Input("pm", "dynamic")
-	cfg.MaxChildren = ctx.Request().Input("max_children", "50")
-	cfg.StartServers = ctx.Request().Input("start_servers", "5")
-	cfg.MinSpareServers = ctx.Request().Input("min_spare_servers", "5")
-	cfg.MaxSpareServers = ctx.Request().Input("max_spare_servers", "35")
-	cfg.MaxRequests = ctx.Request().Input("max_requests", "500")
-
-	if cfg.Version == "" {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": "version is required",
-		})
+	if err := ctx.Request().Bind(&cfg); err != nil {
+		return phpFail(ctx, 422, err)
 	}
-
 	if err := r.phpService.SaveFpmPoolConfig(&cfg); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return phpFail(ctx, 422, err)
 	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("PHP %s FPM pool updated and restarted successfully", cfg.Version),
-	})
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("PHP %s www pool saved and FPM restarted", cfg.Version)})
 }
 
 // StartLiveInstall starts a live install task with progress streaming
 func (r *PHPController) StartLiveInstall(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
-	itemType := ctx.Request().Input("type", "version") // "version", "extension", "ffmpeg", "addon"
-	name := ctx.Request().Input("name", "")
-
-	packagesRaw := ctx.Request().Input("packages")
-	var title, cmdStr string
-	switch itemType {
-	case "version":
-		title = fmt.Sprintf("PHP %s Installation", version)
-		pkgs := []string{"cli", "fpm", "cgi", "common", "mysql", "curl", "mbstring", "xml", "zip", "gd", "sqlite3"}
-		if packagesRaw != "" {
-			pkgs = []string{}
-			for _, p := range strings.Split(packagesRaw, ",") {
-				p = strings.TrimSpace(strings.ToLower(p))
-				if p != "" {
-					pkgs = append(pkgs, p)
-				}
-			}
-		}
-		apt := "apt-get update -qq && apt-get install -y"
-		for _, p := range pkgs {
-			apt += fmt.Sprintf(" php%s-%s", version, p)
-		}
-		apt += fmt.Sprintf(" && service php%s-fpm start", version)
-		cmdStr = apt
-	case "extension":
-		title = fmt.Sprintf("Extension '%s' for PHP %s", name, version)
-		cmdStr = fmt.Sprintf("apt-get install -y php%s-%s && service php%s-fpm restart", version, name, version)
-	case "ffmpeg":
-		title = "FFMPEG & Media Transcoding Engine"
-		cmdStr = "apt-get update -qq && apt-get install -y ffmpeg libavcodec-extra"
-	case "addon":
-		title = fmt.Sprintf("PHP Addon '%s'", name)
-		cmdStr = fmt.Sprintf("apt-get install -y php%s-%s && service php%s-fpm restart", version, name, version)
-	default:
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": "invalid type",
-		})
+	req := services.LiveInstallRequest{
+		Type:    ctx.Request().Input("type", "version"), // version | extension | ffmpeg | addon
+		Version: strings.TrimSpace(ctx.Request().Input("version")),
+		Name:    ctx.Request().Input("name", ""),
 	}
+	for _, p := range strings.Split(ctx.Request().Input("packages"), ",") {
+		if p = strings.TrimSpace(strings.ToLower(p)); p != "" {
+			req.Packages = append(req.Packages, p)
+		}
+	}
+	taskID, title, err := r.phpService.StartLiveInstall(req)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	return phpOK(ctx, http.Json{"task_id": taskID, "title": title})
+}
 
-	taskID := r.phpService.StartLiveInstallTask(title, cmdStr)
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"task_id": taskID,
-		"title":   title,
-	})
+// Uninstall removes a PHP version (live task) when nothing uses it.
+func (r *PHPController) Uninstall(ctx http.Context) http.Response {
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	taskID, err := r.phpService.StartUninstall(version)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	return phpOK(ctx, http.Json{"task_id": taskID, "title": fmt.Sprintf("Remove PHP %s", version)})
+}
+
+// Usage lists websites and accounts running on a version.
+func (r *PHPController) Usage(ctx http.Context) http.Response {
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	return phpOK(ctx, http.Json{"data": r.phpService.VersionUsage(version)})
+}
+
+// Packages reports which php<ver>-* packages are installable on this release.
+func (r *PHPController) Packages(ctx http.Context) http.Response {
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	opts, err := r.phpService.PackageOptions(version)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	return phpOK(ctx, http.Json{"data": opts})
 }
 
 // GetTaskStatus returns live real-time task progress and logs
 func (r *PHPController) GetTaskStatus(ctx http.Context) http.Response {
-	taskID := ctx.Request().Input("task_id")
-	task := r.phpService.GetTask(taskID)
+	task := r.phpService.GetTask(ctx.Request().Input("task_id"))
 	if task == nil {
-		return ctx.Response().Status(404).Json(http.Json{
-			"status":  "error",
-			"message": "task not found",
-		})
+		return phpFail(ctx, 404, fmt.Errorf("task not found"))
 	}
-	return ctx.Response().Success().Json(http.Json{
-		"status": "success",
-		"data":   task,
-	})
+	return phpOK(ctx, http.Json{"data": task})
 }
 
-// ToggleExtension, UpdateIni, RestartFPM
 // InstallVersion installs a PHP version directly
 func (r *PHPController) InstallVersion(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
 	if err := r.phpService.InstallVersion(version); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return phpFail(ctx, 500, err)
 	}
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("PHP %s installed successfully", version),
-	})
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("PHP %s installed successfully", version)})
 }
 
+// ToggleExtension installs (enable) or removes (disable) an extension package.
 func (r *PHPController) ToggleExtension(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
-	extension := ctx.Request().Input("extension")
-	enable := ctx.Request().InputBool("enable", true)
-
-	if err := r.phpService.ToggleExtension(version, extension, enable); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
 	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("Extension '%s' updated for PHP %s", extension, version),
-	})
+	extension := ctx.Request().Input("extension")
+	if err := r.phpService.ToggleExtension(version, extension, ctx.Request().InputBool("enable", true)); err != nil {
+		return phpFail(ctx, 500, err)
+	}
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("Extension '%s' updated for PHP %s", extension, version)})
 }
 
-func (r *PHPController) UpdateIni(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
-	memoryLimit := ctx.Request().Input("memory_limit")
-	uploadMax := ctx.Request().Input("upload_max_filesize")
-	postMax := ctx.Request().Input("post_max_size")
-	maxExecTime := ctx.Request().Input("max_execution_time")
-	maxInputVars := ctx.Request().Input("max_input_vars")
-
-	if err := r.phpService.UpdateIniSettings(version, memoryLimit, uploadMax, postMax, maxExecTime, maxInputVars); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+// SetExtensionState switches an installed module on/off (phpenmod/phpdismod).
+func (r *PHPController) SetExtensionState(ctx http.Context) http.Response {
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
 	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("php.ini for PHP %s updated and FPM reloaded successfully", version),
-	})
+	ext := ctx.Request().Input("extension")
+	enabled := ctx.Request().InputBool("enabled", true)
+	if err := r.phpService.SetExtensionState(version, ext, enabled); err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	state := "disabled"
+	if enabled {
+		state = "enabled"
+	}
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("%s %s for PHP %s", ext, state, version)})
 }
 
 func (r *PHPController) RestartFPM(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
-	if err := r.phpService.RestartFPM(version); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
 	}
+	if err := r.phpService.RestartFPM(version); err != nil {
+		return phpFail(ctx, 500, err)
+	}
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("PHP %s FPM restarted", version)})
+}
 
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("PHP %s FPM service restarted successfully", version),
-	})
+// FPMService runs start | stop | restart | reload on a version's FPM.
+func (r *PHPController) FPMService(ctx http.Context) http.Response {
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	action := ctx.Request().Input("action")
+	if err := r.phpService.FPMServiceAction(version, action); err != nil {
+		return phpFail(ctx, 422, err)
+	}
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("php%s-fpm: %s done", version, action)})
 }
 
 // SetDefaultCLI sets the system-wide default PHP CLI binary via update-alternatives.
 func (r *PHPController) SetDefaultCLI(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
-	if version == "" {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": "version is required",
-		})
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
 	}
-
 	if err := r.phpService.SetDefaultCLI(version); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return phpFail(ctx, 500, err)
 	}
-
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
+	return phpOK(ctx, http.Json{
 		"message": fmt.Sprintf("System default PHP CLI set to %s", version),
 		"cli":     r.phpService.GetCLIOverview(),
 	})
 }
 
 func (r *PHPController) SetDefaultFPM(ctx http.Context) http.Response {
-	version := ctx.Request().Input("version")
-	if version == "" {
-		return ctx.Response().Status(422).Json(http.Json{
-			"status":  "error",
-			"message": "version is required",
-		})
+	version, err := phpVersionInput(ctx, true)
+	if err != nil {
+		return phpFail(ctx, 422, err)
 	}
 	if err := r.phpService.SetDefaultFPM(version); err != nil {
-		return ctx.Response().Status(500).Json(http.Json{
-			"status":  "error",
-			"message": err.Error(),
-		})
+		return phpFail(ctx, 500, err)
 	}
-	return ctx.Response().Success().Json(http.Json{
-		"status":  "success",
-		"message": fmt.Sprintf("Default PHP-FPM for new sites set to %s", version),
-	})
+	return phpOK(ctx, http.Json{"message": fmt.Sprintf("Default PHP-FPM for new sites set to %s", version)})
 }

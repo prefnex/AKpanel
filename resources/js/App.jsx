@@ -25,7 +25,7 @@ const PHPLayout = lazy(() => import('./components/php/PHPLayout'));
 const PHPCLIPage = lazy(() => import('./components/php/PHPCLIPage'));
 const PHPFPMPage = lazy(() => import('./components/php/PHPFPMPage'));
 const PHPDefaultPage = lazy(() => import('./components/php/PHPDefaultPage'));
-const PHPShortInfoPage = lazy(() => import('./components/php/PHPShortInfoPage'));
+const PHPVersionsPage = lazy(() => import('./components/php/PHPVersionsPage'));
 const PHPInfoPage = lazy(() => import('./components/php/PHPInfoPage'));
 const PHPExtensionsPage = lazy(() => import('./components/php/PHPExtensionsPage'));
 const PHPAddonsPage = lazy(() => import('./components/php/PHPAddonsPage'));
@@ -260,12 +260,12 @@ export default function App() {
           <Route path="/webservers/apache-status" element={<Navigate to="/webservers/status" replace />} />
           <Route path="/webservers/*" element={legacy(<WebServerManager showToast={showToast} />)} />
 
-          <Route path="/php" element={legacy(<PHPLayout showToast={showToast} />)}>
-            <Route index element={<Navigate to="cli" replace />} />
+          <Route path="/php" element={legacy(<PHPLayout />)}>
+            <Route index element={<PHPVersionsPage />} />
             <Route path="cli" element={<PHPCLIPage />} />
             <Route path="fpm" element={<PHPFPMPage />} />
             <Route path="default" element={<PHPDefaultPage />} />
-            <Route path="short-info" element={<PHPShortInfoPage />} />
+            <Route path="short-info" element={<Navigate to="/php" replace />} />
             <Route path="info" element={<PHPInfoPage />} />
             <Route path="extensions" element={<PHPExtensionsPage />} />
             <Route path="addons" element={<PHPAddonsPage />} />

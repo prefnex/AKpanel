@@ -1,70 +1,149 @@
-import React from 'react';
-import { Search } from 'lucide-react';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
-import { Input } from '../ui/input';
+import React, { useMemo, useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
+import { toast } from 'sonner';
+import { DownloadCloud, Lock, Search } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import PageHeader from '@/components/app/PageHeader';
+import SegmentedControl from '@/components/app/SegmentedControl';
+import EmptyState from '@/components/app/EmptyState';
+import { api } from '@/lib/api';
 import { usePHPRuntime } from './PHPRuntimeContext';
-import PHPSectionIntro from './PHPSectionIntro';
+import { NoPHPInstalled, VersionPicker } from './PHPShared';
+
+// An extension is in one of three states:
+//   loaded + has ini  → can be switched off (phpdismod)
+//   loaded, no ini    → compiled in, always on
+//   not loaded + ini  → installed but disabled (phpenmod)
+//   not loaded, none  → package must be installed first
+function stateOf(ext) {
+  if (ext.is_installed && !ext.has_ini) return 'builtin';
+  if (ext.is_installed) return 'on';
+  if (ext.has_ini) return 'off';
+  return 'missing';
+}
 
 export default function PHPExtensionsPage() {
-  const {
-    searchQuery, setSearchQuery, categories, activeCategory, setActiveCategory,
-    filteredExtensions, setPreviewItem, selectedVer,
-  } = usePHPRuntime();
+  const { installed, versionsQuery, current, selectedVer, refresh, startInstall } = usePHPRuntime();
+  const [query, setQuery] = useState('');
+  const [category, setCategory] = useState('all');
+  const [show, setShow] = useState('all');
+  const [pending, setPending] = useState(null);
+
+  const toggle = useMutation({
+    mutationFn: ({ name, enabled }) => api.post('/api/php/extension/state', { version: selectedVer, extension: name, enabled }),
+    onMutate: ({ name }) => setPending(name),
+    onSuccess: (r) => { toast.success(r.message); refresh(); },
+    onError: (e) => toast.error(e.message, { duration: 10000 }),
+    onSettled: () => setPending(null),
+  });
+
+  const exts = current?.extensions || [];
+  const categories = useMemo(() => [...new Set(exts.map((e) => e.category))].sort(), [exts]);
+  const counts = useMemo(() => ({
+    all: exts.length,
+    on: exts.filter((e) => e.is_installed).length,
+    off: exts.filter((e) => !e.is_installed).length,
+  }), [exts]);
+
+  const list = exts.filter((e) => {
+    const q = query.trim().toLowerCase();
+    if (q && !e.name.toLowerCase().includes(q) && !e.description.toLowerCase().includes(q)) return false;
+    if (category !== 'all' && e.category !== category) return false;
+    if (show === 'on' && !e.is_installed) return false;
+    if (show === 'off' && e.is_installed) return false;
+    return true;
+  });
+
+  if (installed.length === 0 && !versionsQuery.isLoading) {
+    return <div className="space-y-6"><PageHeader title="Extensions" /><NoPHPInstalled /></div>;
+  }
 
   return (
-    <div className="space-y-4">
-      <PHPSectionIntro
+    <div className="space-y-6">
+      <PageHeader
         title="Extensions"
-        goal="Enable or install PHP modules (mysqli, gd, intl, redis, …) for the selected version. Changes apply after FPM restart."
+        description="Switch PHP modules on or off for the selected version, or install the ones that are missing. FPM reloads after each change."
+        actions={<VersionPicker />}
       />
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="relative flex-1 max-w-sm">
-          <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-3 top-3" />
-          <Input
-            type="text"
-            placeholder="Search extensions..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="bg-zinc-900 border-zinc-800 rounded-2xl pl-9 text-xs"
-          />
-        </div>
-        <div className="flex items-center gap-1.5 overflow-x-auto text-xs pb-1">
-          {categories.slice(0, 6).map(cat => (
-            <button
-              key={cat}
-              onClick={() => setActiveCategory(cat)}
-              className={`px-3 py-1.5 rounded-xl font-semibold ${
-                activeCategory === cat ? 'bg-zinc-800 text-white border border-zinc-700' : 'bg-zinc-900/60 text-zinc-400'
-              }`}
-            >
-              {cat}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[550px] overflow-y-auto p-1">
-        {filteredExtensions.map(ext => (
-          <div key={ext.name} className="p-3.5 rounded-2xl bg-[#121215] border border-zinc-800/80 flex items-center justify-between">
-            <div className="pr-3">
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-xs text-white font-mono">{ext.name}</span>
-                <Badge variant="secondary" className="text-[9px] px-1.5 py-0 bg-zinc-800 text-zinc-400">{ext.category}</Badge>
-              </div>
-              <p className="text-[11px] text-zinc-400 mt-1 line-clamp-2">{ext.description}</p>
-            </div>
-            <Button
-              size="sm"
-              onClick={() => setPreviewItem({ type: 'extension', name: ext.name, version: selectedVer })}
-              className={`h-7 px-3 rounded-xl text-xs shrink-0 font-bold ${
-                ext.is_installed ? 'border-emerald-500/30 text-emerald-400 bg-emerald-500/10' : 'bg-white hover:bg-zinc-200 text-black'
-              }`}
-            >
-              {ext.is_installed ? 'Active' : 'Install'}
-            </Button>
+
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-1 flex-wrap items-center gap-2">
+          <div className="relative w-full max-w-xs">
+            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search extensions…" className="pl-8" />
           </div>
-        ))}
+          <Select value={category} onValueChange={setCategory}>
+            <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {categories.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <SegmentedControl
+          value={show}
+          onChange={setShow}
+          options={[
+            { value: 'all', label: 'All', count: counts.all },
+            { value: 'on', label: 'Enabled', count: counts.on },
+            { value: 'off', label: 'Not enabled', count: counts.off },
+          ]}
+        />
       </div>
+
+      {versionsQuery.isLoading ? <Skeleton className="h-96" /> : list.length === 0 ? (
+        <EmptyState icon={Search} title="No extensions match" description="Try another search or category." />
+      ) : (
+        <Card className="divide-y">
+          {list.map((ext) => {
+            const st = stateOf(ext);
+            const busy = pending === ext.name;
+            return (
+              <div key={ext.name} className="flex items-center justify-between gap-4 px-4 py-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm font-medium">{ext.name}</span>
+                    <Badge variant="muted" className="text-[10px]">{ext.category}</Badge>
+                    {st === 'builtin' && <Badge variant="secondary" className="text-[10px]"><Lock className="h-3 w-3" />built in</Badge>}
+                    {st === 'missing' && <Badge variant="outline" className="text-[10px]">not installed</Badge>}
+                  </div>
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">{ext.description}</p>
+                </div>
+                <div className="shrink-0">
+                  {st === 'missing' ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => startInstall({ type: 'extension', version: selectedVer, name: ext.package_name })}
+                    >
+                      <DownloadCloud />Install
+                    </Button>
+                  ) : st === 'builtin' ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild><span><Switch checked disabled aria-label={`${ext.name} is built in`} /></span></TooltipTrigger>
+                      <TooltipContent>Compiled into PHP {selectedVer}; always on.</TooltipContent>
+                    </Tooltip>
+                  ) : (
+                    <Switch
+                      checked={st === 'on'}
+                      disabled={busy || toggle.isPending}
+                      onCheckedChange={(c) => toggle.mutate({ name: ext.name, enabled: c })}
+                      aria-label={`${st === 'on' ? 'Disable' : 'Enable'} ${ext.name}`}
+                    />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
     </div>
   );
 }

@@ -106,6 +106,19 @@ func (s *ServerSettingsService) initSettings() {
 	}
 }
 
+// readServerSettingsFile reads the settings document without constructing the service.
+// DNSService needs it during its own sync.Once init, and NewServerSettingsService itself
+// calls NewDNSService — going through the constructor there deadlocks the boot.
+func readServerSettingsFile() (ServerSettings, error) {
+	var settings ServerSettings
+	content, err := os.ReadFile("/etc/akpanel/server_settings.json")
+	if err != nil {
+		return settings, err
+	}
+	err = json.Unmarshal(content, &settings)
+	return settings, err
+}
+
 func (s *ServerSettingsService) GetSettings() (ServerSettings, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -1,15 +1,13 @@
 import React from 'react';
 import { Outlet } from 'react-router-dom';
 import { PHPRuntimeProvider } from './PHPRuntimeContext';
-import PHPPageShell from './PHPPageShell';
+import { TaskDialog } from './PHPShared';
 
-export default function PHPLayout({ showToast }) {
+export default function PHPLayout() {
   return (
-    <PHPRuntimeProvider showToast={showToast}>
-      <div className="space-y-6">
-        <PHPPageShell />
-        <Outlet />
-      </div>
+    <PHPRuntimeProvider>
+      <Outlet />
+      <TaskDialog />
     </PHPRuntimeProvider>
   );
 }

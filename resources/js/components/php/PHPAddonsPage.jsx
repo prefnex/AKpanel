@@ -1,67 +1,63 @@
 import React from 'react';
-import { Video, ShieldCheck, Zap, Play } from 'lucide-react';
-import { Card } from '../ui/card';
-import { Button } from '../ui/button';
-import { Badge } from '../ui/badge';
+import { DownloadCloud, ShieldCheck, Video, Zap } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+import PageHeader from '@/components/app/PageHeader';
 import { usePHPRuntime } from './PHPRuntimeContext';
-import PHPSectionIntro from './PHPSectionIntro';
+import { VersionPicker } from './PHPShared';
+
+const ADDONS = [
+  {
+    id: 'ffmpeg', type: 'ffmpeg', icon: Video, title: 'FFmpeg', tag: 'System',
+    text: 'Video/audio encoding binaries used by media plugins and transcoding scripts. Installed once for the whole server.',
+    perVersion: false,
+  },
+  {
+    id: 'ioncube', type: 'addon', icon: ShieldCheck, title: 'IonCube Loader', tag: 'Loader',
+    text: 'Runs IonCube-encoded applications such as WHMCS. Downloaded from ioncube.com and loaded before OPcache.',
+    perVersion: true,
+  },
+  {
+    id: 'swoole', type: 'addon', icon: Zap, title: 'Swoole', tag: 'PECL',
+    text: 'Coroutine runtime for Laravel Octane and long-running PHP servers.',
+    perVersion: true,
+  },
+];
 
 export default function PHPAddonsPage() {
-  const { selectedVer, setPreviewItem } = usePHPRuntime();
+  const { selectedVer, current, startInstall } = usePHPRuntime();
+  const loaded = new Set((current?.extensions || []).filter((e) => e.is_installed).map((e) => e.name));
 
   return (
-    <div className="space-y-4">
-      <PHPSectionIntro
-        title="System addons"
-        goal="Install server-side tools sites often need next to PHP: FFMPEG, IonCube, and PECL extras. These are not PHP version switches."
+    <div className="space-y-6">
+      <PageHeader
+        title="Add-ons"
+        description="Extra tools sites often need next to PHP. Per-version add-ons install for the version selected on the right."
+        actions={<VersionPicker />}
       />
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <Card className="bg-[#121215] border-zinc-800/80 rounded-3xl p-6">
-        <div className="flex items-center justify-between">
-          <span className="font-bold text-base text-white flex items-center gap-2">
-            <Video className="w-5 h-5 text-rose-400" /> FFMPEG
-          </span>
-          <Badge className="bg-rose-500/10 text-rose-400">Media</Badge>
-        </div>
-        <p className="text-xs text-zinc-400 mt-3">Video/audio encoding binaries for WordPress and transcoding.</p>
-        <Button
-          onClick={() => setPreviewItem({ type: 'ffmpeg', name: 'FFMPEG Media Suite', version: selectedVer })}
-          className="mt-5 w-full rounded-2xl bg-white hover:bg-zinc-200 text-black font-bold text-xs gap-1.5"
-        >
-          <Play className="w-3.5 h-3.5" /> Install FFMPEG
-        </Button>
-      </Card>
-      <Card className="bg-[#121215] border-zinc-800/80 rounded-3xl p-6">
-        <div className="flex items-center justify-between">
-          <span className="font-bold text-base text-white flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-blue-400" /> IonCube Loader
-          </span>
-          <Badge className="bg-blue-500/10 text-blue-400">Security</Badge>
-        </div>
-        <p className="text-xs text-zinc-400 mt-3">Runs encoded PHP applications such as WHMCS.</p>
-        <Button
-          onClick={() => setPreviewItem({ type: 'addon', name: 'ioncube', version: selectedVer })}
-          className="mt-5 w-full rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-white font-bold text-xs"
-        >
-          Install IonCube
-        </Button>
-      </Card>
-      <Card className="bg-[#121215] border-zinc-800/80 rounded-3xl p-6">
-        <div className="flex items-center justify-between">
-          <span className="font-bold text-base text-white flex items-center gap-2">
-            <Zap className="w-5 h-5 text-amber-400" /> Swoole
-          </span>
-          <Badge className="bg-amber-500/10 text-amber-400">Speed</Badge>
-        </div>
-        <p className="text-xs text-zinc-400 mt-3">Coroutine runtime for Laravel Octane and APIs.</p>
-        <Button
-          onClick={() => setPreviewItem({ type: 'addon', name: 'swoole', version: selectedVer })}
-          className="mt-5 w-full rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-white font-bold text-xs"
-        >
-          Install Swoole
-        </Button>
-      </Card>
-    </div>
+      <div className="grid gap-4 md:grid-cols-3">
+        {ADDONS.map((a) => {
+          const isOn = a.id === 'swoole' && loaded.has('swoole');
+          return (
+            <Card key={a.id} className="flex flex-col p-5">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-2 font-semibold"><a.icon className="h-4 w-4" />{a.title}</span>
+                <Badge variant="muted">{a.tag}</Badge>
+              </div>
+              <p className="mt-2 flex-1 text-sm text-muted-foreground">{a.text}</p>
+              <Button
+                className="mt-4"
+                variant={isOn ? 'outline' : 'default'}
+                disabled={isOn || (a.perVersion && !selectedVer)}
+                onClick={() => startInstall({ type: a.type, version: a.perVersion ? selectedVer : '', name: a.id })}
+              >
+                <DownloadCloud />{isOn ? 'Installed' : a.perVersion ? `Install for PHP ${selectedVer}` : 'Install'}
+              </Button>
+            </Card>
+          );
+        })}
+      </div>
     </div>
   );
 }

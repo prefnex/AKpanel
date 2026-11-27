@@ -19,12 +19,17 @@ type PHPExtensionInfo struct {
 	Category    string `json:"category"`
 	Description string `json:"description"`
 	PackageName string `json:"package_name"`
-	IsInstalled bool   `json:"is_installed"`
+	IsInstalled bool   `json:"is_installed"` // loaded by PHP right now
+	// HasIni: a mods-available/<name>.ini exists, so phpenmod/phpdismod can switch it.
+	HasIni bool `json:"has_ini"`
+	// Builtin: compiled into PHP; always on, cannot be disabled.
+	Builtin bool `json:"builtin"`
 }
 
 type PHPVersionDetail struct {
 	Version      string             `json:"version"`
 	IsInstalled  bool               `json:"is_installed"`
+	IsAvailable  bool               `json:"is_available"` // apt has php<ver>-fpm for this release
 	IsFPMRunning bool               `json:"is_fpm_running"`
 	IsDefaultCLI bool               `json:"is_default_cli"`
 	IsDefaultFPM bool               `json:"is_default_fpm"`
@@ -45,16 +50,6 @@ type PHPVersionDetail struct {
 type PHPInfoSection struct {
 	Title      string            `json:"title"`
 	Directives map[string]string `json:"directives"`
-}
-
-type FpmPoolConfig struct {
-	Version         string `json:"version"`
-	Pm              string `json:"pm"` // dynamic, static, ondemand
-	MaxChildren     string `json:"max_children"`
-	StartServers    string `json:"start_servers"`
-	MinSpareServers string `json:"min_spare_servers"`
-	MaxSpareServers string `json:"max_spare_servers"`
-	MaxRequests     string `json:"max_requests"`
 }
 
 type LiveInstallTask struct {
@@ -144,6 +139,7 @@ func (p *PHPManagerService) GetAllVersionsDetails() []PHPVersionDetail {
 	defaultCLI := p.getDefaultCLIVersion()
 	defaultFPM := p.getDefaultFPMVersion()
 	versions := p.getSupportedVersions()
+	available := p.AvailablePHPVersions()
 
 	for _, ver := range versions {
 		detail := PHPVersionDetail{
@@ -154,6 +150,7 @@ func (p *PHPManagerService) GetAllVersionsDetails() []PHPVersionDetail {
 			IniPath:      fmt.Sprintf("/etc/php/%s/fpm/php.ini", ver),
 			IsDefaultCLI: (ver == defaultCLI),
 			IsDefaultFPM: (ver == defaultFPM),
+			IsAvailable:  available[ver],
 		}
 
 		if _, err := os.Stat(detail.CLIPath); err == nil {
@@ -176,6 +173,10 @@ func (p *PHPManagerService) GetAllVersionsDetails() []PHPVersionDetail {
 			if _, exists := loadedModules[strings.ToLower(ext.Name)]; exists {
 				extCopy.IsInstalled = true
 			}
+			if _, err := os.Stat(fmt.Sprintf("/etc/php/%s/mods-available/%s.ini", ver, ext.Name)); err == nil {
+				extCopy.HasIni = true
+			}
+			extCopy.Builtin = extCopy.IsInstalled && !extCopy.HasIni
 			detail.Extensions[i] = extCopy
 		}
 
@@ -219,10 +220,10 @@ func (p *PHPManagerService) getSupportedVersions() []string {
 
 // GetPHPInfo parses php -i output into structured JSON
 func (p *PHPManagerService) GetPHPInfo(version string) ([]PHPInfoSection, error) {
-	binaryPath := fmt.Sprintf("/usr/bin/php%s", version)
-	if _, err := os.Stat(binaryPath); err != nil {
-		binaryPath = "php"
+	if !paths.PHPCLIInstalled(version) {
+		return nil, fmt.Errorf("PHP %s CLI is not installed", version)
 	}
+	binaryPath := fmt.Sprintf("/usr/bin/php%s", version)
 
 	out, err := exec.Command(binaryPath, "-i").Output()
 	if err != nil {
@@ -283,120 +284,6 @@ func (p *PHPManagerService) GetPHPInfo(version string) ([]PHPInfoSection, error)
 	return sections, nil
 }
 
-// GetRawIni reads raw php.ini text
-func (p *PHPManagerService) GetRawIni(version string) (string, error) {
-	iniPath := fmt.Sprintf("/etc/php/%s/fpm/php.ini", version)
-	data, err := os.ReadFile(iniPath)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-// SaveRawIni saves raw php.ini and reloads FPM
-func (p *PHPManagerService) SaveRawIni(version, content string) error {
-	iniPath := fmt.Sprintf("/etc/php/%s/fpm/php.ini", version)
-	if err := os.WriteFile(iniPath, []byte(content), 0644); err != nil {
-		return err
-	}
-	_ = exec.Command("service", fmt.Sprintf("php%s-fpm", version), "reload").Run()
-	return nil
-}
-
-// GetFpmPoolConfig reads /etc/php/{ver}/fpm/pool.d/www.conf
-func (p *PHPManagerService) GetFpmPoolConfig(version string) (*FpmPoolConfig, error) {
-	poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/www.conf", version)
-	data, err := os.ReadFile(poolPath)
-	if err != nil {
-		return &FpmPoolConfig{
-			Version:         version,
-			Pm:              "dynamic",
-			MaxChildren:     "50",
-			StartServers:    "5",
-			MinSpareServers: "5",
-			MaxSpareServers: "35",
-			MaxRequests:     "500",
-		}, nil
-	}
-
-	content := string(data)
-	return &FpmPoolConfig{
-		Version:         version,
-		Pm:              p.extractDirective(content, "pm", "dynamic"),
-		MaxChildren:     p.extractDirective(content, "pm.max_children", "50"),
-		StartServers:    p.extractDirective(content, "pm.start_servers", "5"),
-		MinSpareServers: p.extractDirective(content, "pm.min_spare_servers", "5"),
-		MaxSpareServers: p.extractDirective(content, "pm.max_spare_servers", "35"),
-		MaxRequests:     p.extractDirective(content, "pm.max_requests", "500"),
-	}, nil
-}
-
-// SaveFpmPoolConfig updates FPM pool directives
-func (p *PHPManagerService) SaveFpmPoolConfig(cfg *FpmPoolConfig) error {
-	poolPath := fmt.Sprintf("/etc/php/%s/fpm/pool.d/www.conf", cfg.Version)
-	data, err := os.ReadFile(poolPath)
-	if err != nil {
-		return err
-	}
-
-	content := string(data)
-	content = p.replaceFpmDirective(content, "pm", cfg.Pm)
-	content = p.replaceFpmDirective(content, "pm.max_children", cfg.MaxChildren)
-	content = p.replaceFpmDirective(content, "pm.start_servers", cfg.StartServers)
-	content = p.replaceFpmDirective(content, "pm.min_spare_servers", cfg.MinSpareServers)
-	content = p.replaceFpmDirective(content, "pm.max_spare_servers", cfg.MaxSpareServers)
-	content = p.replaceFpmDirective(content, "pm.max_requests", cfg.MaxRequests)
-
-	if err := os.WriteFile(poolPath, []byte(content), 0644); err != nil {
-		return err
-	}
-	_ = exec.Command("service", fmt.Sprintf("php%s-fpm", cfg.Version), "restart").Run()
-	return nil
-}
-
-// StartLiveInstallTask starts a background task with live log streaming
-func (p *PHPManagerService) StartLiveInstallTask(title string, cmdStr string) string {
-	taskID := fmt.Sprintf("task_%d", time.Now().UnixNano())
-	task := &LiveInstallTask{
-		ID:        taskID,
-		Title:     title,
-		Status:    "running",
-		Progress:  10,
-		Logs:      []string{fmt.Sprintf("🚀 [1/4] Starting %s...", title)},
-		StartTime: time.Now(),
-	}
-
-	p.tasksMutex.Lock()
-	p.tasks[taskID] = task
-	p.tasksMutex.Unlock()
-
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		p.appendLog(taskID, "📦 [2/4] Resolving dependencies and checking repositories...")
-		p.setProgress(taskID, 35)
-
-		cmd := exec.Command("bash", "-c", cmdStr)
-		out, err := cmd.CombinedOutput()
-
-		p.appendLog(taskID, "⚙️ [3/4] Running installation daemon:")
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.TrimSpace(line) != "" {
-				p.appendLog(taskID, "  "+line)
-			}
-		}
-
-		if err != nil {
-			p.appendLog(taskID, fmt.Sprintf("❌ Error: %v", err))
-			p.setTaskStatus(taskID, "failed", 100)
-		} else {
-			p.appendLog(taskID, "✅ [4/4] Process completed successfully! Services reloaded.")
-			p.setTaskStatus(taskID, "completed", 100)
-		}
-	}()
-
-	return taskID
-}
-
 // GetTask returns live task status and log stream
 func (p *PHPManagerService) GetTask(taskID string) *LiveInstallTask {
 	p.tasksMutex.RLock()
@@ -437,29 +324,41 @@ func (p *PHPManagerService) replaceFpmDirective(content, key, val string) string
 	return re.ReplaceAllString(content, fmt.Sprintf("%s = %s", key, val))
 }
 
-// ToggleExtension, InstallVersion, UpdateIni, RestartFPM, etc.
+// InstallVersion installs a PHP version synchronously (default package set, only the
+// packages apt actually has for this release).
 func (p *PHPManagerService) InstallVersion(version string) error {
-	cmd := exec.Command("apt-get", "install", "-y",
-		fmt.Sprintf("php%s-cli", version),
-		fmt.Sprintf("php%s-fpm", version),
-		fmt.Sprintf("php%s-cgi", version), // Apache "cgi" handler (mod_fcgid + suexec)
-		fmt.Sprintf("php%s-common", version),
-		fmt.Sprintf("php%s-sqlite3", version),
-		fmt.Sprintf("php%s-curl", version),
-		fmt.Sprintf("php%s-mbstring", version),
-		fmt.Sprintf("php%s-xml", version),
-		fmt.Sprintf("php%s-zip", version),
-		fmt.Sprintf("php%s-gd", version),
-		fmt.Sprintf("php%s-mysql", version),
-	)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to install PHP %s: %w", version, err)
+	if !paths.IsPHPVersionString(version) {
+		return fmt.Errorf("invalid PHP version %q", version)
 	}
-	_ = exec.Command("service", fmt.Sprintf("php%s-fpm", version), "start").Run()
+	st := p.EnsurePHPRepository(nil)
+	var want []string
+	for _, s := range DefaultPHPInstallPackages {
+		want = append(want, fmt.Sprintf("php%s-%s", version, s))
+	}
+	cands := aptCandidates(want)
+	if !cands["php"+version+"-fpm"] {
+		return fmt.Errorf("PHP %s is not available for %s %s", version, st.OSID, st.Codename)
+	}
+	var pkgs []string
+	for _, pk := range want {
+		if cands[pk] {
+			pkgs = append(pkgs, pk)
+		}
+	}
+	cmd := exec.Command("apt-get", append(append([]string{}, aptInstallArgs...), pkgs...)...)
+	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to install PHP %s: %w: %s", version, err, lastLines(string(out), 5))
+	}
+	_ = exec.Command("systemctl", "enable", "--now", fmt.Sprintf("php%s-fpm", version)).Run()
+	p.EnsureCLIDefault()
 	return nil
 }
 
 func (p *PHPManagerService) ToggleExtension(version, extName string, enable bool) error {
+	if !paths.IsPHPVersionString(version) {
+		return fmt.Errorf("invalid PHP version %q", version)
+	}
 	var pkg string
 	for _, ext := range p.allExtensions {
 		if ext.Name == extName {
@@ -468,62 +367,40 @@ func (p *PHPManagerService) ToggleExtension(version, extName string, enable bool
 		}
 	}
 	if pkg == "" {
-		pkg = extName
+		pkg = strings.ToLower(strings.TrimSpace(extName))
+	}
+	if !phpPkgNameRe.MatchString(pkg) {
+		return fmt.Errorf("invalid extension %q", extName)
 	}
 
 	fullPkg := fmt.Sprintf("php%s-%s", version, pkg)
 	if enable {
-		cmd := exec.Command("apt-get", "install", "-y", fullPkg)
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to install extension %s: %w", fullPkg, err)
+		if !aptCandidates([]string{fullPkg})[fullPkg] {
+			p.EnsurePHPRepository(nil)
+			if !aptCandidates([]string{fullPkg})[fullPkg] {
+				return fmt.Errorf("package %s is not available for this server's release", fullPkg)
+			}
+		}
+		cmd := exec.Command("apt-get", append(append([]string{}, aptInstallArgs...), fullPkg)...)
+		cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to install extension %s: %w: %s", fullPkg, err, lastLines(string(out), 5))
 		}
 	} else {
-		cmd := exec.Command("apt-get", "remove", "-y", fullPkg)
-		_ = cmd.Run()
+		if pkg == "common" {
+			return fmt.Errorf("%s is part of php%s-common and cannot be removed on its own", extName, version)
+		}
+		_ = exec.Command("apt-get", "remove", "-y", fullPkg).Run()
 	}
 
 	_ = exec.Command("service", fmt.Sprintf("php%s-fpm", version), "restart").Run()
 	return nil
 }
 
-func (p *PHPManagerService) UpdateIniSettings(version string, memoryLimit, uploadMax, postMax, maxExecTime, maxInputVars string) error {
-	iniFile := fmt.Sprintf("/etc/php/%s/fpm/php.ini", version)
-	contentBytes, err := os.ReadFile(iniFile)
-	if err != nil {
-		return fmt.Errorf("cannot read php.ini for PHP %s: %w", version, err)
-	}
-
-	content := string(contentBytes)
-	if memoryLimit != "" {
-		re := regexp.MustCompile(`(?m)^;?memory_limit\s*=\s*.*$`)
-		content = re.ReplaceAllString(content, fmt.Sprintf("memory_limit = %s", memoryLimit))
-	}
-	if uploadMax != "" {
-		re := regexp.MustCompile(`(?m)^;?upload_max_filesize\s*=\s*.*$`)
-		content = re.ReplaceAllString(content, fmt.Sprintf("upload_max_filesize = %s", uploadMax))
-	}
-	if postMax != "" {
-		re := regexp.MustCompile(`(?m)^;?post_max_size\s*=\s*.*$`)
-		content = re.ReplaceAllString(content, fmt.Sprintf("post_max_size = %s", postMax))
-	}
-	if maxExecTime != "" {
-		re := regexp.MustCompile(`(?m)^;?max_execution_time\s*=\s*.*$`)
-		content = re.ReplaceAllString(content, fmt.Sprintf("max_execution_time = %s", maxExecTime))
-	}
-	if maxInputVars != "" {
-		re := regexp.MustCompile(`(?m)^;?max_input_vars\s*=\s*.*$`)
-		content = re.ReplaceAllString(content, fmt.Sprintf("max_input_vars = %s", maxInputVars))
-	}
-
-	if err := os.WriteFile(iniFile, []byte(content), 0644); err != nil {
-		return fmt.Errorf("failed to save php.ini: %w", err)
-	}
-
-	_ = exec.Command("service", fmt.Sprintf("php%s-fpm", version), "reload").Run()
-	return nil
-}
-
 func (p *PHPManagerService) RestartFPM(version string) error {
+	if !paths.PHPFPMInstalled(version) {
+		return fmt.Errorf("PHP %s FPM is not installed", version)
+	}
 	cmd := exec.Command("service", fmt.Sprintf("php%s-fpm", version), "restart")
 	return cmd.Run()
 }
@@ -640,6 +517,9 @@ func (p *PHPManagerService) getLoadedModules(version string) map[string]bool {
 		trimmed := strings.ToLower(strings.TrimSpace(line))
 		if trimmed != "" && !strings.HasPrefix(trimmed, "[") {
 			modules[trimmed] = true
+			if trimmed == "zend opcache" {
+				modules["opcache"] = true
+			}
 		}
 	}
 	return modules

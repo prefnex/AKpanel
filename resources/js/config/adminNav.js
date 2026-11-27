@@ -37,14 +37,14 @@ export const adminNav = [
       {
         title: 'PHP', url: '/php', icon: Code2,
         children: [
+          { title: 'Versions', url: '/php' },
+          { title: 'Default version', url: '/php/default' },
           { title: 'CLI version', url: '/php/cli' },
           { title: 'PHP-FPM', url: '/php/fpm' },
-          { title: 'Default version', url: '/php/default' },
+          { title: 'php.ini settings', url: '/php/ini' },
+          { title: 'php.ini (raw)', url: '/php/ini-raw' },
           { title: 'Extensions', url: '/php/extensions' },
           { title: 'Add-ons', url: '/php/addons' },
-          { title: 'php.ini', url: '/php/ini' },
-          { title: 'php.ini (raw)', url: '/php/ini-raw' },
-          { title: 'Short info', url: '/php/short-info' },
           { title: 'phpinfo()', url: '/php/info' },
         ],
       },

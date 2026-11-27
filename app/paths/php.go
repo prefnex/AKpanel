@@ -69,6 +69,9 @@ func InstalledPHPVersions() []string {
 	return out
 }
 
+// SortPHPVersionsDesc sorts versions newest first ("8.10" after "8.9").
+func SortPHPVersionsDesc(vs []string) { sortPHPVersionsDesc(vs) }
+
 func sortPHPVersionsDesc(vs []string) {
 	key := func(v string) int {
 		parts := strings.SplitN(v, ".", 2)

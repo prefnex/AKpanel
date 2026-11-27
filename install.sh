@@ -94,7 +94,9 @@ case "$ARCH" in
     *) PKG_ARCH="amd64" ;;
 esac
 
-UBUNTU_CODENAME=$(lsb_release -sc 2>/dev/null || grep VERSION_CODENAME /etc/os-release 2>/dev/null | cut -d= -f2 || echo "noble")
+OS_ID=$(. /etc/os-release 2>/dev/null; echo "${ID:-ubuntu}")
+UBUNTU_CODENAME=$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-}")
+[ -z "$UBUNTU_CODENAME" ] && UBUNTU_CODENAME=$(lsb_release -sc 2>/dev/null || echo "noble")
 
 # Pre-generate Root Password if not exists
 if [ -f /etc/akpanel/credentials.txt ]; then
@@ -192,7 +194,7 @@ if [ "$AUTO_CONFIRM" = false ]; then
     echo ""
 
     echo -e "${CYAN}${BOLD}PHP Versions${NC}"
-    echo -e "  Primary version ${GREEN}8.3${NC} will always be installed."
+    echo -e "  Primary version ${GREEN}8.3${NC} ${DIM}(falls back to the distro PHP if 8.3 is not packaged for this release)${NC}"
     akpanel_read "  Install additional PHP versions? [y/N]: " INSTALL_EXTRA_PHP
     if [[ "$INSTALL_EXTRA_PHP" =~ ^[Yy]$ ]]; then
         echo -e "  Available: ${DIM}7.4  8.0  8.1  8.2  8.4${NC}"
@@ -216,12 +218,138 @@ else
     echo -e "${BOLD}🚀 Starting Clean Automated Installation...${NC} ${DIM}(Logs: ${LOG_FILE} | Run with --verbose for raw logs)${NC}\n"
 fi
 
+# apt_pkg_available PKG — true when apt has an install candidate for PKG.
+apt_pkg_available() {
+    local cand
+    cand=$(apt-cache policy "$1" 2>/dev/null | awk '/Candidate:/ {print $2; exit}')
+    [ -n "$cand" ] && [ "$cand" != "(none)" ]
+}
+
+# Only packages that really exist for this release: php8.4+ dropped imap from core,
+# and the distro archive carries a single PHP branch.
 build_php_package_list() {
-    local PKG_LIST=""
+    local PKG_LIST="" ver ext
     for ver in $AKPANEL_PHP_VERSIONS; do
-        PKG_LIST="$PKG_LIST php${ver}-cli php${ver}-fpm php${ver}-cgi php${ver}-common php${ver}-mysql php${ver}-curl php${ver}-mbstring php${ver}-xml php${ver}-zip php${ver}-gd php${ver}-intl php${ver}-imap"
+        for ext in cli fpm cgi common mysql curl mbstring xml zip gd intl imap bcmath sqlite3; do
+            if apt_pkg_available "php${ver}-${ext}"; then
+                PKG_LIST="$PKG_LIST php${ver}-${ext}"
+            else
+                echo "php${ver}-${ext}: not available on ${OS_ID} ${UBUNTU_CODENAME}, skipped" >> "$LOG_FILE"
+            fi
+        done
     done
     echo "$PKG_LIST"
+}
+
+# setup_php_repository adds ondrej/php (Ubuntu PPA, or packages.sury.org on Debian) only
+# when it publishes a build for THIS release. Pointing apt at another release's suite
+# (e.g. noble on 26.04) breaks `apt-get update` for the whole system, so when there is no
+# build we remove any such entry and fall back to the distro's own PHP.
+PHP_REPO_SOURCE="distro"
+setup_php_repository() {
+    mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d
+    local list=/etc/apt/sources.list.d/akpanel-php.list
+    local base key key_url f
+
+    # Stale/foreign entries from older installers or add-apt-repository.
+    for f in /etc/apt/sources.list.d/*ondrej* /etc/apt/sources.list.d/*sury*; do
+        [ -e "$f" ] || continue
+        rm -f "$f"
+    done
+    rm -f "$list"
+
+    case "$OS_ID" in
+        ubuntu)
+            base="https://ppa.launchpadcontent.net/ondrej/php/ubuntu"
+            key=/etc/apt/keyrings/akpanel-php.asc
+            ;;
+        debian)
+            base="https://packages.sury.org/php"
+            key=/etc/apt/keyrings/akpanel-php.gpg
+            key_url="https://packages.sury.org/php/apt.gpg"
+            ;;
+        *)
+            echo "PHP repo: unsupported OS '${OS_ID}', using distro packages" >> "$LOG_FILE"
+            return 0
+            ;;
+    esac
+
+    if ! curl -fsS -o /dev/null --max-time 20 "${base}/dists/${UBUNTU_CODENAME}/Release"; then
+        echo "PHP repo: ${base} has no build for '${UBUNTU_CODENAME}', using distro PHP" >> "$LOG_FILE"
+        return 0
+    fi
+
+    if [ "$OS_ID" = "ubuntu" ]; then
+        # The PPA rotates its signing key; ask Launchpad for the current one.
+        local fp
+        fp=$(curl -fsS --max-time 20 "https://api.launchpad.net/1.0/~ondrej/+archive/ubuntu/php" 2>/dev/null \
+            | grep -o '"signing_key_fingerprint": *"[0-9A-Fa-f]*"' | grep -o '[0-9A-Fa-f]\{16,\}' | head -1)
+        [ -z "$fp" ] && fp="71DAEAAB4AD4CAB6"
+        key_url="https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x${fp}"
+    fi
+    if ! curl -fsSL --max-time 30 "$key_url" -o "${key}.tmp" 2>>"$LOG_FILE" || [ ! -s "${key}.tmp" ]; then
+        rm -f "${key}.tmp"
+        echo "PHP repo: could not fetch signing key, using distro PHP" >> "$LOG_FILE"
+        return 0
+    fi
+    mv -f "${key}.tmp" "$key"
+    chmod 644 "$key"
+    echo "deb [signed-by=${key}] ${base} ${UBUNTU_CODENAME} main" > "$list"
+
+    if ! apt-get update -y >> "$LOG_FILE" 2>&1; then
+        echo "PHP repo: apt-get update failed with ${base}, removing it" >> "$LOG_FILE"
+        rm -f "$list"
+        apt-get update -y >> "$LOG_FILE" 2>&1 || true
+        return 0
+    fi
+    PHP_REPO_SOURCE="$base"
+}
+
+# resolve_php_versions keeps the requested versions apt can actually install. When the
+# primary (8.3) is missing — a new release the PPA does not cover yet — the distro's own
+# PHP becomes the primary so the server always ends up with a working php-fpm.
+resolve_php_versions() {
+    local want="$AKPANEL_PHP_VERSIONS" have="" v distro_ver
+    for v in $want; do
+        if apt_pkg_available "php${v}-fpm"; then
+            have="$have $v"
+        else
+            echo "PHP ${v}: no php${v}-fpm package available, skipped" >> "$LOG_FILE"
+        fi
+    done
+    if [ -z "$have" ]; then
+        distro_ver=$(apt-cache depends php-fpm 2>/dev/null | grep -o 'php[0-9]\.[0-9]*-fpm' | head -1 | sed 's/^php//; s/-fpm$//')
+        if [ -n "$distro_ver" ] && apt_pkg_available "php${distro_ver}-fpm"; then
+            echo "PHP: using distro PHP ${distro_ver} as primary" >> "$LOG_FILE"
+            have=" $distro_ver"
+        fi
+    fi
+    have=$(echo "$have" | xargs)
+    if [ -n "$have" ]; then
+        AKPANEL_PHP_VERSIONS="$have"
+    fi
+    # run_task steps run in subshells: later steps re-read the resolved list from here.
+    mkdir -p /etc/akpanel
+    echo "$AKPANEL_PHP_VERSIONS" > "$PHP_VERSIONS_STATE"
+    echo "PHP versions to install: ${AKPANEL_PHP_VERSIONS} (source: ${PHP_REPO_SOURCE})" >> "$LOG_FILE"
+}
+
+PHP_VERSIONS_STATE=/etc/akpanel/.install_php_versions
+load_php_versions() {
+    local v
+    v=$(cat "$PHP_VERSIONS_STATE" 2>/dev/null | xargs)
+    [ -n "$v" ] && AKPANEL_PHP_VERSIONS="$v"
+    return 0
+}
+
+write_php_default() {
+    load_php_versions
+    local primary
+    primary=$(echo "$AKPANEL_PHP_VERSIONS" | awk '{print $1}')
+    [ -z "$primary" ] && return 0
+    [ -x "/usr/sbin/php-fpm${primary}" ] || return 0
+    mkdir -p /etc/akpanel
+    [ -s /etc/akpanel/php_default_fpm.conf ] || echo "$primary" > /etc/akpanel/php_default_fpm.conf
 }
 
 relocate_apache_ports() {
@@ -238,6 +366,7 @@ relocate_apache_ports() {
 }
 
 write_install_metadata() {
+    load_php_versions
     mkdir -p /etc/akpanel
     echo "$AKPANEL_WEB_PROFILE" > /etc/akpanel/server_profile.conf
 
@@ -287,6 +416,8 @@ EOF
 # Default nginx site must execute PHP (index.php) via php-fpm immediately
 # after install. Distro snippets/fastcgi-php.conf 404s bare /index.php.
 configure_nginx_php() {
+    load_php_versions
+    write_php_default
     mkdir -p /etc/nginx/snippets /etc/nginx/sites-available /etc/nginx/sites-enabled /var/www/html /etc/akpanel/ssl/default
 
     local sock=""
@@ -302,7 +433,7 @@ configure_nginx_php() {
     if [ -z "$sock" ] && [ -S /run/php/php-fpm.sock ]; then
         sock="unix:/run/php/php-fpm.sock"
     fi
-    [ -z "$sock" ] && sock="unix:/run/php/php8.3-fpm.sock"
+    [ -z "$sock" ] && sock="unix:/run/php/php$(echo "$AKPANEL_PHP_VERSIONS" | awk '{print $1}')-fpm.sock"
 
     if [ ! -f /etc/akpanel/ssl/default/fullchain.pem ] || [ ! -f /etc/akpanel/ssl/default/privkey.pem ]; then
         openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
@@ -463,6 +594,7 @@ EOF
 }
 
 apply_webserver_profile() {
+    load_php_versions
     # Nginx serves during install; the panel then applies the chosen mode itself
     # (ports, vhosts, modules, Varnish) in `akpanel --bootstrap-services`.
     svc_disable_now varnish
@@ -844,27 +976,9 @@ task_step3() {
     export DEBIAN_FRONTEND=noninteractive
     local APT_OPTS="-y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold"
 
-    mkdir -p /etc/apt/keyrings /etc/apt/sources.list.d
-    local PPA_ADDED=false
-
     akp_progress 36 "Adding PHP repository"
-
-    if [[ "$UBUNTU_CODENAME" =~ ^(focal|jammy|noble)$ ]]; then
-        if LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php >> "$LOG_FILE" 2>&1; then
-            PPA_ADDED=true
-        fi
-    fi
-
-    if [ "$PPA_ADDED" = false ]; then
-        curl -fsSL https://packages.sury.org/php/apt.gpg 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>>"$LOG_FILE" || \
-        curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x14AA40EC0831756756D7F66C4F4EA0AAE5267A6C" 2>/dev/null | gpg --dearmor --yes -o /etc/apt/keyrings/ondrej-php.gpg 2>>"$LOG_FILE" || true
-
-        local FALLBACK_SUITE="noble"
-        [ "$UBUNTU_CODENAME" = "focal" ] && FALLBACK_SUITE="focal"
-        [ "$UBUNTU_CODENAME" = "jammy" ] && FALLBACK_SUITE="jammy"
-
-        echo "deb [signed-by=/etc/apt/keyrings/ondrej-php.gpg] https://ppa.launchpadcontent.net/ondrej/php/ubuntu ${FALLBACK_SUITE} main" > /etc/apt/sources.list.d/ondrej-ubuntu-php.list
-    fi
+    setup_php_repository
+    resolve_php_versions
 
     if [ "$VERBOSE" = true ]; then
         apt-get update -y
@@ -879,7 +993,7 @@ task_step3() {
         apt-get install $APT_OPTS --no-install-recommends $(build_php_package_list) \
             roundcube roundcube-core roundcube-mysql phpmyadmin || apt-get install $APT_OPTS --no-install-recommends $(build_php_package_list)
     else
-        akp_crawl 36 38 "Refreshing apt after PHP repo" apt-get update -y
+        akp_crawl 36 38 "Refreshing apt indexes" apt-get update -y || true
         akp_crawl 38 48 "Installing nginx, BIND, MariaDB, mail" apt-get install $APT_OPTS \
             nginx apache2 libapache2-mod-fcgid apache2-suexec-custom varnish mariadb-server bind9 bind9utils dnsutils postfix postfix-pcre \
             dovecot-core dovecot-imapd dovecot-pop3d dovecot-lmtpd dovecot-sieve dovecot-managesieved \
@@ -1529,6 +1643,7 @@ echo -e "  🔑 Generated Pass  : ${BOLD}${RED}${ROOT_ADMIN_PASS}${NC} ${GREEN}(
 echo -e "  💾 Credentials File: ${CYAN}/etc/akpanel/credentials.txt${NC}"
 echo -e "  📁 Websites Root   : ${CYAN}/var/www/sites${NC}"
 echo -e "  ⚙️ Web Stack       : ${CYAN}${AKPANEL_WEB_PROFILE}${NC}"
+load_php_versions
 echo -e "  🐘 PHP Versions    : ${CYAN}${AKPANEL_PHP_VERSIONS}${NC}"
 echo -e "  ⚙️ Config Dir      : ${CYAN}/etc/akpanel${NC}"
 echo -e "  📄 Installation Log: ${CYAN}${LOG_FILE}${NC}"

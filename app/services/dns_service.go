@@ -1710,7 +1710,7 @@ func (s *DNSService) generateDefaultZone(domain, serverIP, ownerUser string, inc
 	// addresses until an administrator has chosen to serve sites over IPv6. mail. stays
 	// A-only because outbound SMTP is pinned to IPv4. www is a CNAME, so it must not get
 	// a sibling AAAA record.
-	if ss, err := NewServerSettingsService().GetSettings(); err == nil && (ss.IPv6Enabled || ss.IPStackMode == "dual") {
+	if ss, err := readServerSettingsFile(); err == nil && (ss.IPv6Enabled || ss.IPStackMode == "dual") {
 		if v6 := strings.TrimSpace(s.GetSystemIPv6()); v6 != "" {
 			records = append(records,
 				DNSRecord{Name: "@", Type: "AAAA", Value: v6, TTL: 14400, Comment: "IPv6 web"},
